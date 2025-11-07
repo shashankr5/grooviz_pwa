@@ -40,9 +40,25 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isFormValid = isValid);
   }
 
-  void _login() {
+  void _login() async {
     if (_formKey.currentState!.validate()) {
-      // Navigate to HomePage
+      final loginService = LoginService();
+
+      final response = await loginService.login(
+        username: _usernameController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+
+      if (!mounted) return;
+
+      if (!response['success']) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(response['message'] ?? "Login failed")),
+        );
+        return;
+      }
+
+      // ✅ move to home page
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const HomePage()),
