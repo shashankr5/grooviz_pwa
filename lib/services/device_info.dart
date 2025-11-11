@@ -1,15 +1,14 @@
-// services/device_info_service.dart
+// services/device_info.dart
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-class DeviceInfoService {
+class DeviceInfo {
   static final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
   static final Uuid _uuid = Uuid();
 
-  // Get all device information
   static Future<Map<String, dynamic>> getDeviceInfo() async {
     return {
       'installation_id': await _getInstallationId(),
@@ -21,20 +20,18 @@ class DeviceInfoService {
     };
   }
 
-  // Get installation ID (generated once per install)
   static Future<String> _getInstallationId() async {
     final prefs = await SharedPreferences.getInstance();
     var installationId = prefs.getString('installation_id');
-    
+
     if (installationId == null) {
       installationId = _uuid.v4();
       await prefs.setString('installation_id', installationId);
     }
-    
+
     return installationId;
   }
 
-  // Get device identifier
   static Future<String> _getDeviceIdentifier() async {
     try {
       if (Platform.isAndroid) {
@@ -49,7 +46,6 @@ class DeviceInfoService {
     }
   }
 
-  // Get device model
   static Future<String> _getDeviceModel() async {
     try {
       if (Platform.isAndroid) {
@@ -64,7 +60,6 @@ class DeviceInfoService {
     }
   }
 
-  // Get OS version
   static Future<String> _getOSVersion() async {
     try {
       if (Platform.isAndroid) {
@@ -79,7 +74,6 @@ class DeviceInfoService {
     }
   }
 
-  // Get app version
   static Future<String> _getAppVersion() async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();

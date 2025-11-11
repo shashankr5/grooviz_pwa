@@ -64,5 +64,5 @@ class FCMService {
   static Future<void> _onTokenRefresh(String newToken) async {
     print('FCM Token Refreshed: $newToken');
     await _saveToken(newToken);
-  }
+  }
 }

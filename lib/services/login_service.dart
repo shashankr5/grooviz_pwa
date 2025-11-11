@@ -1,11 +1,20 @@
-import 'package:dio/dio.dart';
 import 'dart:developer' as dev;
 import 'dart:convert';
 
-import '../../constants/api_constants.dart';
-import '../../services/device_info.dart';
-import '../../services/fcm_service.dart';
-import '../../utils/session/user_session_helper.dart';
+import 'package:dio/dio.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+import '../constants/api_constants.dart';
+import 'device_info.dart';
+import 'fcm_service.dart';
+import '../services/api_services.dart';
+import '../services/device_info.dart';
+import '../services/fcm_service.dart';
+import '../services/login_service.dart';
+import '../services/api_services.dart';
+import '../constants/api_constants.dart';
+import '../utils/user_session_helper.dart';
+
 
 class LoginService {
   final Dio _dio;
@@ -19,7 +28,7 @@ class LoginService {
             sendTimeout: const Duration(seconds: 60),
             headers: {
               'Content-Type': 'application/json',
-              'x-api-key': ApiConstants.apiKey,
+              'x-api-key': 'sa9F4GyTT45OImNkKjaHu6bsJbk8UWmZfKdzmeoc',
             },
             validateStatus: (status) => status != null && status < 500,
           ),
@@ -41,21 +50,22 @@ class LoginService {
   }) async {
     try {
       // ✅ get FCM token
-      final String? fcmToken = await FCMService.getToken();
+      final fcmToken = await FCMService.getFCMToken();
 
       // ✅ get device info from your device_info.dart
       final info = await DeviceInfo.getDeviceInfo();
 
-      final payload = {
+      final payload = {        
         "username": username,
         "password": password,
         "fcm_token": fcmToken ?? "",
-        "installation_id": info.installationId,
-        "device_identifier": info.deviceIdentifier,
-        "device_type": info.deviceType,
-        "device_model": info.deviceModel,
-        "os_version": info.osVersion,
-        "app_version": info.appVersion,
+        "installation_id": info['installation_id'],
+        "device_identifier": info['device_identifier'],
+        "device_type": info['device_type'],
+        "device_model": info['device_model'],
+        "os_version": info['os_version'],
+        "app_version": info['app_version'],
+        "stage": 'dev',
       };
 
       dev.log("📤 Calling login: ${ApiConstants.login}");

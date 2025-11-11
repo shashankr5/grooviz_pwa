@@ -1,4 +1,4 @@
-name: screensync
+name: com.tekchant.screensyncapp
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -34,15 +34,17 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+
+  dio: ^5.4.3
   
   # FCM & Notifications
   firebase_core: ^2.24.1
   firebase_messaging: ^14.7.1
-  flutter_local_notifications: ^16.3.0
+  flutter_local_notifications: ^17.1.2
   
   # Device Info
   device_info_plus: ^9.0.0
-  package_info_plus: ^4.3.0
+  package_info_plus: ^9.0.0
   
   # Storage & Utilities
   shared_preferences: ^2.2.2
