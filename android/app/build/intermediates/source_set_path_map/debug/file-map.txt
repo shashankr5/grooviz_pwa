@@ -1,0 +1,56 @@
+com.example.screensync.app-jetified-window-java-1.2.0-0 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\06572cb91d72fcd349de54d0cd6a8b05\transformed\jetified-window-java-1.2.0\res
+com.example.screensync.app-jetified-savedstate-ktx-1.2.1-1 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\08c13396269b8b886ad01febceaa70a3\transformed\jetified-savedstate-ktx-1.2.1\res
+com.example.screensync.app-jetified-lifecycle-viewmodel-savedstate-2.7.0-2 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\134eceacea94791d9aa3bb53f6bb989f\transformed\jetified-lifecycle-viewmodel-savedstate-2.7.0\res
+com.example.screensync.app-recyclerview-1.0.0-3 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\1dfd52ca635bde8eed6d5a07bac71c64\transformed\recyclerview-1.0.0\res
+com.example.screensync.app-jetified-lifecycle-livedata-core-ktx-2.7.0-4 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\242a9410bd86a7761a44e99c45c0f21d\transformed\jetified-lifecycle-livedata-core-ktx-2.7.0\res
+com.example.screensync.app-lifecycle-livedata-core-2.7.0-5 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\25f2e98e15b3285a4a978b91ced850e8\transformed\lifecycle-livedata-core-2.7.0\res
+com.example.screensync.app-jetified-core-ktx-1.13.1-6 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\29b0db40bcbf4b3d3ef4b95fe763587f\transformed\jetified-core-ktx-1.13.1\res
+com.example.screensync.app-jetified-play-services-base-18.0.1-7 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\30529305c028a1f3772937abbd223735\transformed\jetified-play-services-base-18.0.1\res
+com.example.screensync.app-jetified-startup-runtime-1.1.1-8 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\376dfea3783305cd38a6ed603529da84\transformed\jetified-startup-runtime-1.1.1\res
+com.example.screensync.app-slidingpanelayout-1.2.0-9 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\4210da3d37e9c68ff2ab37f1c65f6bf4\transformed\slidingpanelayout-1.2.0\res
+com.example.screensync.app-jetified-datastore-preferences-core-release-10 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\43726b7715771b293bd1564eb5902332\transformed\jetified-datastore-preferences-core-release\res
+com.example.screensync.app-media-1.1.0-11 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\4ef8cad7d093d0dc594c4fb2b5557fef\transformed\media-1.1.0\res
+com.example.screensync.app-jetified-fragment-ktx-1.7.1-12 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\50f8b0335b4e024bd7b8bf6dd349efe3\transformed\jetified-fragment-ktx-1.7.1\res
+com.example.screensync.app-jetified-lifecycle-viewmodel-ktx-2.7.0-13 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\5321eabc9873c0b8e339b94fc39fc3c1\transformed\jetified-lifecycle-viewmodel-ktx-2.7.0\res
+com.example.screensync.app-jetified-tracing-1.2.0-14 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\5507fb8f5ecef6e9fd5d8e106f7e5833\transformed\jetified-tracing-1.2.0\res
+com.example.screensync.app-localbroadcastmanager-1.1.0-15 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\5fb6bbff76f298ad3fe9db6dd5d70ac5\transformed\localbroadcastmanager-1.1.0\res
+com.example.screensync.app-jetified-savedstate-1.2.1-16 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\608423d5df642cecb5ec57e036e3bde5\transformed\jetified-savedstate-1.2.1\res
+com.example.screensync.app-jetified-activity-1.8.1-17 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\62897c8cc957cb7cc766064a38fb6b95\transformed\jetified-activity-1.8.1\res
+com.example.screensync.app-core-1.13.1-18 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\685f579beb702c84ff5396a3292e7278\transformed\core-1.13.1\res
+com.example.screensync.app-jetified-datastore-release-19 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\6c4304d3ed91d39c65b2dd6539b8008d\transformed\jetified-datastore-release\res
+com.example.screensync.app-jetified-window-1.2.0-20 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\825cb8dd15bae8db0ee68cb12d4b2369\transformed\jetified-window-1.2.0\res
+com.example.screensync.app-transition-1.4.1-21 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\84c999f2ee5885cc9cca2ac2c4018c23\transformed\transition-1.4.1\res
+com.example.screensync.app-core-runtime-2.2.0-22 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\8cd051ffe4d96ef409d6f6da64542241\transformed\core-runtime-2.2.0\res
+com.example.screensync.app-appcompat-1.1.0-23 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\979a052e4a399f75c4b4770c822b68b7\transformed\appcompat-1.1.0\res
+com.example.screensync.app-lifecycle-livedata-2.7.0-24 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\9eb6f2ffd202a8c09661b0bceaeb0610\transformed\lifecycle-livedata-2.7.0\res
+com.example.screensync.app-jetified-lifecycle-runtime-ktx-2.7.0-25 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\a27776bcd5b14392efda5afbec60496a\transformed\jetified-lifecycle-runtime-ktx-2.7.0\res
+com.example.screensync.app-jetified-profileinstaller-1.3.1-26 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\a3b9e2664b926ef865bbec94a60a2b4d\transformed\jetified-profileinstaller-1.3.1\res
+com.example.screensync.app-jetified-lifecycle-process-2.7.0-27 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\a8f65f94db1619c5c25f390bbca1884f\transformed\jetified-lifecycle-process-2.7.0\res
+com.example.screensync.app-lifecycle-viewmodel-2.7.0-28 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\adc90d0a7c0b58dcdc421dd98adeb310\transformed\lifecycle-viewmodel-2.7.0\res
+com.example.screensync.app-jetified-annotation-experimental-1.4.0-29 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\b83e46fefee8699536651b923c13ae1e\transformed\jetified-annotation-experimental-1.4.0\res
+com.example.screensync.app-jetified-datastore-preferences-release-30 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\bb3416e0d7d789045f19bf2445659652\transformed\jetified-datastore-preferences-release\res
+com.example.screensync.app-coordinatorlayout-1.0.0-31 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\beae31b811b42b315a059d9de7f12d40\transformed\coordinatorlayout-1.0.0\res
+com.example.screensync.app-jetified-firebase-messaging-23.4.1-32 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\c1d635c7456a99ffc0f2c1a88c362e5d\transformed\jetified-firebase-messaging-23.4.1\res
+com.example.screensync.app-preference-1.2.1-33 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\c1e746582ae55538de94ff31fdafeab6\transformed\preference-1.2.1\res
+com.example.screensync.app-jetified-core-1.0.0-34 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\c212151f3fd006560f3d73e96d8312dc\transformed\jetified-core-1.0.0\res
+com.example.screensync.app-jetified-firebase-common-20.4.3-35 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\cbe834624643a7e1dcea707aa6d804d3\transformed\jetified-firebase-common-20.4.3\res
+com.example.screensync.app-jetified-play-services-basement-18.3.0-36 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\d33fb0307abdf503ffdf92c620859286\transformed\jetified-play-services-basement-18.3.0\res
+com.example.screensync.app-jetified-appcompat-resources-1.1.0-37 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\d6ca7f58b4bfdd3e461f814143c71179\transformed\jetified-appcompat-resources-1.1.0\res
+com.example.screensync.app-lifecycle-runtime-2.7.0-38 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\db4ccd401e859dbd2456352ec9961ab6\transformed\lifecycle-runtime-2.7.0\res
+com.example.screensync.app-fragment-1.7.1-39 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\ea249d11f7b1456e871cc4dc87a4c1af\transformed\fragment-1.7.1\res
+com.example.screensync.app-jetified-datastore-core-release-40 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\eb3aea6e1b756c204cd62f2619e51cc6\transformed\jetified-datastore-core-release\res
+com.example.screensync.app-jetified-activity-ktx-1.8.1-41 C:\Users\Syed yousuf - TCS\.gradle\caches\8.12\transforms\fc7d3ffe56c4693b322ea592005ab8c3\transformed\jetified-activity-ktx-1.8.1\res
+com.example.screensync.app-packaged_res-42 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\device_info_plus-9.1.2\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-43 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\firebase_core-2.32.0\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-44 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\firebase_messaging-14.7.10\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-45 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\flutter_local_notifications-17.2.4\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-46 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\package_info_plus-9.0.0\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-47 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\path_provider_android-2.2.20\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-packaged_res-48 C:\Users\Syed yousuf - TCS\AppData\Local\Pub\Cache\hosted\pub.dev\shared_preferences_android-2.4.15\android\build\intermediates\packaged_res\debug
+com.example.screensync.app-pngs-49 D:\TekChant_Git\screen-sync\android\app\build\generated\res\pngs\debug
+com.example.screensync.app-resValues-50 D:\TekChant_Git\screen-sync\android\app\build\generated\res\resValues\debug
+com.example.screensync.app-packageDebugResources-51 D:\TekChant_Git\screen-sync\android\app\build\intermediates\incremental\debug\packageDebugResources\merged.dir
+com.example.screensync.app-packageDebugResources-52 D:\TekChant_Git\screen-sync\android\app\build\intermediates\incremental\debug\packageDebugResources\stripped.dir
+com.example.screensync.app-merged_res-53 D:\TekChant_Git\screen-sync\android\app\build\intermediates\merged_res\debug
+com.example.screensync.app-debug-54 D:\TekChant_Git\screen-sync\android\app\src\debug\res
+com.example.screensync.app-main-55 D:\TekChant_Git\screen-sync\android\app\src\main\res
