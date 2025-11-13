@@ -51,6 +51,9 @@ dependencies:
   path_provider: ^2.1.1
   uuid: ^4.2.1
 
+  image_picker: ^1.2.0
+  iconsax: ^0.0.8
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
