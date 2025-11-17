@@ -1,10 +1,56 @@
 import 'package:flutter/material.dart';
 
-class TasksPage extends StatelessWidget {
+class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
 
   @override
+  State<TasksPage> createState() => _TasksPageState();
+}
+
+class _TasksPageState extends State<TasksPage> {
+  // -----------------------
+  // Sample dynamic tasks list
+  // Replace this with API fetch
+  // -----------------------
+  List<Map<String, dynamic>> tasks = [
+    {
+      "room": "302",
+      "status": "Closed",
+      "title": "Resolved leaking faucet",
+      "time": "2h ago",
+      "priority": "High",
+    },
+    {
+      "room": "405",
+      "status": "In Progress",
+      "title": "Working on AC issue",
+      "time": "30m ago",
+      "priority": "High",
+    },
+    {
+      "room": "210",
+      "status": "Closed",
+      "title": "Delivered extra towels",
+      "time": "1h ago",
+      "priority": "Low",
+    },
+    {
+      "room": "108",
+      "status": "Open",
+      "title": "Broken lamp replacement",
+      "time": "15m ago",
+      "priority": "Medium",
+    }
+  ];
+
+  @override
   Widget build(BuildContext context) {
+    final totalTasks = tasks.length;
+    final completedTasks =
+        tasks.where((t) => t["status"] == "Closed").length;
+    final highPriorityTasks =
+        tasks.where((t) => t["priority"] == "High").length;
+
     return Scaffold(
       backgroundColor: Colors.grey.shade100,
       body: SafeArea(
@@ -13,22 +59,21 @@ class TasksPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-
               /// ---------------------------
               /// TITLE
               /// ---------------------------
               const Text(
                 "My Tasks",
                 style: TextStyle(
-                  fontSize: 28,
+                  fontSize: 22,
                   fontWeight: FontWeight.bold,
                 ),
               ),
               const SizedBox(height: 4),
 
-              const Text(
-                "Your performance overview",
-                style: TextStyle(fontSize: 15, color: Colors.grey),
+              Text(
+                "$totalTasks tasks in total • $completedTasks completed",
+                style: TextStyle(fontSize: 15, color: Colors.grey.shade700),
               ),
               const SizedBox(height: 20),
 
@@ -40,19 +85,19 @@ class TasksPage extends StatelessWidget {
                 children: [
                   _buildStatBox(
                     icon: Icons.access_time,
-                    count: "12",
+                    count: totalTasks.toString(),
                     label: "Total Tasks",
                     iconColor: Colors.amber.shade600,
                   ),
                   _buildStatBox(
                     icon: Icons.check_circle,
-                    count: "5",
-                    label: "Completed Today",
+                    count: completedTasks.toString(),
+                    label: "Completed",
                     iconColor: Colors.green.shade600,
                   ),
                   _buildStatBox(
                     icon: Icons.error,
-                    count: "3",
+                    count: highPriorityTasks.toString(),
                     label: "High Priority",
                     iconColor: Colors.red.shade600,
                   ),
@@ -74,34 +119,21 @@ class TasksPage extends StatelessWidget {
               const SizedBox(height: 16),
 
               /// ---------------------------
-              /// ACTIVITY LIST
+              /// ACTIVITY LIST (DYNAMIC)
               /// ---------------------------
-              _buildActivityCard(
-                room: "302",
-                title: "Resolved leaking faucet",
-                time: "2h ago",
-                status: "Done",
-                statusColor: Colors.green,
-              ),
-
-              const SizedBox(height: 12),
-
-              _buildActivityCard(
-                room: "405",
-                title: "Working on AC issue",
-                time: "30m ago",
-                status: "Active",
-                statusColor: Colors.orange,
-              ),
-
-              const SizedBox(height: 12),
-
-              _buildActivityCard(
-                room: "210",
-                title: "Delivered extra towels",
-                time: "1h ago",
-                status: "Done",
-                statusColor: Colors.green,
+              Column(
+                children: tasks.map((task) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _buildActivityCard(
+                      room: task["room"],
+                      title: task["title"],
+                      time: task["time"],
+                      status: task["status"],
+                      statusColor: getStatusColor(task["status"]),
+                    ),
+                  );
+                }).toList(),
               ),
 
               const SizedBox(height: 30),
@@ -187,7 +219,6 @@ class TasksPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -249,5 +280,21 @@ class TasksPage extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// ------------------------------------
+  /// Helper to get color based on status
+  /// ------------------------------------
+  Color getStatusColor(String status) {
+    switch (status) {
+      case "Closed":
+        return Colors.green;
+      case "In Progress":
+        return Colors.orange;
+      case "Open":
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
   }
 }

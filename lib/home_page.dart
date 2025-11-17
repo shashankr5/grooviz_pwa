@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -10,57 +12,68 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   String selectedFilter = "All";
 
-  final List<Map<String, dynamic>> tasks = [
-    {
-      "room": "302",
-      "status": "Open",
-      "statusColor": Colors.blue,
-      "title": "Leaking Faucet",
-      "subtitle": "Guest reported water dripping from bathroom sink faucet",
-      "time": "10 mins ago",
-      "description":
-          "Guest reported water dripping from bathroom sink faucet. The issue appears to be coming from the cold water handle.",
-      "guest": "Sarah Johnson",
-      "guestNote":
-          "Water has been leaking for about 2 hours. Please fix as soon as possible.",
-      "assignedTo": "John Doe"
-    },
-    {
-      "room": "405",
-      "status": "In Progress",
-      "statusColor": Colors.orange,
-      "title": "AC Not Working",
-      "subtitle": "Air conditioning unit not cooling properly",
-      "time": "25 mins ago",
-      "description":
-          "AC unit is running but not cooling. Could be a gas refill or fan motor issue.",
-      "guest": "Michael Brown",
-      "guestNote": "Room temperature is too warm even after 30 minutes.",
-      "assignedTo": "Aisha Sharma"
-    },
-    {
-      "room": "108",
-      "status": "Closed",
-      "statusColor": Colors.green,
-      "title": "Broken Lamp",
-      "subtitle": "Lamp replaced and resolved",
-      "time": "1 hr ago",
-      "description":
-          "Desk lamp was not working. Unit replaced with a functional one.",
-      "guest": "Lily Evans",
-      "guestNote": "The lamp was flickering for 3 days before it stopped.",
-      "assignedTo": "Rahul Verma"
-    }
-  ];
+  List<Map<String, dynamic>> tasks = [];
+  List<Map<String, String>> staffList = [];
 
-  final List<Map<String, String>> staffList = [
-    {"name": "John Doe", "department": "Maintenance"},
-    {"name": "Aisha Sharma", "department": "Housekeeping"},
-    {"name": "Rahul Verma", "department": "Electrical"},
-    {"name": "Priya Nair", "department": "Plumbing"},
-    {"name": "Rahul Raj", "department": "Security"},
-    {"name": "Karun Nair", "department": "Admin"}
-  ];
+  bool isLoading = true;
+  int newTaskCount = 0;
+
+  // 🔥 NEW → DYNAMIC USER NAME
+  String userName = "User";
+
+  @override
+  void initState() {
+    super.initState();
+    fetchData();
+  }
+
+  Future<void> fetchData() async {
+    await Future.wait([fetchTasks(), fetchStaff()]);
+    setState(() => isLoading = false);
+  }
+
+  Future<void> fetchTasks() async {
+    try {
+      final response = await http.get(Uri.parse("https://yourapi.com/tasks"));
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+        setState(() {
+          tasks = data.map((task) => Map<String, dynamic>.from(task)).toList();
+          updateNewTaskCount();
+        });
+      } else {
+        throw Exception("Failed to load tasks");
+      }
+    } catch (e) {
+      print("Error fetching tasks: $e");
+    }
+  }
+
+  Future<void> fetchStaff() async {
+    try {
+      final response = await http.get(Uri.parse("https://yourapi.com/staff"));
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+
+        setState(() {
+          staffList = data.map((staff) => Map<String, String>.from(staff)).toList();
+
+          // 🔥 NEW → Set User Name dynamically from API
+          if (staffList.isNotEmpty) {
+            userName = staffList[0]["name"] ?? "User";
+          }
+        });
+      } else {
+        throw Exception("Failed to load staff");
+      }
+    } catch (e) {
+      print("Error fetching staff: $e");
+    }
+  }
+
+  void updateNewTaskCount() {
+    newTaskCount = tasks.where((task) => task["status"] == "Open").length;
+  }
 
   List<Map<String, dynamic>> get filteredTasks {
     if (selectedFilter == "All") return tasks;
@@ -81,90 +94,120 @@ class _HomePageState extends State<HomePage> {
         elevation: 1,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text("Welcome,", style: TextStyle(fontSize: 14, color: Colors.black54)),
-            Text("Shashank 👋",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          children: [
+            const Text(
+              "Welcome,",
+              style: TextStyle(fontSize: 14, color: Colors.black54),
+            ),
+
+            // 🔥 NEW → Dynamic Username
+            Text(
+              "$userName 👋",
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.notifications_outlined, size: 28),
-            onPressed: () {},
+          Stack(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications_outlined, size: 28),
+                onPressed: () {},
+              ),
+              if (newTaskCount > 0)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
           ),
-          const Padding(
-            padding: EdgeInsets.only(right: 12),
+
+          // 🔥 NEW → Dynamic Initial in Avatar
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
             child: CircleAvatar(
               backgroundColor: Colors.deepPurple,
-              child: Text("S", style: TextStyle(color: Colors.white)),
+              child: Text(
+                userName.isNotEmpty ? userName[0].toUpperCase() : "?",
+                style: const TextStyle(color: Colors.white),
+              ),
             ),
           )
         ],
       ),
-
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 15),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                _buildFilterChip("All"),
-                _buildFilterChip("Open"),
-                _buildFilterChip("In Progress"),
-                _buildFilterChip("Closed"),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Column(
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text("Tasks",
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Text("${activeTasks.length} active tickets",
-                    style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+                const SizedBox(height: 15),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      _buildFilterChip("All"),
+                      _buildFilterChip("Open"),
+                      _buildFilterChip("In Progress"),
+                      _buildFilterChip("Closed"),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("Tasks", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Text("${activeTasks.length} active tickets",
+                          style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: filteredTasks.length,
+                    itemBuilder: (context, index) {
+                      final task = filteredTasks[index];
+                      return GestureDetector(
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => TicketDetailPage(
+                                task: task,
+                                onClose: () {
+                                  setState(() {
+                                    task["status"] = "Closed";
+                                    task["statusColor"] = Colors.green;
+                                    updateNewTaskCount();
+                                  });
+                                },
+                                staffList: staffList,
+                              ),
+                            ),
+                          );
+                          setState(() {});
+                        },
+                        child: _buildTaskCard(task),
+                      );
+                    },
+                  ),
+                ),
               ],
             ),
-          ),
-          const SizedBox(height: 15),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: filteredTasks.length,
-              itemBuilder: (context, index) {
-                final task = filteredTasks[index];
-                return GestureDetector(
-                  onTap: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => TicketDetailPage(
-                          task: task,
-                          onClose: () {
-                            setState(() {
-                              task["status"] = "Closed";
-                              task["statusColor"] = Colors.green;
-                            });
-                          },
-                          staffList: staffList,
-                        ),
-                      ),
-                    );
-                    setState(() {});
-                  },
-                  child: _buildTaskCard(task),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -196,12 +239,7 @@ class _HomePageState extends State<HomePage> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black12.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
+        boxShadow: [BoxShadow(color: Colors.black12.withOpacity(0.05), blurRadius: 8, offset: const Offset(0, 2))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -210,16 +248,14 @@ class _HomePageState extends State<HomePage> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _pill("Room ${task["room"]}", Colors.amber.shade100),
-              _pill(task["status"], task["statusColor"].withOpacity(0.2),
-                  textColor: task["statusColor"]),
+              _pill(task["status"], (task["statusColor"] as Color).withOpacity(0.2),
+                  textColor: task["statusColor"] as Color),
             ],
           ),
           const SizedBox(height: 10),
-          Text(task["title"],
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(task["title"], style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 5),
-          Text(task["subtitle"],
-              style: TextStyle(color: Colors.grey[700], fontSize: 14)),
+          Text(task["subtitle"], style: TextStyle(color: Colors.grey[700], fontSize: 14)),
           const SizedBox(height: 14),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -227,11 +263,9 @@ class _HomePageState extends State<HomePage> {
               Row(children: [
                 const Icon(Icons.access_time, size: 18, color: Colors.grey),
                 const SizedBox(width: 6),
-                Text("High Priority",
-                    style: TextStyle(color: Colors.grey[700], fontSize: 14)),
+                Text("High Priority", style: TextStyle(color: Colors.grey[700], fontSize: 14)),
               ]),
-              Text(task["time"],
-                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              Text(task["time"], style: TextStyle(color: Colors.grey[600], fontSize: 13)),
             ],
           ),
         ],
@@ -242,17 +276,14 @@ class _HomePageState extends State<HomePage> {
   Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-      child: Text(text,
-          style: TextStyle(
-              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Text(text, style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-//                        TICKET DETAIL PAGE
+// TICKET DETAIL PAGE
 ////////////////////////////////////////////////////////////////////////////////
 
 class TicketDetailPage extends StatelessWidget {
@@ -275,8 +306,7 @@ class TicketDetailPage extends StatelessWidget {
         elevation: 0,
         backgroundColor: Colors.white,
         leading: BackButton(color: Colors.black),
-        title: const Text("Back to Tasks",
-            style: TextStyle(color: Colors.black, fontSize: 18)),
+        title: const Text("Back to Tasks", style: TextStyle(color: Colors.black, fontSize: 18)),
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -285,20 +315,18 @@ class TicketDetailPage extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _pill("Room ${task["room"]}", Colors.amber.shade100),
-              _pill(task["status"], task["statusColor"].withOpacity(0.15),
-                  textColor: task["statusColor"]),
+              _pill(task["status"], (task["statusColor"] as Color).withOpacity(0.15),
+                  textColor: task["statusColor"] as Color),
             ],
           ),
           const SizedBox(height: 20),
-          Text(task["title"],
-              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+          Text(task["title"], style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
           Row(
             children: [
               const Icon(Icons.error_outline, color: Colors.red, size: 18),
               const SizedBox(width: 6),
-              Text("High Priority • ${task["time"]}",
-                  style: const TextStyle(fontSize: 14)),
+              Text("High Priority • ${task["time"]}", style: const TextStyle(fontSize: 14)),
             ],
           ),
           const SizedBox(height: 20),
@@ -317,11 +345,8 @@ class TicketDetailPage extends StatelessWidget {
   Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-      child: Text(text,
-          style: TextStyle(
-              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Text(text, style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 
@@ -330,8 +355,7 @@ class TicketDetailPage extends StatelessWidget {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           Text(content, style: const TextStyle(fontSize: 14)),
         ],
@@ -339,88 +363,56 @@ class TicketDetailPage extends StatelessWidget {
     );
   }
 
-Widget _guestSection(String name, String note) {
-  return _card(
-    Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Icon(Icons.person_outlined, color: Colors.amber, size: 26),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "Guest Information",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+  Widget _guestSection(String name, String note) {
+    return _card(
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.person_outlined, color: Colors.amber, size: 26),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Guest Information", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Text(name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(10)),
+                  child: Text('"$note"', style: const TextStyle(fontSize: 14, color: Colors.black87)),
                 ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                name,
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  '"$note"',
-                  style: const TextStyle(fontSize: 14, color: Colors.black87),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
 
-Widget _assignedSection(String name) {
-  return _card(
-    Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Icon(Icons.assignment_ind_outlined,
-            color: Colors.amber, size: 26),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "Assigned To",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                name,
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+  Widget _assignedSection(String name) {
+    return _card(
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.assignment_ind_outlined, color: Colors.amber, size: 26),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Assigned To", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Text(name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              ],
+            ),
           ),
-        ),
-      ],
-    ),
-  );
-}
-
+        ],
+      ),
+    );
+  }
 
   Widget _actionButtons(BuildContext context) {
     return Column(
@@ -430,22 +422,26 @@ Widget _assignedSection(String name) {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: () => _addNotes(context),
-                icon: const Icon(Icons.note_alt_outlined, color:Colors.black),
-                label: const Text("Add Notes"),
+                icon: const Icon(Icons.note_alt_outlined, color: Colors.black),
+                label: const Text("Add Notes", style: TextStyle(color: Colors.black)),
                 style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: BorderSide(color: const Color.fromARGB(255, 0, 0, 0))),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  side: const BorderSide(color: Colors.black54),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: () => _reassign(context),
-                icon: const Icon(Icons.person_outline, color:Colors.black),
-                label: const Text("Reassign"),
+                icon: const Icon(Icons.person_outline, color: Colors.black),
+                label: const Text("Reassign", style: TextStyle(color: Colors.black)),
                 style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: BorderSide(color: const Color.fromARGB(255, 0, 0, 0))),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  side: const BorderSide(color: Colors.black54),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
             ),
           ],
@@ -459,11 +455,11 @@ Widget _assignedSection(String name) {
           icon: const Icon(Icons.check_circle_outline),
           label: const Text("Close Ticket"),
           style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-              minimumSize: const Size(double.infinity, 50),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10))),
+            backgroundColor: Colors.green,
+            foregroundColor: Colors.white,
+            minimumSize: const Size(double.infinity, 50),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
         ),
       ],
     );
@@ -472,20 +468,15 @@ Widget _assignedSection(String name) {
   Widget _card(Widget child) {
     return Container(
       padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
       child: child,
     );
   }
 
-  // ---------------- Popups ----------------
   void _addNotes(BuildContext context) async {
     final text = await showAddNotesPopup(context);
     if (text != null && text.isNotEmpty) {
-      showCustomSnackBar(context, "Notes saved successfully!",
-          iconColor: const Color.fromARGB(255, 0, 0, 0));
+      showCustomSnackBar(context, "Notes saved successfully!", iconColor: Colors.black);
     }
   }
 
@@ -493,47 +484,74 @@ Widget _assignedSection(String name) {
     await showReassignPopup(context, staffList);
   }
 }
-
 ////////////////////////////////////////////////////////////////////////////////
 //                        REUSABLE POPUPS
 ////////////////////////////////////////////////////////////////////////////////
-
 Future<String?> showAddNotesPopup(BuildContext context) async {
   final TextEditingController controller = TextEditingController();
   return await showDialog<String>(
     context: context,
     builder: (context) => Dialog(
+      backgroundColor: Colors.white, // ✅ white background
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text("Add Notes",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text(
+              "Add Notes",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black, // ✅ black text
+              ),
+            ),
             const SizedBox(height: 10),
             TextField(
               controller: controller,
               maxLines: 5,
+              style: const TextStyle(color: Colors.black), // ✅ black input text
               decoration: InputDecoration(
                 hintText: "Enter your notes...",
+                hintStyle: const TextStyle(color: Colors.black45),
                 filled: true,
-                fillColor: Colors.grey.shade100,
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                fillColor: Colors.white, // ✅ white input background
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Colors.black26),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Colors.black26),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Colors.amber),
+                ),
               ),
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, controller.text.trim()),
               style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.amber.shade700),
-              child: const Text("Save Notes"),
+                backgroundColor: Colors.amber.shade700,
+                minimumSize: const Size(double.infinity, 45),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text(
+                "Save Notes",
+                style: TextStyle(color: Colors.white),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel"),
-            )
+              child: const Text(
+                "Cancel",
+                style: TextStyle(color: Colors.black54),
+              ),
+            ),
           ],
         ),
       ),
@@ -546,20 +564,28 @@ Future<void> showReassignPopup(
   await showDialog(
     context: context,
     builder: (context) => Dialog(
+      backgroundColor: const Color.fromARGB(255, 255, 255, 255), // 🔥 black background
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text("Reassign Staff",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text(
+              "Reassign Staff",
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Color.fromARGB(255, 0, 0, 0)), // white text
+            ),
             const SizedBox(height: 10),
             ...staffList.map((staff) => ListTile(
                   leading:
-                      const Icon(Icons.person_outline, color: Colors.black87),
-                  title: Text(staff["name"]!),
-                  subtitle: Text(staff["department"]!),
+                      const Icon(Icons.person_outline, color: Color.fromARGB(255, 0, 0, 0)),
+                  title: Text(staff["name"]!,
+                      style: const TextStyle(color: Color.fromARGB(255, 0, 0, 0))),
+                  subtitle: Text(staff["department"]!,
+                      style: const TextStyle(color: Color.fromARGB(255, 0, 0, 0))),
                   onTap: () {
                     Navigator.pop(context);
                     showCustomSnackBar(
@@ -572,6 +598,7 @@ Future<void> showReassignPopup(
     ),
   );
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //                        CUSTOM SNACKBAR
