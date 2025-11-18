@@ -18,8 +18,17 @@ class LogoutService {
               'x-api-key': 'sa9F4GyTT45OImNkKjaHu6bsJbk8UWmZfKdzmeoc',
             },
             validateStatus: (status) => status != null && status < 500,
-          ),
-        );
+          ),          
+        )  {
+    _dio.interceptors.add(LogInterceptor(
+      request: true,
+      requestHeader: true,
+      requestBody: true,
+      responseHeader: true,
+      responseBody: true,
+      error: true,
+    ));
+  }
 
   Future<Map<String, dynamic>> logout() async {
     try {
