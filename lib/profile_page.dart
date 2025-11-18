@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'login_page.dart'; // Make sure you have your LoginPage imported
+import 'login_page.dart';
+import '../services/logout_service.dart';
+import '../utils/user_session_helper.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -8,21 +10,43 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+class _ProfilePageState extends State<ProfilePage> {  
   bool _isPressed = false;
 
   void _handleLogout(BuildContext context) async {
-    // Tap animation trigger
     setState(() => _isPressed = true);
-
     await Future.delayed(const Duration(milliseconds: 150));
-
     setState(() => _isPressed = false);
-
-    // Add small delay for animation smoothness
     await Future.delayed(const Duration(milliseconds: 150));
 
-    // Navigate to Login Page with fade transition
+    final logoutService = LogoutService();
+    final result = await logoutService.logout();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result["message"]),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    // Successful logout
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result["message"]),  // dynamic message
+        backgroundColor: Colors.green,
+      ),
+    );
+
+    // Optional delay so logs appear BEFORE screen change
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    if (!mounted) return;
+
     Navigator.of(context).pushReplacement(PageRouteBuilder(
       transitionDuration: const Duration(milliseconds: 500),
       pageBuilder: (_, __, ___) => const LoginPage(),
@@ -31,6 +55,7 @@ class _ProfilePageState extends State<ProfilePage> {
       },
     ));
   }
+
 
   @override
   Widget build(BuildContext context) {

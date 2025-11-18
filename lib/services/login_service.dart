@@ -1,13 +1,12 @@
+// lib/services/login_service.dart
 import 'dart:developer' as dev;
 import 'dart:convert';
-
 import 'package:dio/dio.dart';
 
 import '../constants/api_constants.dart';
 import 'device_info.dart';
 import 'fcm_service.dart';
 import '../utils/user_session_helper.dart';
-
 
 class LoginService {
   final Dio _dio;
@@ -36,19 +35,17 @@ class LoginService {
     ));
   }
 
-  /// ✅ LOGIN API
+  /// LOGIN API
+  /// Returns: { success: bool, message: String, user: Map<String,dynamic>? }
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
   }) async {
     try {
-      // ✅ get FCM token
       final fcmToken = await FCMService.getFCMToken();
-
-      // ✅ get device info from your device_info.dart
       final info = await DeviceInfo.getDeviceInfo();
 
-      final payload = {        
+      final payload = {
         "username": username,
         "password": password,
         "fcm_token": fcmToken ?? "",
@@ -62,64 +59,84 @@ class LoginService {
       };
 
       dev.log("📤 Calling login: ${ApiConstants.login}");
-      dev.log("Payload: ${jsonEncode(payload)}");
+      dev.log("Payload: ${jsonEncode(payload)}"); 
 
-      final response = await _dio.post(
-        ApiConstants.login,
-        data: payload,
-      );
-
+      final response = await _dio.post(ApiConstants.login, data: payload);
       dev.log("📥 Login response: ${response.data}");
 
       if (response.statusCode != 200) {
-        return {
-          "success": false,
-          "message": "Server error: ${response.statusCode}"
-        };
+        return {"success": false, "message": "Server error: ${response.statusCode}"};
       }
 
+      // Read STATUS
       final statusList = response.data["STATUS"] as List?;
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final statusFlag = statusList[0]["status"];
+      final statusFlag = statusList[0]["status"] ?? "F";
       final statusMessage = statusList[0]["message"] ?? "Unknown";
 
-      // ❌ Login failed
       if (statusFlag != "S") {
         return {"success": false, "message": statusMessage};
       }
 
-      // ✅ Login success → get RESULT
+      // Read RESULT (user info)
       final resultList = response.data["RESULT"] as List?;
       if (resultList == null || resultList.isEmpty) {
-        return {"success": false, "message": "Invalid result format"};
+        return {"success": false, "message": "No user data returned"};
       }
 
-      final user = resultList[0];
+      final user = Map<String, dynamic>.from(resultList[0]);
 
-      // ✅ Save user session
-      await UserSessionHelper.saveUserId(user["user_id"]);
-      await UserSessionHelper.saveUserName(user["full_name"]);
-      await UserSessionHelper.saveEmail(user["email"]);
-      await UserSessionHelper.savePhone(user["phone"]);
-      await UserSessionHelper.saveIsLoggedIn(true);
+      // Save user info
+      try {
+        final uid = user["user_id"]; 
+        if (uid is int) {         
+          await UserSessionHelper.saveUserId(uid);      
+        } else if (uid is String) {
+          await UserSessionHelper.saveUserId(int.tryParse(uid) ?? 0);
+        }
 
-      return {
-        "success": true,
-        "message": statusMessage,
-        "user": user,
-      };
+        await UserSessionHelper.saveUserName(user["full_name"]?.toString() ?? "");
+        await UserSessionHelper.saveEmail(user["email"]?.toString() ?? "");
+        await UserSessionHelper.savePhone(user["phone"]?.toString() ?? "");
+        await UserSessionHelper.saveIsLoggedIn(true);
+    
+        // extra verification
+        final prefsTest = await UserSessionHelper.getUserId(); 
+        
+      } catch (e) {
+        dev.log("⚠️ Error saving user session: $e");
+      }
+
+      return {"success": true, "message": statusMessage, "user": user};
+
     } on DioException catch (e) {
-      dev.log("❌ DioException in login: ${e.message}");
-      return {
-        "success": false,
-        "message": e.response?.data?["message"] ?? "Network error"
-      };
+      dev.log("❌ DioException: ${e.message}");
+
+      final data = e.response?.data;
+
+      if (data != null) {
+        if (data["STATUS"] != null) {
+          return {
+            "success": data["STATUS"][0]["status"] == "S",
+            "message": data["STATUS"][0]["message"],
+          };
+        }
+        if (data["RESULT"] != null) {
+          return {
+            "success": data["RESULT"][0]["status"] == "S",
+            "message": data["RESULT"][0]["message"],
+          };
+        }
+      }
+
+      return {"success": false, "message": "Network error"};
     } catch (e) {
-      dev.log("⚠️ Unexpected error in login: $e");
+      dev.log("⚠️ Unexpected error: $e");
       return {"success": false, "message": "Exception: $e"};
     }
   }
 }
+
