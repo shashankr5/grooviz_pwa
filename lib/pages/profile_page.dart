@@ -1,9 +1,9 @@
-import 'package:flutter/material.dart';
-import 'login_page.dart';
-import '../services/logout_service.dart';
-import '../services/profile_service.dart';
-import '../utils/user_session_helper.dart';
 import 'dart:convert';
+import 'package:flutter/material.dart';
+
+import '../services/profile_service.dart';
+import '../services/logout_service.dart';
+import 'login_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -16,13 +16,13 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isPressed = false;
   bool _isLoading = true;
 
-  // Profile fields returned from API
+  // Profile fields
   String name = "";
   String designation = "";
   String email = "";
   String phone = "";
-  int userId = 0;
   List<String> departments = [];
+  int userId = 0;
 
   @override
   void initState() {
@@ -43,64 +43,82 @@ class _ProfilePageState extends State<ProfilePage> {
           backgroundColor: Colors.redAccent,
         ),
       );
+
       setState(() => _isLoading = false);
       return;
     }
 
     final profile = result["profile"];
 
+    // Decode departments (string → list)
+    List<String> deptList = [];
+    try {
+      final raw = profile["departments"];
+      if (raw is String) {
+        deptList = List<String>.from(jsonDecode(raw));
+      } else if (raw is List) {
+        deptList = List<String>.from(raw);
+      }
+    } catch (_) {}
+
     setState(() {
       userId = profile["user_id"] ?? 0;
-      name = profile["name"] ?? "Unknown";
-      designation = profile["designation"] ?? "Unknown";
+      name = profile["name"] ?? "";
+      designation = profile["designation"] ?? "";
       email = profile["email"] ?? "";
       phone = profile["phone_number"] ?? "";
-
-      // departments may be a JSON string → decode
-      final depts = profile["departments"];
-      if (depts is String) {
-        departments = List<String>.from(jsonDecode(depts));
-      } else if (depts is List) {
-        departments = List<String>.from(depts);
-      }
-
+      departments = deptList;
       _isLoading = false;
     });
   }
 
-  void _handleLogout(BuildContext context) async {
+  // Logout handler
+  Future<void> _handleLogout(BuildContext context) async {
     setState(() => _isPressed = true);
     await Future.delayed(const Duration(milliseconds: 150));
     setState(() => _isPressed = false);
-    await Future.delayed(const Duration(milliseconds: 150));
 
-    final logoutService = LogoutService();
-    final result = await logoutService.logout();
+    final result = await LogoutService().logout();
 
     if (!mounted) return;
 
     if (!result["success"]) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result["message"]), backgroundColor: Colors.redAccent),
+        SnackBar(
+          content: Text(result["message"]),
+          backgroundColor: Colors.redAccent,
+        ),
       );
       return;
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result["message"]), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(result["message"]),
+        backgroundColor: Colors.green,
+      ),
     );
 
-    await Future.delayed(const Duration(milliseconds: 800));
+    await Future.delayed(const Duration(milliseconds: 600));
 
     if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(
+    Navigator.pushReplacement(
+      context,
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 500),
+        transitionDuration: const Duration(milliseconds: 400),
         pageBuilder: (_, __, ___) => const LoginPage(),
         transitionsBuilder: (_, animation, __, child) =>
             FadeTransition(opacity: animation, child: child),
       ),
+    );
+  }
+
+  Widget _circleIcon(IconData icon, Color iconColor, Color bgColor) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
+      child: Icon(icon, color: iconColor, size: 22),
     );
   }
 
@@ -131,9 +149,7 @@ class _ProfilePageState extends State<ProfilePage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // -------------------------------------------------------
-            // PROFILE CARD
-            // -------------------------------------------------------
+            // ------------------------- PROFILE CARD -------------------------
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -150,7 +166,6 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
-                  // Avatar + Name + Designation
                   Row(
                     children: [
                       CircleAvatar(
@@ -160,13 +175,12 @@ class _ProfilePageState extends State<ProfilePage> {
                           name.isNotEmpty ? name.substring(0, 1).toUpperCase() : "?",
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 22,
+                            fontSize: 20,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                       const SizedBox(width: 14),
-
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -191,52 +205,42 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
 
                   const SizedBox(height: 18),
-                  Divider(color: Colors.grey.shade300, thickness: 1),
+                  Divider(color: Colors.grey.shade300),
                   const SizedBox(height: 18),
 
-                  // Employee Details
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // Employee ID
+                      // Left section: Email + phone
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            "Employee ID",
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
+                          Text("Email", style: TextStyle(color: Colors.grey.shade600)),
                           const SizedBox(height: 4),
-                          Text(
-                            "HS-$userId",
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                          Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
+
+                          const SizedBox(height: 10),
+                          Text("Phone", style: TextStyle(color: Colors.grey.shade600)),
+                          const SizedBox(height: 4),
+                          Text(phone, style: const TextStyle(fontWeight: FontWeight.w600)),
                         ],
                       ),
 
-                      // Department
+                      // Right section: Departments
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            "Department",
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
+                          Text("Departments", style: TextStyle(color: Colors.grey.shade600)),
                           const SizedBox(height: 4),
-                          Text(
-                            departments.isNotEmpty ? departments.first : "N/A",
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                          ...departments.map(
+                            (d) => Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Text(
+                                d,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                             ),
                           ),
                         ],
@@ -249,7 +253,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 20),
 
-            // SETTINGS CARD
+            // ------------------------- SETTINGS CARD -------------------------
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -265,44 +269,24 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
-                  // Notifications
                   ListTile(
-                    leading: _circleIcon(
-                      Icons.notifications_none,
-                      Colors.amber.shade800,
-                      Colors.amber.shade100,
-                    ),
-                    title: const Text(
-                      "Notifications",
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: const Text(
-                      "Manage notification preferences",
-                      style: TextStyle(fontSize: 13, color: Colors.grey),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                    leading: _circleIcon(Icons.notifications_none, Colors.amber.shade800,
+                        Colors.amber.shade100),
+                    title: const Text("Notifications",
+                        style:
+                            TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: const Text("Manage notification preferences"),
+                    trailing: const Icon(Icons.chevron_right),
                   ),
-
-                  Divider(height: 1, color: Colors.grey.shade300),
-
-                  // Privacy Row
+                  Divider(color: Colors.grey.shade300),
                   ListTile(
                     leading: _circleIcon(
-                      Icons.security,
-                      Colors.grey.shade800,
-                      Colors.grey.shade200,
-                    ),
-                    title: const Text(
-                      "Privacy",
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: const Text(
-                      "Security and privacy settings",
-                      style: TextStyle(fontSize: 13, color: Colors.grey),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                        Icons.security, Colors.grey.shade800, Colors.grey.shade200),
+                    title: const Text("Privacy",
+                        style:
+                            TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: const Text("Security and privacy settings"),
+                    trailing: const Icon(Icons.chevron_right),
                   ),
                 ],
               ),
@@ -310,7 +294,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 30),
 
-            // LOGOUT BUTTON
+            // ------------------------- LOGOUT BUTTON -------------------------
             GestureDetector(
               onTap: () => _handleLogout(context),
               onTapDown: (_) => setState(() => _isPressed = true),
@@ -323,19 +307,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
                   color: _isPressed ? Colors.red.shade700 : Colors.white,
-                  border: Border.all(
-                    color: Colors.red.shade300,
-                    width: 1.5,
-                  ),
-                  boxShadow: _isPressed
-                      ? [
-                          BoxShadow(
-                            color: Colors.red.withOpacity(0.2),
-                            blurRadius: 6,
-                            offset: const Offset(0, 3),
-                          )
-                        ]
-                      : [],
+                  border: Border.all(color: Colors.red.shade300, width: 1.5),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -360,14 +332,6 @@ class _ProfilePageState extends State<ProfilePage> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _circleIcon(IconData icon, Color iconColor, Color bgColor) {
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
-      child: Icon(icon, color: iconColor, size: 22),
     );
   }
 }
