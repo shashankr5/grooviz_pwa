@@ -1,22 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'login_page.dart';
+
+import 'pages/login_page.dart';
+import 'pages/main_navigation.dart';
+
 import 'services/fcm_service.dart';
+import 'utils/user_session_helper.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 🔥 1. Initialize Firebase
   await Firebase.initializeApp();
-
-  // 🔥 2. Initialize FCM and generate/save token
   await FCMService.initialize();
 
-  runApp(const MyApp());
+  // ✅ Check if user is logged in
+  final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
+
+  runApp(MyApp(isLoggedIn: isLoggedIn));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool isLoggedIn;
+
+  const MyApp({super.key, required this.isLoggedIn});
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +33,9 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const LoginPage(),
+
+      // 👇 This decides startup screen
+      home: isLoggedIn ? const MainNavigation() : const LoginPage(),
     );
   }
 }

@@ -15,7 +15,7 @@ class LogoutService {
             baseUrl: ApiConstants.baseUrl,
             headers: {
               'Content-Type': 'application/json',
-              'x-api-key': 'sa9F4GyTT45OImNkKjaHu6bsJbk8UWmZfKdzmeoc',
+              'x-api-key': ApiConstants.apiKey,
             },
             validateStatus: (status) => status != null && status < 500,
           ),          
