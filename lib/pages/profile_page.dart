@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'login_page.dart';
 import '../services/logout_service.dart';
+import '../services/profile_service.dart';
 import '../utils/user_session_helper.dart';
+import 'dart:convert';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -10,8 +12,61 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {  
+class _ProfilePageState extends State<ProfilePage> {
   bool _isPressed = false;
+  bool _isLoading = true;
+
+  // Profile fields returned from API
+  String name = "";
+  String designation = "";
+  String email = "";
+  String phone = "";
+  int userId = 0;
+  List<String> departments = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final service = ProfileService();
+    final result = await service.getProfile();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result["message"]),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    final profile = result["profile"];
+
+    setState(() {
+      userId = profile["user_id"] ?? 0;
+      name = profile["name"] ?? "Unknown";
+      designation = profile["designation"] ?? "Unknown";
+      email = profile["email"] ?? "";
+      phone = profile["phone_number"] ?? "";
+
+      // departments may be a JSON string → decode
+      final depts = profile["departments"];
+      if (depts is String) {
+        departments = List<String>.from(jsonDecode(depts));
+      } else if (depts is List) {
+        departments = List<String>.from(depts);
+      }
+
+      _isLoading = false;
+    });
+  }
 
   void _handleLogout(BuildContext context) async {
     setState(() => _isPressed = true);
@@ -26,41 +81,39 @@ class _ProfilePageState extends State<ProfilePage> {
 
     if (!result["success"]) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: Colors.redAccent,
-        ),
+        SnackBar(content: Text(result["message"]), backgroundColor: Colors.redAccent),
       );
       return;
     }
 
-    // Successful logout
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(result["message"]),  // dynamic message
-        backgroundColor: Colors.green,
-      ),
+      SnackBar(content: Text(result["message"]), backgroundColor: Colors.green),
     );
 
-    // Optional delay so logs appear BEFORE screen change
     await Future.delayed(const Duration(milliseconds: 800));
 
     if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(PageRouteBuilder(
-      transitionDuration: const Duration(milliseconds: 500),
-      pageBuilder: (_, __, ___) => const LoginPage(),
-      transitionsBuilder: (_, animation, __, child) {
-        return FadeTransition(opacity: animation, child: child);
-      },
-    ));
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 500),
+        pageBuilder: (_, __, ___) => const LoginPage(),
+        transitionsBuilder: (_, animation, __, child) =>
+            FadeTransition(opacity: animation, child: child),
+      ),
+    );
   }
-
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
-      backgroundColor: const Color(0xfffaf8f5), // light cream background
+      backgroundColor: const Color(0xfffaf8f5),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -78,10 +131,9 @@ class _ProfilePageState extends State<ProfilePage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-
-            /// -----------------------------------------
-            /// PROFILE CARD
-            /// -----------------------------------------
+            // -------------------------------------------------------
+            // PROFILE CARD
+            // -------------------------------------------------------
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -98,37 +150,37 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
-
-                  /// Row with avatar + name + designation
+                  // Avatar + Name + Designation
                   Row(
                     children: [
                       CircleAvatar(
                         radius: 30,
                         backgroundColor: Colors.amber.shade600,
-                        child: const Text(
-                          "JD",
-                          style: TextStyle(
+                        child: Text(
+                          name.isNotEmpty ? name.substring(0, 1).toUpperCase() : "?",
+                          style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 20,
+                            fontSize: 22,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                       const SizedBox(width: 14),
-                      const Column(
+
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            "John Doe",
-                            style: TextStyle(
+                            name,
+                            style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                          SizedBox(height: 4),
+                          const SizedBox(height: 4),
                           Text(
-                            "Maintenance Staff",
-                            style: TextStyle(
+                            designation,
+                            style: const TextStyle(
                               color: Colors.grey,
                               fontSize: 14,
                             ),
@@ -140,13 +192,13 @@ class _ProfilePageState extends State<ProfilePage> {
 
                   const SizedBox(height: 18),
                   Divider(color: Colors.grey.shade300, thickness: 1),
-
                   const SizedBox(height: 18),
 
-                  /// EMPLOYEE DETAILS
+                  // Employee Details
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
+                      // Employee ID
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -158,9 +210,9 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          const Text(
-                            "HS-2024",
-                            style: TextStyle(
+                          Text(
+                            "HS-$userId",
+                            style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -168,6 +220,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         ],
                       ),
 
+                      // Department
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -179,9 +232,9 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          const Text(
-                            "Maintenance",
-                            style: TextStyle(
+                          Text(
+                            departments.isNotEmpty ? departments.first : "N/A",
+                            style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -196,9 +249,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 20),
 
-            /// -----------------------------------------
-            /// NOTIFICATIONS & PRIVACY CARD
-            /// -----------------------------------------
+            // SETTINGS CARD
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -214,24 +265,17 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
-
-                  /// Notifications Row
+                  // Notifications
                   ListTile(
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.shade100,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.notifications_none,
-                        color: Colors.amber.shade800,
-                        size: 22,
-                      ),
+                    leading: _circleIcon(
+                      Icons.notifications_none,
+                      Colors.amber.shade800,
+                      Colors.amber.shade100,
                     ),
                     title: const Text(
                       "Notifications",
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                     ),
                     subtitle: const Text(
                       "Manage notification preferences",
@@ -242,23 +286,17 @@ class _ProfilePageState extends State<ProfilePage> {
 
                   Divider(height: 1, color: Colors.grey.shade300),
 
-                  /// Privacy Row
+                  // Privacy Row
                   ListTile(
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade200,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.security,
-                        color: Colors.grey.shade800,
-                        size: 22,
-                      ),
+                    leading: _circleIcon(
+                      Icons.security,
+                      Colors.grey.shade800,
+                      Colors.grey.shade200,
                     ),
                     title: const Text(
                       "Privacy",
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                     ),
                     subtitle: const Text(
                       "Security and privacy settings",
@@ -272,9 +310,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 30),
 
-            /// -----------------------------------------
-            /// LOGOUT BUTTON WITH TAP ANIMATION
-            /// -----------------------------------------
+            // LOGOUT BUTTON
             GestureDetector(
               onTap: () => _handleLogout(context),
               onTapDown: (_) => setState(() => _isPressed = true),
@@ -324,6 +360,14 @@ class _ProfilePageState extends State<ProfilePage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _circleIcon(IconData icon, Color iconColor, Color bgColor) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
+      child: Icon(icon, color: iconColor, size: 22),
     );
   }
 }

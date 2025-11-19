@@ -6,7 +6,7 @@ class ApiConstants {
   // Endpoints
   static const String login = "$baseUrl/ScreenSync_login_mobile"; 
   static const String logout = "$baseUrl/ScreenSync_logout_mobile";
-
+  static const String profile = "$baseUrl/ScreenSync_get_profile_mobile";
 }
 
 
