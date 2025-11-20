@@ -379,4 +379,81 @@ class HomeService {
         }
     }
 
+    Future<Map<String, dynamic>> closeServiceRequest({
+    required int serviceRequestId,
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+
+      if (userId == null) {
+        return {
+          "success": false,
+          "message": "User not logged in",
+          "data": null,
+        };
+      }
+
+      final payload = {
+        "user_id": userId,
+        "service_request_id": serviceRequestId,
+        "stage": "dev",
+      };
+
+      dev.log("📤 Close Service Request API Call");
+      dev.log("Payload: $payload");
+
+      final response = await _dio.post(
+        ApiConstants.closeServiceRequest, // 🔥 Your API endpoint
+        data: payload,
+      );
+
+      dev.log("📥 Response: ${response.data}");
+
+      if (response.statusCode != 200) {
+        return {
+          "success": false,
+          "message": "Server error: ${response.statusCode}",
+          "data": null,
+        };
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {
+          "success": false,
+          "message": "Invalid server response",
+          "data": null,
+        };
+      }
+
+      final flag = statusList[0]["status"];
+      final msg = statusList[0]["message"];
+
+      if (flag != "S") {
+        return {
+          "success": false,
+          "message": msg ?? "Failed",
+          "data": null,
+        };
+      }
+
+      /// SUCCESS
+      final updated = response.data["RESULT"][0];
+
+      return {
+        "success": true,
+        "message": msg,
+        "data": updated,    // contains service_request_id, timestamp, status, closed
+      };
+    } catch (e) {
+      dev.log("❌ ERROR (closeServiceRequest): $e");
+
+      return {
+        "success": false,
+        "message": "Error: $e",
+        "data": null,
+      };
+    }
+  }
+
 }

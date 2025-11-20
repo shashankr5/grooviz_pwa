@@ -83,7 +83,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
           const SizedBox(height: 16),
 
-          _guestSection(task["guest"] ?? "-", task["guestNote"] ?? "-"),
+          _guestSection(task["guest"] ?? "-", ""),
 
           const SizedBox(height: 16),
 
@@ -125,39 +125,48 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   Widget _guestSection(String name, String note) {
     return _card(
-      Row(
+        Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.person_outlined, color: Colors.amber, size: 26),
-          const SizedBox(width: 12),
-          Expanded(
+            const Icon(Icons.person_outlined, color: Colors.amber, size: 26),
+            const SizedBox(width: 12),
+            Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("Guest Information",
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                const Text(
+                    "Guest Information",
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 6),
-                Text(name,
-                    style:
-                        const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                Text(
+                    name,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                ),
                 const SizedBox(height: 10),
+
+                /// ❗ REMOVE phone number display – keep blank container
                 Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
                     color: Colors.grey.shade200,
                     borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text('"$note"',
-                      style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                    ),
+                    child: const Text(
+                    "",
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                    ),
                 ),
-              ],
+                ],
             ),
-          ),
+            ),
         ],
-      ),
+        ),
     );
-  }
+    }
+
 
   Widget _assignedSection(String name) {
     return _card(
@@ -219,21 +228,46 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         const SizedBox(height: 12),
 
         ElevatedButton.icon(
-          onPressed: () {
-            widget.onClose();
-            Navigator.pop(context);
-          },
-          icon: const Icon(Icons.check_circle_outline),
-          label: const Text("Close Ticket"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.green,
-            foregroundColor: Colors.white,
-            minimumSize: const Size(double.infinity, 50),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
+            onPressed: () async {
+                showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => const Center(child: CircularProgressIndicator()),
+                );
+
+                final result = await HomeService().closeServiceRequest(
+                serviceRequestId: task["raw"]["service_request_id"],
+                );
+
+                Navigator.pop(context); // close loader
+
+                if (!result["success"]) {
+                showCustomSnackBar(context, result["message"]);
+                return;
+                }
+
+                // Update UI locally
+                setState(() {
+                task["status"] = "Closed";
+                task["statusColor"] = Colors.green;
+                });
+
+                showCustomSnackBar(context, "Ticket closed successfully!");
+
+                widget.onClose(); // notify homepage
+                Navigator.pop(context); // close detail page
+            },
+            icon: const Icon(Icons.check_circle_outline),
+            label: const Text("Close Ticket"),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                ),
             ),
-          ),
-        ),
+            ),
       ],
     );
   }
