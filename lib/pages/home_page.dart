@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import 'ticket_details_page.dart';
+import '../utils/user_session_helper.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -11,6 +12,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   String selectedFilter = "All";
+  String userName = "";
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -29,7 +31,17 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _loadUserName();
     _loadTasks();
+  }
+
+  Future<void> _loadUserName() async {
+    final name = await UserSessionHelper.getUserName();
+    if (mounted) {
+      setState(() {
+        userName = name ?? "User";
+      });
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -91,10 +103,12 @@ class _HomePageState extends State<HomePage> {
       elevation: 1,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          Text("Welcome,", style: TextStyle(fontSize: 14, color: Colors.black54)),
-          Text("Shashank 👋",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        children: [
+          const Text("Welcome,", style: TextStyle(fontSize: 14, color: Colors.black54)),
+          Text(
+            "$userName 👋",
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
         ],
       ),
       actions: [
