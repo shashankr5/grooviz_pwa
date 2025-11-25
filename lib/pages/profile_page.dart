@@ -17,18 +17,24 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  // Profile data (populated by API)
+  // Profile data
   String _name = '';
   String _designation = '';
-  String _employeeId = '';
+  String _email = '';
+  String _phone = '';
   List<String> _departments = [];
 
   // === CONFIG: replace these with your real endpoints ===
-  static const String _profileApiUrl = 'https://your-api-url.com/get_profile_mobile';
-  static const String _logoutApiUrl = 'https://your-api-url.com/logout_mobile';
+  static const String _profileApiUrl = ' https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_get_profile_mobile';
+  static const String _logoutApiUrl = 'https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_logout_mobile';
   // =====================================================
 
-  /// Generate initials from full name
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
   String getInitials(String name) {
     final parts = name.trim().split(RegExp(r'\s+'));
     if (parts.isEmpty) return '?';
@@ -40,24 +46,15 @@ class _ProfilePageState extends State<ProfilePage> {
     return (first + last).toUpperCase();
   }
 
-  /// Generate random but consistent color based on name hash
   Color getStableRandomColor(String name) {
     final hash = name.hashCode;
-    // mask & range safe
     final r = (hash & 0xFF0000) >> 16;
     final g = (hash & 0x00FF00) >> 8;
     final b = (hash & 0x0000FF);
-    // ensure values 0-255
     final rr = (r.abs()) % 256;
     final gg = (g.abs()) % 256;
     final bb = (b.abs()) % 256;
     return Color.fromARGB(255, rr, gg, bb).withOpacity(0.9);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _loadProfile();
   }
 
   Future<void> _loadProfile() async {
@@ -78,12 +75,10 @@ class _ProfilePageState extends State<ProfilePage> {
         return;
       }
 
-      final payload = {'user_id': userId};
-
       final response = await http.post(
         Uri.parse(_profileApiUrl),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
+        body: jsonEncode({'user_id': userId}),
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
@@ -94,34 +89,76 @@ class _ProfilePageState extends State<ProfilePage> {
         return;
       }
 
-      final body = jsonDecode(response.body);
+      final jsonBody = jsonDecode(response.body);
 
-      // Expecting backend returns { "status":"S","message":"...","data":{...} }
-      if (body is Map && body['status'] == 'S' && body['data'] != null) {
-        final data = body['data'];
-
-        setState(() {
-          _name = (data['name'] ?? '') as String;
-          _designation = (data['designation'] ?? '') as String;
-          // backend might use employee_id or employeeId; handle both
-          _employeeId = (data['employeeId'] ?? data['employee_id'] ?? '') as String;
-          final deptsRaw = data['departments'];
-          if (deptsRaw is List) {
-            _departments = deptsRaw.map((e) => e.toString()).toList();
-          } else if (deptsRaw is String) {
-            _departments = [deptsRaw];
-          } else {
-            _departments = [];
-          }
-          _isLoading = false;
-          _errorMessage = null;
-        });
+      // Validate STATUS
+      if (jsonBody is Map &&
+          jsonBody['STATUS'] is List &&
+          (jsonBody['STATUS'] as List).isNotEmpty &&
+          jsonBody['STATUS'][0] is Map &&
+          jsonBody['STATUS'][0]['status'] == 'S') {
+        // OK
       } else {
+        String msg = 'Failed to fetch profile';
+        try {
+          if (jsonBody is Map &&
+              jsonBody['STATUS'] is List &&
+              (jsonBody['STATUS'] as List).isNotEmpty &&
+              jsonBody['STATUS'][0] is Map &&
+              jsonBody['STATUS'][0]['message'] != null) {
+            msg = jsonBody['STATUS'][0]['message'];
+          }
+        } catch (_) {}
         setState(() {
-          _errorMessage = (body['message'] ?? 'Failed to fetch profile') as String;
+          _errorMessage = msg;
           _isLoading = false;
         });
+        return;
       }
+
+      // Extract RESULT array and first element safely
+      if (jsonBody is Map &&
+          jsonBody['RESULT'] is List &&
+          (jsonBody['RESULT'] as List).isNotEmpty) {
+        final dynamic rawData = (jsonBody['RESULT'] as List).first;
+        if (rawData is Map) {
+          final Map<String, dynamic> data = Map<String, dynamic>.from(rawData);
+
+          // Parse departments — backend returns a JSON-encoded string, e.g. "[\"FRONT DESK\"]"
+          List<String> deptList = [];
+          final deptRaw = data['departments'];
+          if (deptRaw is String) {
+            try {
+              final parsed = jsonDecode(deptRaw);
+              if (parsed is List) {
+                deptList = parsed.map((e) => e.toString()).toList();
+              }
+            } catch (_) {
+              // fallback: try splitting by comma (unlikely), else keep empty
+              deptList = [];
+            }
+          } else if (deptRaw is List) {
+            deptList = deptRaw.map((e) => e.toString()).toList();
+          }
+
+          setState(() {
+            _name = (data['name'] ?? '') as String;
+            _designation = (data['designation'] ?? '') as String;
+            _email = (data['email'] ?? '') as String;
+            _phone = (data['phone_number'] ?? data['phone'] ?? '') as String;
+            _departments = deptList;
+            _isLoading = false;
+            _errorMessage = null;
+          });
+          return;
+        }
+      }
+
+      // If we reached here, RESULT was missing or malformed
+      setState(() {
+        _errorMessage = 'Invalid profile data';
+        _isLoading = false;
+      });
     } catch (e) {
       setState(() {
         _errorMessage = 'Network error: $e';
@@ -130,7 +167,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  /// LOGOUT METHOD (Connected to API + DB Procedure)
   void _handleLogout(BuildContext context) async {
     setState(() => _isPressed = true);
     await Future.delayed(const Duration(milliseconds: 150));
@@ -173,7 +209,7 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       final body = jsonDecode(response.body);
-      // Expect: { "status":"S"|"F", "message":"..." }
+
       final status = body is Map ? body['status'] as String? : null;
       final message = body is Map ? body['message'] as String? : null;
 
@@ -260,16 +296,17 @@ class _ProfilePageState extends State<ProfilePage> {
           const SizedBox(height: 18),
           Divider(color: Colors.grey.shade300, thickness: 1),
           const SizedBox(height: 18),
-          // Employee details
+          // Contact & Departments
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // LEFT: Email & Phone (stacked)
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Employee ID',
+                    'Email',
                     style: TextStyle(
                       fontSize: 13,
                       color: Colors.grey.shade600,
@@ -277,7 +314,23 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _employeeId.isNotEmpty ? _employeeId : '—',
+                    _email.isNotEmpty ? _email : '—',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Phone',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _phone.isNotEmpty ? _phone : '—',
                     style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
@@ -285,6 +338,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 ],
               ),
+              // RIGHT: Departments
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -419,23 +473,12 @@ class _ProfilePageState extends State<ProfilePage> {
             color: Colors.red.shade300,
             width: 1.5,
           ),
-          boxShadow: _isPressed
-              ? [
-                  BoxShadow(
-                    color: Colors.red.withOpacity(0.2),
-                    blurRadius: 6,
-                    offset: const Offset(0, 3),
-                  )
-                ]
-              : [],
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.logout,
-              color: _isPressed ? Colors.white : Colors.red,
-            ),
+            Icon(Icons.logout,
+                color: _isPressed ? Colors.white : Colors.red),
             const SizedBox(width: 8),
             Text(
               'Log Out',
