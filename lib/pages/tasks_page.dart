@@ -1,110 +1,129 @@
 import 'package:flutter/material.dart';
+import '../services/task_service.dart';
 
-class TasksPage extends StatelessWidget {
+class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
+
+  @override
+  State<TasksPage> createState() => _TasksPageState();
+}
+
+class _TasksPageState extends State<TasksPage> {
+  final TaskService _taskService = TaskService();
+
+  bool _isLoading = true;
+  List<dynamic> _recentTasks = [];
+
+  int totalTasks = 0;
+  int completedTasks = 0;
+  int inProgressTasks = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTasks();
+  }
+
+  Future<void> _loadTasks() async {
+    final res = await _taskService.fetchTaskSummary();
+
+    if (!mounted) return;
+
+    if (res["success"]) {
+      List<dynamic> tasks = res["tasks"];
+
+      setState(() {
+        _recentTasks = tasks;
+
+        totalTasks = tasks.length;
+        completedTasks = tasks.where((t) => t["status"] == "Completed").length;
+        inProgressTasks = tasks.where((t) => t["status"] == "In Progress").length;
+
+        _isLoading = false;
+      });
+    } else {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(res["message"] ?? "Error")));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey.shade100,
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-
-              /// ---------------------------
-              /// TITLE
-              /// ---------------------------
               const Text(
                 "My Tasks",
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
-
               const Text(
                 "Your performance overview",
                 style: TextStyle(fontSize: 15, color: Colors.grey),
               ),
               const SizedBox(height: 20),
 
-              /// ---------------------------
-              /// 3 INFO BOXES
-              /// ---------------------------
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   _buildStatBox(
                     icon: Icons.access_time,
-                    count: "12",
+                    count: "$totalTasks",
                     label: "Total Tasks",
                     iconColor: Colors.amber.shade600,
                   ),
                   _buildStatBox(
                     icon: Icons.check_circle,
-                    count: "5",
+                    count: "$completedTasks",
                     label: "Completed Today",
                     iconColor: Colors.green.shade600,
                   ),
                   _buildStatBox(
-                    icon: Icons.error,
-                    count: "3",
-                    label: "High Priority",
-                    iconColor: Colors.red.shade600,
+                    icon: Icons.timelapse_outlined,
+                    count: "$inProgressTasks",
+                    label: "In Progress",
+                    iconColor: Colors.orange.shade600,
                   ),
                 ],
               ),
 
               const SizedBox(height: 28),
 
-              /// ---------------------------
-              /// RECENT ACTIVITY TITLE
-              /// ---------------------------
               const Text(
                 "Recent Activity",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 16),
 
-              /// ---------------------------
-              /// ACTIVITY LIST
-              /// ---------------------------
-              _buildActivityCard(
-                room: "302",
-                title: "Resolved leaking faucet",
-                time: "2h ago",
-                status: "Done",
-                statusColor: Colors.green,
-              ),
+              if (_recentTasks.isEmpty)
+                const Text("No recent tasks found",
+                    style: TextStyle(color: Colors.grey))
+              else
+                ..._recentTasks.map((task) {
+                  String status = task["status"] ?? "";
+                  Color statusColor = status == "Completed"
+                      ? Colors.green
+                      : Colors.orange;
 
-              const SizedBox(height: 12),
-
-              _buildActivityCard(
-                room: "405",
-                title: "Working on AC issue",
-                time: "30m ago",
-                status: "Active",
-                statusColor: Colors.orange,
-              ),
-
-              const SizedBox(height: 12),
-
-              _buildActivityCard(
-                room: "210",
-                title: "Delivered extra towels",
-                time: "1h ago",
-                status: "Done",
-                statusColor: Colors.green,
-              ),
-
-              const SizedBox(height: 30),
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _buildActivityCard(
+                      room: task["roomNumber"] ?? "-",
+                      title: task["question"] ?? "",
+                      time: task["timeAgo"] ?? "",
+                      status: status,
+                      statusColor: statusColor,
+                    ),
+                  );
+                }),
             ],
           ),
         ),
@@ -112,9 +131,6 @@ class TasksPage extends StatelessWidget {
     );
   }
 
-  /// ------------------------------------
-  /// BOX BUILDER (3 stats)
-  /// ------------------------------------
   Widget _buildStatBox({
     required IconData icon,
     required String count,
@@ -139,30 +155,18 @@ class TasksPage extends StatelessWidget {
         children: [
           Icon(icon, size: 28, color: iconColor),
           const SizedBox(height: 8),
-          Text(
-            count,
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          Text(count,
+              style:
+              const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 12.5,
-              color: Colors.grey.shade800,
-            ),
-          ),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade800)),
         ],
       ),
     );
   }
 
-  /// ------------------------------------
-  /// ACTIVITY CARD BUILDER
-  /// ------------------------------------
   Widget _buildActivityCard({
     required String room,
     required String title,
@@ -187,65 +191,41 @@ class TasksPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              /// ROOM TAG
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: Colors.amber.shade100,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  room,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.orange.shade800,
-                  ),
-                ),
+                child: Text(room,
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.orange.shade800)),
               ),
-
-              /// STATUS TAG
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 decoration: BoxDecoration(
                   color: statusColor.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: Text(
-                  status,
-                  style: TextStyle(
-                    color: statusColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: Text(status,
+                    style: TextStyle(
+                        color: statusColor, fontWeight: FontWeight.w600)),
               ),
             ],
           ),
-
           const SizedBox(height: 12),
-
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
-
-          Text(
-            time,
-            style: const TextStyle(
-              fontSize: 13,
-              color: Colors.grey,
-            ),
-          ),
+          Text(time,
+              style: const TextStyle(fontSize: 13, color: Colors.grey)),
         ],
       ),
     );

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'main_navigation.dart';
 import '../services/login_service.dart';
 import '../utils/user_session_helper.dart';
+import '../services/profile_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -41,6 +42,7 @@ class _LoginPageState extends State<LoginPage> {
 
     /// ❌ Login Failed
     if (!response['success']) {
+      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(response['message'] ?? "Login failed"),
@@ -49,6 +51,28 @@ class _LoginPageState extends State<LoginPage> {
       );
       return;
     }
+
+    await UserSessionHelper.saveUserId(response["user_id"]);
+    await UserSessionHelper.saveIsLoggedIn(true);
+
+    // FETCH PROFILE BEFORE NAVIGATING
+    final profileRes = await ProfileService().getProfile();
+
+    if (!mounted) return;
+
+    if (!profileRes["success"]) {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Profile loading failed: ${profileRes["message"]}"),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    // 🌟 SUCCESS → Navigate only after enterprise_id stored
+    setState(() => _isLoading = false);
 
     /// ✅ Login Success → Move to MainNavigation
     Navigator.pushReplacement(

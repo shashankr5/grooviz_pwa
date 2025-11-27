@@ -111,6 +111,9 @@ class ProfileService {
         if (profile["phone_number"] != null && profile["phone_number"].toString().isNotEmpty) {
           await UserSessionHelper.savePhone(profile["phone_number"].toString());
         }
+        if (profile["enterprise_id"] != null) {
+          await UserSessionHelper.saveEnterpriseId(profile["enterprise_id"]);
+        }
       } catch (e) {
         dev.log("⚠️ Error saving profile to session: $e");
       }
