@@ -456,4 +456,80 @@ class HomeService {
     }
   }
 
+  Future<Map<String, dynamic>> acceptTask({
+    required int taskId,
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+
+      if (userId == null) {
+        return {
+          "success": false,
+          "message": "User not logged in",
+          "updatedTask": null,
+        };
+      }
+
+      final payload = {
+        "user_id": userId,
+        "task_id": taskId,
+        "stage": "dev",
+      };
+
+      dev.log("📤 Accept Task API Call");
+      dev.log("Payload: $payload");
+
+      final response = await _dio.post(
+        ApiConstants.acceptTask, // 🔥 ensure constant exists
+        data: payload,
+      );
+
+      dev.log("📥 Response: ${response.data}");
+
+      if (response.statusCode != 200) {
+        return {
+          "success": false,
+          "message": "Server error: ${response.statusCode}",
+          "updatedTask": null,
+        };
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {
+          "success": false,
+          "message": "Invalid server response",
+          "updatedTask": null,
+        };
+      }
+
+      final flag = statusList[0]["status"];
+      final msg = statusList[0]["message"];
+
+      if (flag != "S") {
+        return {
+          "success": false,
+          "message": msg ?? "Failed",
+          "updatedTask": null,
+        };
+      }
+
+      // 🎉 SUCCESS — fetch updated task object
+      final updatedTask = response.data["RESULT"]?[0];
+
+      return {
+        "success": true,
+        "message": msg,
+        "updatedTask": updatedTask,
+      };
+    } catch (e) {
+      dev.log("❌ ERROR (acceptTask): $e");
+      return {
+        "success": false,
+        "message": "Error: $e",
+        "updatedTask": null,
+      };
+    }
+  }
+
 }

@@ -1,10 +1,7 @@
-// home_page.dart — cleaned and separated version
-
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import '../services/home_service.dart';
 import 'ticket_details_page.dart';
+import '../utils/user_session_helper.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -15,126 +12,176 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   String selectedFilter = "All";
-  List<Map<String, dynamic>> tasks = [];
-  List<Map<String, String>> staffList = [];
+  String userName = "";
 
-  bool isLoading = true;
-  int newTaskCount = 0;
-  String userName = "User";
-  Color userAvatarColor = Colors.deepPurple; // constant random color
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  List<Map<String, dynamic>> tasks = [];
+
+  final List<Map<String, String>> staffList = [
+    {"name": "John Doe", "department": "Maintenance"},
+    {"name": "Aisha Sharma", "department": "Housekeeping"},
+    {"name": "Rahul Verma", "department": "Electrical"},
+    {"name": "Priya Nair", "department": "Plumbing"},
+    {"name": "Rahul Raj", "department": "Security"},
+    {"name": "Karun Nair", "department": "Admin"},
+  ];
 
   @override
   void initState() {
     super.initState();
-    _generateAvatarColor();
-    fetchData();
+    _loadUserName();
+    _loadTasks();
   }
 
-  void _generateAvatarColor() {
-    final List<Color> colors = [
-      Colors.deepPurple,
-      Colors.blue,
-      Colors.green,
-      Colors.teal,
-      Colors.orange,
-      Colors.indigo,
-    ];
-    userAvatarColor = colors[DateTime.now().millisecondsSinceEpoch % colors.length];
-  }
-
-  Future<void> fetchData() async {
-    await Future.wait([fetchTasks(), fetchStaff()]);
-    setState(() => isLoading = false);
-  }
-
-  Future<void> fetchTasks() async {
-    try {
-      final response = await http.get(Uri.parse(
-        "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_get_tasks_mobile",
-      ));
-
-      if (response.statusCode == 200) {
-        final List data = jsonDecode(response.body);
-        setState(() {
-          tasks = data.map((task) => Map<String, dynamic>.from(task)).toList();
-          updateNewTaskCount();
-        });
-      }
-    } catch (e) {
-      debugPrint("Error fetching tasks: $e");
+  Color getStatusColor(String status) {
+    switch (status) {
+      case "Open":
+        return Colors.blue;
+      case "In Progress":
+        return Colors.orange;
+      case "Closed":
+        return Colors.green;
+      default:
+        return Colors.grey;
     }
   }
 
-  Future<void> fetchStaff() async {
-    try {
-      final response = await http.get(Uri.parse(
-        "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_get_staff_list_mobile",
-      ));
-
-      if (response.statusCode == 200) {
-        final List data = jsonDecode(response.body);
-        setState(() {
-          staffList = data.map((staff) => Map<String, String>.from(staff)).toList();
-          if (staffList.isNotEmpty) userName = staffList[0]["name"] ?? "User";
-        });
-      }
-    } catch (e) {
-      debugPrint("Error fetching staff: $e");
+  Future<void> _loadUserName() async {
+    final name = await UserSessionHelper.getUserName();
+    if (mounted) {
+      setState(() {
+        userName = name ?? "User";
+      });
     }
   }
 
-  void updateNewTaskCount() {
-    newTaskCount = tasks.where((t) => (t["status"] ?? "") == "Open").length;
+  // --------------------------------------------------------------------------
+  // PARSE TIMESTAMP yyyy-MM-dd HH:mm:ss
+  // --------------------------------------------------------------------------
+  DateTime _parseTimestamp(String ts) {
+    try {
+      final parts = ts.split(" ");
+      final date = parts[0];
+      final time = parts[1];
+
+      final d = date.split("-");
+      final t = time.split(":");
+
+      return DateTime(
+        int.parse(d[0]),
+        int.parse(d[1]),
+        int.parse(d[2]),
+        int.parse(t[0]),
+        int.parse(t[1]),
+        int.parse(t[2]),
+      );
+    } catch (e) {
+      return DateTime.now();
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // LOAD TASKS FROM API — with sorting RECENT FIRST
+  // --------------------------------------------------------------------------
+  Future<void> _loadTasks() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final result = await HomeService().getTasks();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      setState(() {
+        _errorMessage = result["message"];
+        _isLoading = false;
+      });
+      return;
+    }
+
+    List<Map<String, dynamic>> raw = List<Map<String, dynamic>>.from(result["tasks"]);
+
+    // -------------------- SORT RECENT FIRST --------------------
+    raw.sort((a, b) {
+      final da = _parseTimestamp(a["raw"]["created_at"]);
+      final db = _parseTimestamp(b["raw"]["created_at"]);
+      return db.compareTo(da); // newest FIRST
+    });
+
+    setState(() {
+      tasks = raw.map((t) {
+        return {
+          ...t,
+          "isAccepted": t["status"] == "In Progress",
+          "statusColor": getStatusColor(t["status"]),
+        };
+      }).toList();
+      _isLoading = false;
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // ACCEPT TASK
+  // --------------------------------------------------------------------------
+  Future<void> _acceptTask(Map<String, dynamic> task) async {
+    final taskId = task["raw"]?["service_request_id"];
+    if (taskId == null) return;
+
+    setState(() => _isLoading = true);
+
+    final result = await HomeService().acceptTask(taskId: taskId);
+
+    setState(() => _isLoading = false);
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result["message"] ?? "Failed to accept task")),
+      );
+      return;
+    }
+
+    setState(() {
+      final updated = result["updatedTask"];
+      task["raw"] = updated;
+      task["status"] = updated["status"];
+      task["statusColor"] = getStatusColor(updated["status"]);
+      task["isAccepted"] = true;
+      task["assignedTo"] = userName;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Task Accepted 🎉")),
+    );
   }
 
   List<Map<String, dynamic>> get filteredTasks {
     if (selectedFilter == "All") return tasks;
-    return tasks.where((t) => (t["status"] ?? "") == selectedFilter).toList();
+    return tasks.where((t) => t["status"] == selectedFilter).toList();
   }
 
   List<Map<String, dynamic>> get activeTasks {
-    return tasks.where((t) => (t["status"] ?? "") != "Closed").toList();
+    return tasks.where((t) => t["status"] != "Closed").toList();
   }
 
-  String? _getAssigned(Map<String, dynamic> task) {
-    if (task["assigned_to"] != null && task["assigned_to"].toString().isNotEmpty) {
-      return task["assigned_to"].toString();
-    }
-
-    if (task["assignedTo"] != null && task["assignedTo"].toString().isNotEmpty) {
-      return task["assignedTo"].toString();
-    }
-
-    return null;
-  }
-
-  void _setAssigned(Map<String, dynamic> task, dynamic value) {
-    task["assigned_to"] = value;
-    task["assignedTo"] = value;
-  }
-
+  // MAIN UI
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: _buildAppBar(),
-      body: isLoading
+      body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 15),
-                _buildFilterTabs(),
-                const SizedBox(height: 20),
-                _buildTaskHeader(),
-                const SizedBox(height: 15),
-                Expanded(child: _buildTaskList()),
-              ],
-            ),
+          : _errorMessage != null
+              ? _buildError()
+              : _buildContent(),
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  AppBar _buildAppBar() {
     return AppBar(
       automaticallyImplyLeading: false,
       backgroundColor: Colors.white,
@@ -150,57 +197,123 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       actions: [
-        Stack(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.notifications_outlined, size: 28),
-              onPressed: () {},
-            ),
-            if (newTaskCount > 0)
-              Positioned(
-                right: 8,
-                top: 8,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                ),
-              ),
-          ],
+        IconButton(
+          icon: const Icon(Icons.notifications_outlined, size: 28),
+          onPressed: () {},
         ),
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: CircleAvatar(
-            backgroundColor: userAvatarColor,
+            backgroundColor: Colors.deepPurple,
             child: Text(
               userName.isNotEmpty ? userName[0].toUpperCase() : "?",
-              style: const TextStyle(color: Colors.white),
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
+          ),
+        )
+      ],
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(_errorMessage ?? "Something went wrong"),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: _loadTasks,
+            child: const Text("Retry"),
+          )
+        ],
+      ),
+    );
+  }
+
+  // MAIN CONTENT UI
+  Widget _buildContent() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 15),
+        _buildFilters(),
+        const SizedBox(height: 20),
+
+        // HEADER
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Tasks",
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text("${activeTasks.length} active tickets",
+                  style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 15),
+
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: filteredTasks.length,
+            itemBuilder: (context, index) {
+              final task = filteredTasks[index];
+              return GestureDetector(
+                onTap: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => TicketDetailPage(
+                        task: task,
+                        staffList: staffList,
+                        onClose: () {
+                          setState(() {
+                            task["status"] = "Closed";
+                            task["statusColor"] = Colors.green;
+                          });
+                        },
+                        onReassign: (updatedTask) async {
+                          await _loadTasks();
+                        },
+                      ),
+                    ),
+                  );
+                  setState(() {});
+                },
+                child: _buildTaskCard(task),
+              );
+            },
           ),
         ),
       ],
     );
   }
 
-  Widget _buildFilterTabs() {
+  // FILTER TABS
+  Widget _buildFilters() {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
-          _filterChip("All"),
-          _filterChip("Open"),
-          _filterChip("In Progress"),
-          _filterChip("Closed"),
+          _buildFilterChip("All"),
+          _buildFilterChip("Open"),
+          _buildFilterChip("In Progress"),
+          _buildFilterChip("Closed"),
         ],
       ),
     );
   }
 
-  Widget _filterChip(String label) {
-    final selected = selectedFilter == label;
+  Widget _buildFilterChip(String text) {
+    bool selected = selectedFilter == text;
     return GestureDetector(
-      onTap: () => setState(() => selectedFilter = label),
+      onTap: () => setState(() => selectedFilter = text),
       child: Container(
         margin: const EdgeInsets.only(right: 12),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
@@ -210,69 +323,18 @@ class _HomePageState extends State<HomePage> {
           border: Border.all(color: Colors.grey.shade300),
         ),
         child: Text(
-          label,
+          text,
           style: TextStyle(
-            fontSize: 14,
-            color: selected ? Colors.white : Colors.black87,
-            fontWeight: FontWeight.w600,
-          ),
+              fontSize: 14,
+              color: selected ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w600),
         ),
       ),
     );
   }
 
-  Widget _buildTaskHeader() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("Tasks", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-          Text(
-            "${activeTasks.length} active tickets",
-            style: TextStyle(fontSize: 14, color: Colors.grey[700]),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTaskList() {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: filteredTasks.length,
-      itemBuilder: (context, index) {
-        final task = filteredTasks[index];
-        return GestureDetector(
-          onTap: () async {
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => TicketDetailPage(
-                  task: task,
-                  staffList: staffList,
-                  onClose: () {
-                    setState(() {
-                      task["status"] = "Closed";
-                      updateNewTaskCount();
-                    });
-                  },
-                ),
-              ),
-            );
-            setState(() {});
-          },
-          child: _taskCard(task),
-        );
-      },
-    );
-  }
-
-  Widget _taskCard(Map<String, dynamic> task) {
-    final assigned = _getAssigned(task);
-    final isAssigned = assigned != null;
-    final status = (task["status"] ?? "").toString();
-
+  // TASK CARD UI
+  Widget _buildTaskCard(Map<String, dynamic> task) {
     return Container(
       margin: const EdgeInsets.only(bottom: 18),
       padding: const EdgeInsets.all(18),
@@ -290,49 +352,57 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Top Row
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _pill("Room ${task["room"]}", Colors.amber.shade100),
-              _pill(status, Colors.blue.withOpacity(0.15)),
+              _pill(task["status"], task["statusColor"].withOpacity(0.2),
+                  textColor: task["statusColor"]),
             ],
           ),
-          const SizedBox(height: 10),
+
+          const SizedBox(height: 12),
+
+          // TITLE ONLY
           Text(
-            task["title"] ?? "",
+            task["title"],
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
-          const SizedBox(height: 5),
-          Text(
-            task["subtitle"] ?? "",
-            style: TextStyle(color: Colors.grey[700]),
-          ),
-          const SizedBox(height: 14),
+
+          const SizedBox(height: 18),
+
+          // Buttons Row
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Expanded(
-                child: Text(
-                  "Assigned To: ${assigned ?? "Not Assigned"}",
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
+              (task["status"] == "Open")
+                  ? ElevatedButton(
+                      onPressed: () => _acceptTask(task),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                      ),
+                      child: const Text("Accept"),
+                    )
+                  : Row(
+                      children: const [
+                        Icon(Icons.check_circle, size: 18, color: Colors.green),
+                        SizedBox(width: 6),
+                        Text(
+                          "Accepted",
+                          style: TextStyle(color: Colors.green, fontSize: 14),
+                        ),
+                      ],
+                    ),
+              Text(
+                task["time"] ?? "",
+                style: TextStyle(color: Colors.grey[600], fontSize: 13),
               ),
-              if (!isAssigned)
-                _AcceptButton(
-                  taskId: task["service_request_id"] ?? task["id"],
-                  onAccepted: (userId) {
-                    setState(() {
-                      _setAssigned(task, userId);
-                      task["status"] = "In Progress";
-                      updateNewTaskCount();
-                    });
-                  },
-                )
-              else
-                Text(
-                  task["time"] ?? "",
-                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                ),
             ],
           ),
         ],
@@ -340,84 +410,15 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _pill(String text, Color bg) {
+  Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-      child: Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
-    );
-  }
-  
-  TicketDetailPage({required Map<String, dynamic> task, required List<Map<String, String>> staffList, required Null Function() onClose}) {}
-}
-
-class _AcceptButton extends StatefulWidget {
-  final dynamic taskId;
-  final void Function(String assignedId) onAccepted;
-
-  const _AcceptButton({required this.taskId, required this.onAccepted});
-
-  @override
-  State<_AcceptButton> createState() => _AcceptButtonState();
-}
-
-class _AcceptButtonState extends State<_AcceptButton> {
-  bool loading = false;
-
-  Future<void> _acceptTask(int taskId) async {
-    setState(() => loading = true);
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getInt("user_id")?.toString() ?? "0";
-
-      final url = Uri.parse(
-        "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_task_accept_mobile",
-      );
-
-      final body = {
-        "json_input": {
-          "user_id": userId,
-          "service_request_id": taskId,
-          "assigned_to": userId,
-          "status": "In Progress"
-        }
-      };
-
-      final response = await http.post(
-        url,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode(body),
-      );
-
-      if (response.statusCode == 200) {
-        widget.onAccepted(userId);
-      }
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
-      child: loading
-          ? const SizedBox(
-              width: 90,
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            )
-          : ElevatedButton(
-              onPressed: () {
-                final id = int.tryParse(widget.taskId.toString());
-                if (id != null) _acceptTask(id);
-              },
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text("ACCEPT"),
-            ),
+      decoration: BoxDecoration(
+          color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Text(text,
+          style: TextStyle(
+              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 }
+

@@ -43,6 +43,17 @@ class _TasksPageState extends State<TasksPage> {
     }
   ];
 
+  // --------------------------------------------
+  // NEW: recent activities = last 10 closed + in-progress
+  // --------------------------------------------
+  List<Map<String, dynamic>> get recentActivities {
+    List<Map<String, dynamic>> list = tasks
+        .where((t) => t["status"] == "Closed" || t["status"] == "In Progress")
+        .toList();
+
+    return list.take(10).toList(); // recent 10 max
+  }
+
   @override
   Widget build(BuildContext context) {
     final totalTasks = tasks.length;
@@ -120,9 +131,10 @@ class _TasksPageState extends State<TasksPage> {
 
               /// ---------------------------
               /// ACTIVITY LIST (DYNAMIC)
+              /// Shows only latest 10 of: Closed + In Progress
               /// ---------------------------
               Column(
-                children: tasks.map((task) {
+                children: recentActivities.map((task) {
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: _buildActivityCard(
