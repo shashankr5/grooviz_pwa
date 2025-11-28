@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../services/profile_service.dart';
 import '../services/logout_service.dart';
 import 'login_page.dart';
+import 'notification_page.dart';
+import 'privacy_page.dart'; // ⭐ ADD THIS
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -16,7 +18,6 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isPressed = false;
   bool _isLoading = true;
 
-  // Profile fields
   String name = "";
   String designation = "";
   String email = "";
@@ -50,7 +51,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final profile = result["profile"];
 
-    // Decode departments (string → list)
     List<String> deptList = [];
     try {
       final raw = profile["departments"];
@@ -72,7 +72,6 @@ class _ProfilePageState extends State<ProfilePage> {
     });
   }
 
-  // Logout handler
   Future<void> _handleLogout(BuildContext context) async {
     setState(() => _isPressed = true);
     await Future.delayed(const Duration(milliseconds: 150));
@@ -144,12 +143,11 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ),
       ),
-
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // ------------------------- PROFILE CARD -------------------------
+            // ------------------------ PROFILE CARD ------------------------
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -203,30 +201,25 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 18),
                   Divider(color: Colors.grey.shade300),
                   const SizedBox(height: 18),
-
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // Left section: Email + phone
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text("Email", style: TextStyle(color: Colors.grey.shade600)),
                           const SizedBox(height: 4),
                           Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
-
                           const SizedBox(height: 10),
                           Text("Phone", style: TextStyle(color: Colors.grey.shade600)),
                           const SizedBox(height: 4),
                           Text(phone, style: const TextStyle(fontWeight: FontWeight.w600)),
                         ],
                       ),
-
-                      // Right section: Departments
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -237,9 +230,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               padding: const EdgeInsets.only(bottom: 2),
                               child: Text(
                                 d,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                                style: const TextStyle(fontWeight: FontWeight.w600),
                               ),
                             ),
                           ),
@@ -250,10 +241,9 @@ class _ProfilePageState extends State<ProfilePage> {
                 ],
               ),
             ),
-
             const SizedBox(height: 20),
 
-            // ------------------------- SETTINGS CARD -------------------------
+            // -------------------------- SETTINGS CARD --------------------------
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -269,32 +259,46 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
+                  // ⭐ NOTIFICATIONS TILE
                   ListTile(
-                    leading: _circleIcon(Icons.notifications_none, Colors.amber.shade800,
-                        Colors.amber.shade100),
+                    leading: _circleIcon(Icons.notifications_none,
+                        Colors.amber.shade800, Colors.amber.shade100),
                     title: const Text("Notifications",
-                        style:
-                            TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                     subtitle: const Text("Manage notification preferences"),
                     trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const NotificationPage(),
+                        ),
+                      );
+                    },
                   ),
                   Divider(color: Colors.grey.shade300),
+                  // ⭐ PRIVACY TILE NAVIGATION
                   ListTile(
                     leading: _circleIcon(
                         Icons.security, Colors.grey.shade800, Colors.grey.shade200),
                     title: const Text("Privacy",
-                        style:
-                            TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                     subtitle: const Text("Security and privacy settings"),
                     trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PrivacyPage(),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
             ),
-
             const SizedBox(height: 30),
 
-            // ------------------------- LOGOUT BUTTON -------------------------
             GestureDetector(
               onTap: () => _handleLogout(context),
               onTapDown: (_) => setState(() => _isPressed = true),
@@ -327,7 +331,6 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
               ),
             ),
-
             const SizedBox(height: 20),
           ],
         ),

@@ -52,6 +52,8 @@ class UserSessionHelper {
     return prefs.getInt("enterprise_id");
   }
 
+  // ----------- Phone -----------------
+
   static Future<String?> getPhone() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString("phone");

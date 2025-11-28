@@ -106,14 +106,7 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    setState(() {
-      final updated = result["updatedTask"];
-      task["raw"] = updated;
-      task["status"] = updated["status"];        
-      task["statusColor"] = getStatusColor(updated["status"]);
-      task["isAccepted"] = true;                 
-      task["assignedTo"] = userName;
-    });
+    await _loadTasks();
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Task Accepted 🎉")),
