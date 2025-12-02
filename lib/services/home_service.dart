@@ -80,9 +80,8 @@ class HomeService {
     }
   }
 
-  // ------------------------------------------------------------
   // MAP API → UI FRIENDLY FORMAT
-  // ------------------------------------------------------------
+
   static List<Map<String, dynamic>> _mapTasks(List raw) {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
@@ -102,7 +101,14 @@ class HomeService {
         "guestNote":
             "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
 
-        "assignedTo": "-", // No field in API yet
+        "assignedTo": (
+          m["assigned_to_name"] ??
+          m["assigned_user_name"] ??
+          m["assigned_name"] ??
+          m["name"] ??
+          m["assigned_to"] ??
+          "-"
+        ).toString(),
 
         "raw": m
       };

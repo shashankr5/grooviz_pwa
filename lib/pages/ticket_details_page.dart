@@ -356,7 +356,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
         // Update UI
         setState(() {
-          task["assignedTo"] = staff["name"];
+          task["assignedTo"] = apiResult["updatedTask"]["assigned_to_name"] ?? "-";
         });
 
         showCustomSnackBar(context, "Reassigned to ${staff["name"]}");

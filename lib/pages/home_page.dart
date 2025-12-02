@@ -106,12 +106,24 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
+    // 🌟 Fetch updated data from backend
     await _loadTasks();
+
+    // 🌟 Update local task reference for currently opened detail (if needed)
+    final updated = result["updatedTask"];
+    if (updated != null) {
+      setState(() {
+        task["status"] = "In Progress";
+        task["statusColor"] = Colors.orange;
+        task["assignedTo"] = updated["assigned_to_name"] ?? "-";
+      });
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Task Accepted 🎉")),
     );
   }
+
 
 
 
@@ -229,7 +241,7 @@ class _HomePageState extends State<HomePage> {
                     context,
                     MaterialPageRoute(
                       builder: (_) => TicketDetailPage(
-                        task: task,
+                        task: tasks[index],
                         staffList: staffList,
                         onClose: () {
                           setState(() {
