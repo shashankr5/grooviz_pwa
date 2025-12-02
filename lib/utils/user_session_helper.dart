@@ -40,6 +40,20 @@ class UserSessionHelper {
     await prefs.setString("phone", phone);
   }
 
+  // ---------- ENTERPRISE ID ----------
+
+  static Future<void> saveEnterpriseId(int enterpriseId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt("enterprise_id", enterpriseId);
+  }
+
+  static Future<int?> getEnterpriseId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt("enterprise_id");
+  }
+
+  // ----------- Phone -----------------
+
   static Future<String?> getPhone() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString("phone");

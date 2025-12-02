@@ -29,35 +29,51 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     task = Map<String, dynamic>.from(widget.task);
   }
 
-  // ---------------- Relative Time -------------------
+  // ---------------- Time Formatting -------------------
 
-  String _getRelativeTime(String timestamp) {
+  DateTime _parseTimestamp(String ts) {
     try {
-      final parts = timestamp.split(' ');
-      final date = parts[0];
-      final time = parts[1];
-
-      final ymd = date.split('-');
-      final hms = time.split(':');
-
-      final dt = DateTime(
-        int.parse(ymd[0]),
-        int.parse(ymd[1]),
-        int.parse(ymd[2]),
-        int.parse(hms[0]),
-        int.parse(hms[1]),
-        int.parse(hms[2]),
-      );
-
-      final diff = DateTime.now().difference(dt);
-
-      if (diff.inMinutes < 1) return "Just now";
-      if (diff.inMinutes < 60) return "${diff.inMinutes} min ago";
-      if (diff.inHours < 24) return "${diff.inHours} hr ago";
-      return "${diff.inDays} days ago";
+      return DateTime.parse(ts);
     } catch (e) {
-      return timestamp;
+      return DateTime.now();
     }
+  }
+
+  String formatTimeAgo(String ts) {
+    if (ts.isEmpty) return "";
+
+    final createdAt = _parseTimestamp(ts);
+    final now = DateTime.now();
+    final diff = now.difference(createdAt);
+
+    String timeAgo;
+    if (diff.inSeconds < 60) {
+      timeAgo = "${diff.inSeconds}s ago";
+    } else if (diff.inMinutes < 60) {
+      timeAgo = "${diff.inMinutes}m ago";
+    } else if (diff.inHours < 24) {
+      timeAgo = "${diff.inHours}h ago";
+    } else {
+      timeAgo = "${diff.inDays}d ago";
+    }
+
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final createdDate = DateTime(createdAt.year, createdAt.month, createdAt.day);
+
+    String dateStr;
+    if (createdDate == today) {
+      dateStr =
+          "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    } else if (createdDate == yesterday) {
+      dateStr =
+          "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    } else {
+      dateStr =
+          "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    }
+
+    return "$timeAgo • $dateStr";
   }
 
   @override
@@ -89,8 +105,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           const SizedBox(height: 20),
 
           Text(task["title"],
-              style:
-                  const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
 
           const SizedBox(height: 10),
 
@@ -99,22 +114,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               const Icon(Icons.access_time, color: Colors.grey, size: 18),
               const SizedBox(width: 6),
               Text(
-                _getRelativeTime(task["raw"]["created_at"]),
+                formatTimeAgo(task["raw"]["created_at"] ?? task["created_at"] ?? ""),
                 style: const TextStyle(fontSize: 14),
               ),
             ],
           ),
 
-          const SizedBox(height: 20),
-
-          _section("Issue Description", task["description"] ?? "—"),
-
           const SizedBox(height: 16),
 
+          // ---------------- Guest Info ----------------
           _guestSection(task["guest"] ?? "-"),
 
           const SizedBox(height: 16),
 
+          // ---------------- Assigned To ----------------
           _assignedSection(task["assignedTo"] ?? "-"),
 
           const SizedBox(height: 25),
@@ -138,18 +151,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  Widget _section(String title, String content) {
-    return _card(
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(content, style: const TextStyle(fontSize: 14)),
-        ],
+  Widget _card(Widget child) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
       ),
+      child: child,
     );
   }
 
@@ -213,15 +222,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Widget _actionButtons(BuildContext context) {
     return Column(
       children: [
-        // ----- BLACK RECTANGULAR BUTTONS -----
         Row(
           children: [
             Expanded(
               child: ElevatedButton(
                 onPressed: () => _addNotes(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color.fromARGB(255, 255, 255, 255),
-                  foregroundColor: const Color.fromARGB(255, 0, 0, 0),
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
                   minimumSize: const Size(double.infinity, 50),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
@@ -234,8 +242,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: ElevatedButton(
                 onPressed: () => _reassign(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color.fromARGB(255, 255, 255, 255),
-                  foregroundColor: const Color.fromARGB(255, 0, 0, 0),
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
                   minimumSize: const Size(double.infinity, 50),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
@@ -248,7 +256,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
         const SizedBox(height: 12),
 
-        // CLOSE TICKET
         ElevatedButton.icon(
           onPressed: () async {
             showDialog(
@@ -261,7 +268,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               serviceRequestId: task["raw"]["service_request_id"],
             );
 
-            Navigator.pop(context); // loader
+            Navigator.pop(context);
 
             if (!result["success"]) {
               showCustomSnackBar(context, result["message"]);
@@ -274,7 +281,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             });
 
             showCustomSnackBar(context, "Ticket closed successfully!");
-
             widget.onClose();
             Navigator.pop(context);
           },
@@ -289,17 +295,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _card(Widget child) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: child,
     );
   }
 
@@ -386,7 +381,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   }
 }
 
-// ---------------- CLEAN BLACK & WHITE POPUPS -------------------
+// ---------------- CLEAN POPUPS -------------------
 
 Future<String?> showAddNotesPopup(BuildContext context) {
   final controller = TextEditingController();

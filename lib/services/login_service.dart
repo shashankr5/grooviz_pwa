@@ -22,56 +22,54 @@ class LoginService {
               'Content-Type': 'application/json',
               'x-api-key': ApiConstants.apiKey,
             },
-            validateStatus: (status) => status != null && status < 500,
+            validateStatus: (code) => code != null && code < 500,
           ),
         ) {
-    _dio.interceptors.add(LogInterceptor(
-      request: true,
-      requestHeader: true,
-      requestBody: true,
-      responseHeader: true,
-      responseBody: true,
-      error: true,
-    ));
+    _dio.interceptors.add(
+      LogInterceptor(
+        request: true,
+        requestHeader: true,
+        requestBody: true,
+        responseHeader: false,
+        responseBody: true,
+        error: true,
+      ),
+    );
   }
 
-  /// LOGIN API
-  /// Returns: { success: bool, message: String, user: Map<String,dynamic>? }
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
   }) async {
     try {
       final fcmToken = await FCMService.getFCMToken();
-      final info = await DeviceInfo.getDeviceInfo();
+      final deviceInfo = await DeviceInfo.getDeviceInfo();
 
       final payload = {
         "username": username,
         "password": password,
         "fcm_token": fcmToken ?? "",
-        "installation_id": info['installation_id'],
-        "device_identifier": info['device_identifier'],
-        "device_type": info['device_type'],
-        "device_model": info['device_model'],
-        "os_version": info['os_version'],
-        "app_version": info['app_version'],
-        "stage": 'dev',
+        "installation_id": deviceInfo["installation_id"],
+        "device_identifier": deviceInfo["device_identifier"],
+        "device_type": deviceInfo["device_type"],
+        "device_model": deviceInfo["device_model"],
+        "os_version": deviceInfo["os_version"],
+        "app_version": deviceInfo["app_version"],
+        "stage": "dev",
       };
 
-      dev.log("📤 Calling login: ${ApiConstants.login}");
-      dev.log("Payload: ${jsonEncode(payload)}"); 
-
+      dev.log("📤 Login payload: ${jsonEncode(payload)}");
       final response = await _dio.post(ApiConstants.login, data: payload);
-      dev.log("📥 Login response: ${response.data}");
 
       if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error: ${response.statusCode}"};
+        return {"success": false, "message": "Server error ${response.statusCode}"};
       }
 
-      // Read STATUS
       final statusList = response.data["STATUS"] as List?;
+      final resultList = response.data["RESULT"] as List?;
+
       if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid server response"};
+        return {"success": false, "message": "Invalid response"};
       }
 
       final statusFlag = statusList[0]["status"] ?? "F";
@@ -81,62 +79,34 @@ class LoginService {
         return {"success": false, "message": statusMessage};
       }
 
-      // Read RESULT (user info)
-      final resultList = response.data["RESULT"] as List?;
       if (resultList == null || resultList.isEmpty) {
         return {"success": false, "message": "No user data returned"};
       }
 
       final user = Map<String, dynamic>.from(resultList[0]);
 
-      // Save user info
-      try {
-        final uid = user["user_id"]; 
-        if (uid is int) {         
-          await UserSessionHelper.saveUserId(uid);      
-        } else if (uid is String) {
-          await UserSessionHelper.saveUserId(int.tryParse(uid) ?? 0);
-        }
+      /// Save session safely
+      final userId = user["user_id"];
+      await UserSessionHelper.saveUserId(userId is int ? userId : int.tryParse("$userId") ?? 0);
 
-        await UserSessionHelper.saveUserName(user["full_name"]?.toString() ?? "");
-        await UserSessionHelper.saveEmail(user["email"]?.toString() ?? "");
-        await UserSessionHelper.savePhone(user["phone"]?.toString() ?? "");
-        await UserSessionHelper.saveIsLoggedIn(true);
-    
-        // extra verification
-        final prefsTest = await UserSessionHelper.getUserId(); 
-        
-      } catch (e) {
-        dev.log("⚠️ Error saving user session: $e");
-      }
+      await UserSessionHelper.saveUserName(user["full_name"]?.toString() ?? "");
+      await UserSessionHelper.saveEmail(user["email"]?.toString() ?? "");
+      await UserSessionHelper.savePhone(user["phone"]?.toString() ?? "");
+      await UserSessionHelper.saveIsLoggedIn(true);
 
-      return {"success": true, "message": statusMessage, "user": user};
+      return {
+        "success": true,
+        "message": statusMessage,
+        "user": user,
+        "user_id": userId,
+      };
 
     } on DioException catch (e) {
-      dev.log("❌ DioException: ${e.message}");
-
-      final data = e.response?.data;
-
-      if (data != null) {
-        if (data["STATUS"] != null) {
-          return {
-            "success": data["STATUS"][0]["status"] == "S",
-            "message": data["STATUS"][0]["message"],
-          };
-        }
-        if (data["RESULT"] != null) {
-          return {
-            "success": data["RESULT"][0]["status"] == "S",
-            "message": data["RESULT"][0]["message"],
-          };
-        }
-      }
-
+      dev.log("❌ Dio error: ${e.message}");
       return {"success": false, "message": "Network error"};
     } catch (e) {
-      dev.log("⚠️ Unexpected error: $e");
-      return {"success": false, "message": "Exception: $e"};
+      dev.log("⚠️ Exception: $e");
+      return {"success": false, "message": "Error: $e"};
     }
   }
 }
-

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+
 class PrivacyPage extends StatelessWidget {
   const PrivacyPage({super.key});
 

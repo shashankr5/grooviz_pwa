@@ -62,24 +62,51 @@ class _HomePageState extends State<HomePage> {
   // --------------------------------------------------------------------------
   DateTime _parseTimestamp(String ts) {
     try {
-      final parts = ts.split(" ");
-      final date = parts[0];
-      final time = parts[1];
-
-      final d = date.split("-");
-      final t = time.split(":");
-
-      return DateTime(
-        int.parse(d[0]),
-        int.parse(d[1]),
-        int.parse(d[2]),
-        int.parse(t[0]),
-        int.parse(t[1]),
-        int.parse(t[2]),
-      );
+      return DateTime.parse(ts);
     } catch (e) {
       return DateTime.now();
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // FORMAT TIME AGO + DATE
+  // --------------------------------------------------------------------------
+  String formatTimeAgo(String ts) {
+    if (ts.isEmpty) return "";
+
+    final createdAt = _parseTimestamp(ts);
+    final now = DateTime.now();
+    final diff = now.difference(createdAt);
+
+    String timeAgo;
+    if (diff.inSeconds < 60) {
+      timeAgo = "${diff.inSeconds}s ago";
+    } else if (diff.inMinutes < 60) {
+      timeAgo = "${diff.inMinutes}m ago";
+    } else if (diff.inHours < 24) {
+      timeAgo = "${diff.inHours}h ago";
+    } else {
+      timeAgo = "${diff.inDays}d ago";
+    }
+
+    // Display Today / Yesterday / exact date
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final createdDate = DateTime(createdAt.year, createdAt.month, createdAt.day);
+
+    String dateStr;
+    if (createdDate == today) {
+      dateStr =
+          "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    } else if (createdDate == yesterday) {
+      dateStr =
+          "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    } else {
+      dateStr =
+          "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+    }
+
+    return "$timeAgo • $dateStr";
   }
 
   // --------------------------------------------------------------------------
@@ -103,12 +130,13 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    List<Map<String, dynamic>> raw = List<Map<String, dynamic>>.from(result["tasks"]);
+    List<Map<String, dynamic>> raw =
+        List<Map<String, dynamic>>.from(result["tasks"]);
 
     // -------------------- SORT RECENT FIRST --------------------
     raw.sort((a, b) {
-      final da = _parseTimestamp(a["raw"]["created_at"]);
-      final db = _parseTimestamp(b["raw"]["created_at"]);
+      final da = _parseTimestamp(a["raw"]["created_at"] ?? a["created_at"]);
+      final db = _parseTimestamp(b["raw"]["created_at"] ?? b["created_at"]);
       return db.compareTo(da); // newest FIRST
     });
 
@@ -128,7 +156,7 @@ class _HomePageState extends State<HomePage> {
   // ACCEPT TASK
   // --------------------------------------------------------------------------
   Future<void> _acceptTask(Map<String, dynamic> task) async {
-    final taskId = task["raw"]?["service_request_id"];
+    final taskId = task["raw"]?["service_request_id"] ?? task["service_request_id"];
     if (taskId == null) return;
 
     setState(() => _isLoading = true);
@@ -150,7 +178,10 @@ class _HomePageState extends State<HomePage> {
       task["status"] = updated["status"];
       task["statusColor"] = getStatusColor(updated["status"]);
       task["isAccepted"] = true;
+
+      // ----------------- FIX -----------------
       task["assignedTo"] = userName;
+      task["raw"]["assigned_to"] = userName;
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -158,13 +189,22 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // --------------------------------------------------------------------------
+  // FILTERED TASKS LOGIC
+  // --------------------------------------------------------------------------
   List<Map<String, dynamic>> get filteredTasks {
-    if (selectedFilter == "All") return tasks;
+    if (selectedFilter == "All") {
+      return tasks
+          .where((t) => t["status"] == "Open" || t["status"] == "In Progress")
+          .toList();
+    }
     return tasks.where((t) => t["status"] == selectedFilter).toList();
   }
 
   List<Map<String, dynamic>> get activeTasks {
-    return tasks.where((t) => t["status"] != "Closed").toList();
+    return tasks
+        .where((t) => t["status"] == "Open" || t["status"] == "In Progress")
+        .toList();
   }
 
   // MAIN UI
@@ -382,7 +422,8 @@ class _HomePageState extends State<HomePage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20),
                         ),
@@ -400,7 +441,7 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
               Text(
-                task["time"] ?? "",
+                formatTimeAgo(task["raw"]["created_at"] ?? task["created_at"] ?? ""),
                 style: TextStyle(color: Colors.grey[600], fontSize: 13),
               ),
             ],
@@ -413,12 +454,9 @@ class _HomePageState extends State<HomePage> {
   Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-          color: bg, borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
       child: Text(text,
-          style: TextStyle(
-              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+          style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 }
-

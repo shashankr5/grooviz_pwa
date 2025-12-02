@@ -34,16 +34,23 @@ class HomeService {
   Future<Map<String, dynamic>> getTasks() async {
     try {
       final int? userId = await UserSessionHelper.getUserId();
+      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
+
       if (userId == null || userId == 0) {
         return {"success": false, "message": "User ID missing"};
       }
 
+      if (enterpriseId == null || enterpriseId == 0) {
+        return {"success": false, "message": "Enterprise ID missing"};
+      }
+
       final payload = {
         "user_id": userId,
+        "enterprise_id": enterpriseId,
         "stage": "dev",
       };
 
-      dev.log("📤 Fetching tasks...");
+      dev.log("Fetching tasks...");
       final response =
           await _dio.post(ApiConstants.tasks, data: payload);
 
@@ -68,7 +75,7 @@ class HomeService {
 
       return {"success": true, "tasks": tasks};
     } catch (e) {
-      dev.log("❌ ERROR (getTasks): $e");
+      dev.log("ERROR (getTasks): $e");
       return {"success": false, "message": "Network error"};
     }
   }
@@ -217,7 +224,7 @@ class HomeService {
         "staff": staff ?? []
       };
     } catch (e) {
-      dev.log("❌ Staff API Error: $e");
+      dev.log("Staff API Error: $e");
       return {
         "success": false,
         "message": "Error: $e",
@@ -236,23 +243,23 @@ class HomeService {
 
             if (userId == null) {
             return {
-                "success": false,
-                "message": "User not logged in",
+              "success": false,
+              "message": "User not logged in",
             };
             }
 
             final payload = {
-            "user_id": userId,
-            "task_id": ticketId,
-            "reassign_to": assignedUserId,
-            "stage": "dev",
+              "user_id": userId,
+              "task_id": ticketId,
+              "reassign_to": assignedUserId,
+              "stage": "dev",
             };
 
             dev.log("📤 Reassign Ticket API Call");
             dev.log("Payload: $payload");
 
             final response = await _dio.post(
-            ApiConstants.reassignTicket,   // ADD THIS IN ApiConstants
+            ApiConstants.reassignTicket, 
             data: payload,
             );
 
@@ -260,8 +267,8 @@ class HomeService {
 
             if (response.statusCode != 200) {
             return {
-                "success": false,
-                "message": "Server error: ${response.statusCode}",
+              "success": false,
+              "message": "Server error: ${response.statusCode}",
             };
             }
 
@@ -269,8 +276,8 @@ class HomeService {
 
             if (statusList == null || statusList.isEmpty) {
             return {
-                "success": false,
-                "message": "Invalid server response",
+              "success": false,
+              "message": "Invalid server response",
             };
             }
 
@@ -278,25 +285,25 @@ class HomeService {
             final msg = statusList[0]["message"];
 
             if (flag != "S") {
-            return {
+              return {
                 "success": false,
                 "message": msg ?? "Failed",
-            };
+              };
             }
 
             // SUCCESS
             final updatedTask = response.data["RESULT"][0];
 
             return {
-            "success": true,
-            "message": msg,
-            "updatedTask": updatedTask,
+              "success": true,
+              "message": msg,
+              "updatedTask": updatedTask,
             };
         } catch (e) {
-            dev.log("❌ ERROR (reassignTicket): $e");
+            dev.log("ERROR (reassignTicket): $e");
             return {
-            "success": false,
-            "message": "Error: $e",
+              "success": false,
+              "message": "Error: $e",
             };
         }
     }
@@ -306,24 +313,24 @@ class HomeService {
         required String noteText,
     }) async {
         try {
-        final userId = await UserSessionHelper.getUserId();
+          final userId = await UserSessionHelper.getUserId();
 
         if (userId == null) {
             return {
-            "success": false,
-            "message": "User not logged in",
-            "note": null,
+              "success": false,
+              "message": "User not logged in",
+              "note": null,
             };
         }
 
         final payload = {
-            "user_id": userId,
-            "service_request_id": serviceRequestId,
-            "note_text": noteText,
-            "stage": "dev",
+          "user_id": userId,
+          "service_request_id": serviceRequestId,
+          "note_text": noteText,
+          "stage": "dev",
         };
 
-        dev.log("📤 Add Note API Call");
+        dev.log("Add Note API Call");
         dev.log("Payload: $payload");
 
         final response = await _dio.post(
@@ -331,22 +338,22 @@ class HomeService {
             data: payload,
         );
 
-        dev.log("📥 Response: ${response.data}");
+        dev.log("Response: ${response.data}");
 
         if (response.statusCode != 200) {
             return {
-            "success": false,
-            "message": "Server error: ${response.statusCode}",
-            "note": null,
+              "success": false,
+              "message": "Server error: ${response.statusCode}",
+              "note": null,
             };
         }
 
         final statusList = response.data["STATUS"] as List?;
         if (statusList == null || statusList.isEmpty) {
             return {
-            "success": false,
-            "message": "Invalid server response",
-            "note": null,
+              "success": false,
+              "message": "Invalid server response",
+              "note": null,
             };
         }
 
@@ -355,9 +362,9 @@ class HomeService {
 
         if (flag != "S") {
             return {
-            "success": false,
-            "message": msg ?? "Failed",
-            "note": null,
+              "success": false,
+              "message": msg ?? "Failed",
+              "note": null,
             };
         }
 
@@ -368,14 +375,14 @@ class HomeService {
             "success": true,
             "message": msg,
             "note": insertedNote,
-        };
+          };
         } catch (e) {
-        dev.log("❌ ERROR (addNote): $e");
+        dev.log("ERROR (addNote): $e");
         return {
             "success": false,
             "message": "Error: $e",
             "note": null,
-        };
+          };
         }
     }
 
@@ -407,7 +414,7 @@ class HomeService {
         data: payload,
       );
 
-      dev.log("📥 Response: ${response.data}");
+      dev.log("Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {
@@ -446,7 +453,7 @@ class HomeService {
         "data": updated,    // contains service_request_id, timestamp, status, closed
       };
     } catch (e) {
-      dev.log("❌ ERROR (closeServiceRequest): $e");
+      dev.log("ERROR (closeServiceRequest): $e");
 
       return {
         "success": false,
@@ -476,7 +483,7 @@ class HomeService {
         "stage": "dev",
       };
 
-      dev.log("📤 Accept Task API Call");
+      dev.log("Accept Task API Call");
       dev.log("Payload: $payload");
 
       final response = await _dio.post(
@@ -484,7 +491,7 @@ class HomeService {
         data: payload,
       );
 
-      dev.log("📥 Response: ${response.data}");
+      dev.log("Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {
@@ -514,7 +521,7 @@ class HomeService {
         };
       }
 
-      // 🎉 SUCCESS — fetch updated task object
+      // SUCCESS — fetch updated task object
       final updatedTask = response.data["RESULT"]?[0];
 
       return {
@@ -523,7 +530,7 @@ class HomeService {
         "updatedTask": updatedTask,
       };
     } catch (e) {
-      dev.log("❌ ERROR (acceptTask): $e");
+      dev.log("ERROR (acceptTask): $e");
       return {
         "success": false,
         "message": "Error: $e",
