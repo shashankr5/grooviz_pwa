@@ -69,13 +69,19 @@ class TaskService {
       // Convert result to a list of tasks
       final List<dynamic> tasks = result ?? [];
 
+      dev.log("RAW SUMMARY LIST: $tasks");
+
       return {
         "success": true,
         "message": status[0]["message"],
         "tasks": tasks.map((task) {
           return {
             "roomId": task["room_id"],
-            "roomNumber": task["room_number"],
+            "roomNumber":
+                task["room_number"] ??
+                task["requested_room"] ??
+                task["requested_room_id"]?.toString() ??
+                "-",
             "status": task["status"],
             "question": task["question"],
             "timeAgo": task["time_ago"],
