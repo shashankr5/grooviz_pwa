@@ -94,4 +94,6 @@ class UserSessionHelper {
     }
   }
 
+  static Future<dynamic> getUserData() async {}
+
 }

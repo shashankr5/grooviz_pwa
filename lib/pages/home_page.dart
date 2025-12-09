@@ -12,6 +12,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   String selectedFilter = "All";
+  String selectedDateFilter = "All Days"; 
   String userName = "";
 
   bool _isLoading = true;
@@ -56,13 +57,18 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Color getTaskPriorityColor(String createdAt) {
-    final taskTime = _parseTimestamp(createdAt);
-    final diff = DateTime.now().difference(taskTime);
+  bool isToday(DateTime date) {
+    final now = DateTime.now();
+    return date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+  }
 
-    if (diff.inHours < 1) return Colors.green;
-    if (diff.inHours >= 1 && diff.inHours < 8) return Colors.yellow;
-    return Colors.red;
+  bool isYesterday(DateTime date) {
+    final yesterday = DateTime.now().subtract(const Duration(days: 1));
+    return date.year == yesterday.year &&
+        date.month == yesterday.month &&
+        date.day == yesterday.day;
   }
 
   Future<void> _loadUserName() async {
@@ -81,18 +87,18 @@ class _HomePageState extends State<HomePage> {
     final now = DateTime.now();
     final diff = now.difference(createdAt);
 
-    String timeAgo;
-    if (diff.inSeconds < 60) {
-      timeAgo = "${diff.inSeconds}s ago";
-    } else if (diff.inMinutes < 60) {
-      timeAgo = "${diff.inMinutes}m ago";
-    } else if (diff.inHours < 24) {
-      timeAgo = "${diff.inHours}h ago";
-    } else {
-      timeAgo = "${diff.inDays}d ago";
-    }
+    if (diff.inSeconds < 60) return "${diff.inSeconds}s ago";
+    if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
+    if (diff.inHours < 24) return "${diff.inHours}h ago";
+    return "${diff.inDays}d ago";
+  }
 
-    return timeAgo;
+  Color getTaskPriorityColor(String createdAt) {
+    final taskTime = _parseTimestamp(createdAt);
+    final diff = DateTime.now().difference(taskTime);
+    if (diff.inHours < 1) return Colors.green;
+    if (diff.inHours >= 1 && diff.inHours < 8) return Colors.yellow;
+    return Colors.red;
   }
 
   Future<void> _loadTasks() async {
@@ -130,7 +136,6 @@ class _HomePageState extends State<HomePage> {
           assignedTo = t["raw"]["assigned_to_name"] ??
               t["raw"]["assigned_user_name"] ??
               t["raw"]["assigned_name"] ??
-              t["raw"]["name"] ??
               "-";
         }
 
@@ -176,12 +181,26 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<Map<String, dynamic>> get filteredTasks {
-    if (selectedFilter == "All") {
-      return tasks
-          .where((t) => t["status"] == "Open" || t["status"] == "In Progress")
-          .toList();
-    }
-    return tasks.where((t) => t["status"] == selectedFilter).toList();
+    List<Map<String, dynamic>> byStatus =
+        selectedFilter == "All"
+            ? tasks.where((t) => t["status"] == "Open" || t["status"] == "In Progress").toList()
+            : tasks.where((t) => t["status"] == selectedFilter).toList();
+
+    return byStatus.where((t) {
+      final createdAt = t["raw"]?["created_at"] ?? t["created_at"] ?? "";
+      final date = _parseTimestamp(createdAt);
+
+      switch (selectedDateFilter) {
+        case "Today":
+          return isToday(date);
+        case "Yesterday":
+          return isYesterday(date);
+        case "Older":
+          return !isToday(date) && !isYesterday(date);
+        default:
+          return true;
+      }
+    }).toList();
   }
 
   List<Map<String, dynamic>> get activeTasks {
@@ -259,21 +278,55 @@ class _HomePageState extends State<HomePage> {
       children: [
         const SizedBox(height: 15),
         _buildFilters(),
-        const SizedBox(height: 20),
+        const SizedBox(height: 25),
+
+        // ⭐ MODIFIED — Heading + Black & White Dropdown
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("Tasks",
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
-              Text("${activeTasks.length} active tickets",
-                  style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Tasks",
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text("${activeTasks.length} active tickets",
+                      style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+                ],
+              ),
+
+              // ⭐ NEW Black & White Dropdown
+              Theme(
+                data: Theme.of(context).copyWith(
+                  canvasColor: Colors.white, // dropdown background
+                  textTheme: const TextTheme(
+                    bodyMedium: TextStyle(color: Colors.black),
+                  ),
+                ),
+                child: DropdownButton<String>(
+                  value: selectedDateFilter,
+                  style: const TextStyle(color: Colors.black, fontSize: 14),
+                  underline: const SizedBox(),
+                  iconEnabledColor: Colors.black,
+                  items: const [
+                    DropdownMenuItem(value: "All Days", child: Text("All Days")),
+                    DropdownMenuItem(value: "Today", child: Text("Today")),
+                    DropdownMenuItem(value: "Yesterday", child: Text("Yesterday")),
+                    DropdownMenuItem(value: "Older", child: Text("Older")),
+                  ],
+                  onChanged: (value) {
+                    setState(() => selectedDateFilter = value!);
+                  },
+                ),
+              ),
             ],
           ),
         ),
-        const SizedBox(height: 15),
+
+        const SizedBox(height: 12),
+
         Expanded(
           child: RefreshIndicator(
             onRefresh: _loadTasks,
@@ -289,7 +342,7 @@ class _HomePageState extends State<HomePage> {
                       context,
                       MaterialPageRoute(
                         builder: (_) => TicketDetailPage(
-                          task: task,      // 🟢 FIXED
+                          task: task,
                           staffList: staffList,
                           onClose: () {
                             setState(() {
@@ -323,7 +376,6 @@ class _HomePageState extends State<HomePage> {
                       ),
                     );
 
-                    // 🔥 Instant UI refresh — Closed tickets disappear immediately
                     setState(() {});
                   },
                   child: _buildTaskCard(task),
@@ -374,7 +426,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// ⬇️ Task Card ⬇️
   Widget _buildTaskCard(Map<String, dynamic> task) {
     final createdAt = task["raw"]["created_at"] ?? task["created_at"] ?? "";
     final stripColor = getTaskPriorityColor(createdAt);
@@ -398,7 +449,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             Container(
               width: 6,
-              height:160,
+              height: 160,
               decoration: BoxDecoration(
                 color: stripColor,
                 borderRadius: const BorderRadius.only(
@@ -434,7 +485,7 @@ class _HomePageState extends State<HomePage> {
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
-                          "Assigned to ${task["assignedTo"] ?? "-"}",
+                          "Assigned: ${task["assignedTo"] ?? "-"}",
                           style:
                               const TextStyle(color: Colors.green, fontSize: 14),
                         ),

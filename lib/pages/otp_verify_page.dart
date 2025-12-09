@@ -14,8 +14,8 @@ class OtpVerifyPage extends StatefulWidget {
 }
 
 class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateMixin {
-  final List<TextEditingController> _controllers = List.generate(6, (_) => TextEditingController());
-  final List<FocusNode> _focusNodes = List.generate(6, (_) => FocusNode());
+  final List<TextEditingController> _controllers = List.generate(4, (_) => TextEditingController()); // 4 digits
+  final List<FocusNode> _focusNodes = List.generate(4, (_) => FocusNode());
 
   bool _isLoading = false;
   bool _isResending = false;
@@ -23,6 +23,8 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
   Timer? _timer;
 
   AnimationController? _successAnimationController;
+
+  String _generatedOtp = ""; // store generated OTP
 
   @override
   void initState() {
@@ -34,18 +36,14 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
       duration: const Duration(milliseconds: 800),
     );
 
-    // Auto-focus first field
     _focusNodes[0].requestFocus();
+    _sendOtp();
   }
 
   @override
   void dispose() {
-    for (var c in _controllers) {
-      c.dispose();
-    }
-    for (var f in _focusNodes) {
-      f.dispose();
-    }
+    for (var c in _controllers) c.dispose();
+    for (var f in _focusNodes) f.dispose();
     _timer?.cancel();
     _successAnimationController?.dispose();
     super.dispose();
@@ -65,9 +63,28 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     });
   }
 
+  Future<void> _sendOtp() async {
+    setState(() => _isResending = true);
+
+    final response = await LoginService().sendOtp(mobile: widget.mobile);
+
+    setState(() => _isResending = false);
+
+    if (!mounted) return;
+
+    if (!response["success"]) {
+      _showSnack(response["message"] ?? "Failed to send OTP");
+      return;
+    }
+
+    _generatedOtp = response['otp'] ?? ""; // Save 4-digit OTP
+    _showSnack("OTP sent successfully");
+    _startResendTimer();
+  }
+
   Future<void> _verifyOtp() async {
-    if (_enteredOtp.length != 6) {
-      _showSnack("Enter valid 6-digit OTP");
+    if (_enteredOtp.length != 4) { // 4 digits
+      _showSnack("Enter valid 4-digit OTP");
       return;
     }
 
@@ -85,7 +102,6 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
       return;
     }
 
-    // Success animation
     await _successAnimationController!.forward();
     await Future.delayed(const Duration(milliseconds: 600));
 
@@ -100,20 +116,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
 
   Future<void> _resendOtp() async {
     if (_resendCountdown > 0) return;
-
-    setState(() => _isResending = true);
-    final response = await LoginService().sendOtp(mobile: widget.mobile);
-    setState(() => _isResending = false);
-
-    if (!mounted) return;
-
-    if (!response["success"]) {
-      _showSnack(response["message"] ?? "Failed to resend OTP");
-      return;
-    }
-
-    _showSnack("OTP sent successfully");
-    _startResendTimer();
+    await _sendOtp();
   }
 
   void _showSnack(String message) {
@@ -127,7 +130,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
 
   Widget _buildOtpField(int index) {
     return SizedBox(
-      width: 45,
+      width: 50,
       child: TextField(
         controller: _controllers[index],
         focusNode: _focusNodes[index],
@@ -142,12 +145,8 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         ),
         onChanged: (val) {
-          if (val.isNotEmpty && index < 5) {
-            _focusNodes[index + 1].requestFocus();
-          }
-          if (val.isEmpty && index > 0) {
-            _focusNodes[index - 1].requestFocus();
-          }
+          if (val.isNotEmpty && index < 3) _focusNodes[index + 1].requestFocus();
+          if (val.isEmpty && index > 0) _focusNodes[index - 1].requestFocus();
         },
       ),
     );
@@ -168,55 +167,71 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
         iconTheme: const IconThemeData(color: Colors.black),
         title: const Text("OTP Verification", style: TextStyle(color: Colors.black)),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const SizedBox(height: 20),
-            Text(
-              "Enter the 6-digit OTP sent to $_maskedMobile",
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16, color: Colors.black87),
-            ),
-            const SizedBox(height: 30),
-
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: List.generate(6, (i) => _buildOtpField(i)),
-            ),
-            const SizedBox(height: 30),
-
-            SizedBox(
-              width: double.infinity,
-              height: 55,
-              child: ElevatedButton(
-                onPressed: _isLoading ? null : _verifyOtp,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFFC107),
-                  disabledBackgroundColor: Colors.grey.shade400,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                child: _isLoading
-                    ? const CircularProgressIndicator(color: Colors.black)
-                    : const Text("Verify OTP", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18, color: Colors.black87)),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          reverse: true,
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 20),
+              Text(
+                "Enter the 4-digit OTP sent to $_maskedMobile",
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, color: Colors.black87),
               ),
-            ),
+              const SizedBox(height: 10),
 
-            const SizedBox(height: 20),
+              if (_generatedOtp.isNotEmpty)
+                Text(
+                  "Generated OTP: $_generatedOtp",
+                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                ),
 
-            TextButton(
-              onPressed: (_resendCountdown == 0 && !_isResending) ? _resendOtp : null,
-              child: Text(
-                _isResending
-                    ? "Resending..."
-                    : (_resendCountdown > 0 ? "Resend OTP in $_resendCountdown s" : "Resend OTP"),
-                style: TextStyle(
-                  color: _resendCountdown == 0 ? Colors.blue : Colors.grey,
-                  fontWeight: FontWeight.w600,
+              const SizedBox(height: 30),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: List.generate(4, (i) => _buildOtpField(i)),
+              ),
+              const SizedBox(height: 30),
+
+              SizedBox(
+                width: double.infinity,
+                height: 55,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _verifyOtp,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFC107),
+                    disabledBackgroundColor: Colors.grey.shade400,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.black)
+                      : const Text(
+                          "Verify OTP",
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 18,
+                            color: Colors.black87,
+                          ),
+                        ),
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 20),
+              TextButton(
+                onPressed: (_resendCountdown == 0 && !_isResending) ? _resendOtp : null,
+                child: Text(
+                  _isResending
+                      ? "Resending..."
+                      : (_resendCountdown > 0 ? "Resend OTP in $_resendCountdown s" : "Resend OTP"),
+                  style: TextStyle(
+                    color: _resendCountdown == 0 ? Colors.blue : Colors.grey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
