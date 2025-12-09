@@ -1,4 +1,3 @@
-// lib/services/login_service.dart
 import 'dart:developer' as dev;
 import 'dart:convert';
 import 'package:dio/dio.dart';
@@ -138,12 +137,28 @@ class LoginService {
       final payload = {
         "mobile_no": mobile,
         "action": "SEND_OTP",
+        "stage": "dev",
       };
 
       dev.log("📤 Send OTP Payload: $payload");
       final response = await _dio.post(ApiConstants.sendOtp, data: payload);
 
-      return _parseResponse(response);
+      final data = response.data;
+      final statusList = data["STATUS"];
+      if (statusList != null && statusList is List && statusList.isNotEmpty) {
+        final status = statusList[0];
+        final success = status["status"] == "S";
+        final otp = status["otp_demo_only"] ?? "";
+        final message = success ? "OTP sent successfully" : status["message"] ?? "Failed to send OTP";
+
+        return {
+          "success": success,
+          "message": message,
+          "otp": otp,
+        };
+      } else {
+        return {"success": false, "message": "Invalid server response"};
+      }
     } catch (e) {
       return _handleError(e);
     }
@@ -161,6 +176,7 @@ class LoginService {
         "mobile_no": mobile,
         "otp": otp,
         "action": "VERIFY_OTP",
+        "stage": "dev",
       };
 
       dev.log("📤 Verify OTP Payload: $payload");
@@ -184,11 +200,13 @@ class LoginService {
         "mobile_no": mobile,
         "new_pass": newPassword,
         "action": "RESET_PASSWORD",
+        "stage": "dev",
       };
 
       dev.log("📤 Reset Password Payload: $payload");
       final response = await _dio.post(ApiConstants.resetPassword, data: payload);
 
+      // ✅ Use _parseResponse, but fallback message if missing
       return _parseResponse(response);
     } catch (e) {
       return _handleError(e);
@@ -226,7 +244,11 @@ class LoginService {
     }
 
     final statusFlag = statusList[0]["status"]?.toString() ?? "F";
-    final message = statusList[0]["message"]?.toString() ?? "Unknown error";
+
+    // ✅ Use message if exists, else fallback to otp_demo_only or generic text
+    final message = statusList[0]["message"]?.toString() ??
+        statusList[0]["otp_demo_only"]?.toString() ??
+        "Operation completed";
 
     return {
       "success": statusFlag == "S",
