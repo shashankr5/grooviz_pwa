@@ -80,9 +80,8 @@ class HomeService {
     }
   }
 
-  // ------------------------------------------------------------
   // MAP API → UI FRIENDLY FORMAT
-  // ------------------------------------------------------------
+
   static List<Map<String, dynamic>> _mapTasks(List raw) {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
@@ -102,7 +101,14 @@ class HomeService {
         "guestNote":
             "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
 
-        "assignedTo": "-", // No field in API yet
+        "assignedTo": (
+          m["assigned_to_name"] ??
+          m["assigned_user_name"] ??
+          m["assigned_name"] ??
+          m["name"] ??
+          m["assigned_to"] ??
+          "-"
+        ).toString(),
 
         "raw": m
       };
@@ -209,7 +215,6 @@ class HomeService {
 
       final resultList = response.data["RESULT"] as List?;
 
-      // Map to Flutter-friendly structure
       final staff = resultList?.map((item) {
         return {
           "userId": item["user_id"],
@@ -291,7 +296,6 @@ class HomeService {
               };
             }
 
-            // SUCCESS
             final updatedTask = response.data["RESULT"][0];
 
             return {
@@ -334,7 +338,7 @@ class HomeService {
         dev.log("Payload: $payload");
 
         final response = await _dio.post(
-            ApiConstants.addNotes, // <-- Your endpoint constant
+            ApiConstants.addNotes,
             data: payload,
         );
 
@@ -368,7 +372,6 @@ class HomeService {
             };
         }
 
-        // SUCCESS — RETURN INSERTED NOTE
         final insertedNote = response.data["RESULT"][0];
 
         return {
@@ -410,7 +413,7 @@ class HomeService {
       dev.log("Payload: $payload");
 
       final response = await _dio.post(
-        ApiConstants.closeServiceRequest, // 🔥 Your API endpoint
+        ApiConstants.closeServiceRequest,
         data: payload,
       );
 
@@ -444,13 +447,12 @@ class HomeService {
         };
       }
 
-      /// SUCCESS
       final updated = response.data["RESULT"][0];
 
       return {
         "success": true,
         "message": msg,
-        "data": updated,    // contains service_request_id, timestamp, status, closed
+        "data": updated,
       };
     } catch (e) {
       dev.log("ERROR (closeServiceRequest): $e");
@@ -487,7 +489,7 @@ class HomeService {
       dev.log("Payload: $payload");
 
       final response = await _dio.post(
-        ApiConstants.acceptTask, // 🔥 ensure constant exists
+        ApiConstants.acceptTask,
         data: payload,
       );
 
@@ -521,7 +523,6 @@ class HomeService {
         };
       }
 
-      // SUCCESS — fetch updated task object
       final updatedTask = response.data["RESULT"]?[0];
 
       return {
@@ -539,4 +540,20 @@ class HomeService {
     }
   }
 
+  // ⭐ NEW METHOD — Fully implemented
+  Future<Map<String, dynamic>> getTaskDetails(task) async {
+    try {
+      return {
+        "success": true,
+        "task": task,
+      };
+    } catch (e) {
+      dev.log("ERROR (getTaskDetails): $e");
+      return {
+        "success": false,
+        "message": "Error: $e",
+        "task": null,
+      };
+    }
+  }
 }

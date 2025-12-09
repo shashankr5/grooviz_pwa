@@ -3,6 +3,7 @@ import 'main_navigation.dart';
 import '../services/login_service.dart';
 import '../utils/user_session_helper.dart';
 import '../services/profile_service.dart';
+import 'forgot_password_page.dart'; // NEW
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -42,7 +43,6 @@ class _LoginPageState extends State<LoginPage> {
 
     /// ❌ Login Failed
     if (!response['success']) {
-      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(response['message'] ?? "Login failed"),
@@ -61,7 +61,6 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
 
     if (!profileRes["success"]) {
-      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Profile loading failed: ${profileRes["message"]}"),
@@ -71,10 +70,7 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    // 🌟 SUCCESS → Navigate only after enterprise_id stored
-    setState(() => _isLoading = false);
-
-    /// ✅ Login Success → Move to MainNavigation
+    /// 🌟 SUCCESS → Navigate only after enterprise_id stored
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const MainNavigation()),
@@ -97,7 +93,7 @@ class _LoginPageState extends State<LoginPage> {
               children: [
                 const SizedBox(height: 60),
 
-                /// ✅ Logo
+                /// Logo
                 Center(
                   child: Container(
                     height: 100,
@@ -116,7 +112,7 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 25),
 
-                /// ✅ Title
+                /// Title
                 const Center(
                   child: Text(
                     "Welcome Back",
@@ -129,7 +125,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 6),
 
-                /// ✅ Subtitle
+                /// Subtitle
                 Center(
                   child: Text(
                     "Login to continue",
@@ -142,7 +138,6 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 40),
 
-                // ✅ Username
                 const Text(
                   "Username",
                   style: TextStyle(
@@ -179,7 +174,6 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 20),
 
-                /// ✅ Password
                 const Text(
                   "Password",
                   style: TextStyle(
@@ -225,9 +219,34 @@ class _LoginPageState extends State<LoginPage> {
                       value!.isEmpty ? "Password required" : null,
                 ),
 
-                const SizedBox(height: 35),
+                const SizedBox(height: 12),
 
-                /// ✅ Login Button
+                /// 💛 Forgot Password Link (Option B)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ForgotPasswordPage(),
+                          ),
+                        );
+                      },
+                      child: const Text(
+                        "Forgot Password?",
+                        style: TextStyle(
+                          color: Color(0xFFFFC107),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+
                 SizedBox(
                   width: double.infinity,
                   height: 55,

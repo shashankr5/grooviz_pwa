@@ -48,6 +48,23 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  DateTime _parseTimestamp(String ts) {
+    try {
+      return DateTime.parse(ts);
+    } catch (e) {
+      return DateTime.now();
+    }
+  }
+
+  Color getTaskPriorityColor(String createdAt) {
+    final taskTime = _parseTimestamp(createdAt);
+    final diff = DateTime.now().difference(taskTime);
+
+    if (diff.inHours < 1) return Colors.green;
+    if (diff.inHours >= 1 && diff.inHours < 8) return Colors.yellow;
+    return Colors.red;
+  }
+
   Future<void> _loadUserName() async {
     final name = await UserSessionHelper.getUserName();
     if (mounted) {
@@ -57,20 +74,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // PARSE TIMESTAMP yyyy-MM-dd HH:mm:ss
-  // --------------------------------------------------------------------------
-  DateTime _parseTimestamp(String ts) {
-    try {
-      return DateTime.parse(ts);
-    } catch (e) {
-      return DateTime.now();
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // FORMAT TIME AGO + DATE
-  // --------------------------------------------------------------------------
   String formatTimeAgo(String ts) {
     if (ts.isEmpty) return "";
 
@@ -89,37 +92,18 @@ class _HomePageState extends State<HomePage> {
       timeAgo = "${diff.inDays}d ago";
     }
 
-    // Display Today / Yesterday / exact date
-    final today = DateTime(now.year, now.month, now.day);
-    final yesterday = today.subtract(const Duration(days: 1));
-    final createdDate = DateTime(createdAt.year, createdAt.month, createdAt.day);
-
-    String dateStr;
-    if (createdDate == today) {
-      dateStr =
-          "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
-    } else if (createdDate == yesterday) {
-      dateStr =
-          "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
-    } else {
-      dateStr =
-          "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
-    }
-
-    return "$timeAgo • $dateStr";
+    return timeAgo;
   }
 
-  // --------------------------------------------------------------------------
-  // LOAD TASKS FROM API — with sorting RECENT FIRST
-  // --------------------------------------------------------------------------
   Future<void> _loadTasks() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+    if (tasks.isEmpty) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
 
     final result = await HomeService().getTasks();
-
     if (!mounted) return;
 
     if (!result["success"]) {
@@ -133,36 +117,41 @@ class _HomePageState extends State<HomePage> {
     List<Map<String, dynamic>> raw =
         List<Map<String, dynamic>>.from(result["tasks"]);
 
-    // -------------------- SORT RECENT FIRST --------------------
     raw.sort((a, b) {
       final da = _parseTimestamp(a["raw"]["created_at"] ?? a["created_at"]);
       final db = _parseTimestamp(b["raw"]["created_at"] ?? b["created_at"]);
-      return db.compareTo(da); // newest FIRST
+      return db.compareTo(da);
     });
 
     setState(() {
       tasks = raw.map((t) {
+        String? assignedTo;
+        if (t["status"] == "In Progress") {
+          assignedTo = t["raw"]["assigned_to_name"] ??
+              t["raw"]["assigned_user_name"] ??
+              t["raw"]["assigned_name"] ??
+              t["raw"]["name"] ??
+              "-";
+        }
+
         return {
           ...t,
           "isAccepted": t["status"] == "In Progress",
           "statusColor": getStatusColor(t["status"]),
+          "assignedTo": assignedTo,
         };
       }).toList();
+
       _isLoading = false;
     });
   }
 
-  // --------------------------------------------------------------------------
-  // ACCEPT TASK
-  // --------------------------------------------------------------------------
   Future<void> _acceptTask(Map<String, dynamic> task) async {
-    final taskId = task["raw"]?["service_request_id"] ?? task["service_request_id"];
+    final taskId = task["raw"]?["service_request_id"];
     if (taskId == null) return;
 
     setState(() => _isLoading = true);
-
     final result = await HomeService().acceptTask(taskId: taskId);
-
     setState(() => _isLoading = false);
 
     if (!result["success"]) {
@@ -172,26 +161,20 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    setState(() {
-      final updated = result["updatedTask"];
-      task["raw"] = updated;
-      task["status"] = updated["status"];
-      task["statusColor"] = getStatusColor(updated["status"]);
-      task["isAccepted"] = true;
-
-      // ----------------- FIX -----------------
-      task["assignedTo"] = userName;
-      task["raw"]["assigned_to"] = userName;
-    });
+    final updated = result["updatedTask"];
+    if (updated != null) {
+      setState(() {
+        task["status"] = "In Progress";
+        task["statusColor"] = Colors.orange;
+        task["assignedTo"] = updated["assigned_to_name"] ?? userName;
+      });
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Task Accepted 🎉")),
     );
   }
 
-  // --------------------------------------------------------------------------
-  // FILTERED TASKS LOGIC
-  // --------------------------------------------------------------------------
   List<Map<String, dynamic>> get filteredTasks {
     if (selectedFilter == "All") {
       return tasks
@@ -207,7 +190,6 @@ class _HomePageState extends State<HomePage> {
         .toList();
   }
 
-  // MAIN UI
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -271,7 +253,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // MAIN CONTENT UI
   Widget _buildContent() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -279,8 +260,6 @@ class _HomePageState extends State<HomePage> {
         const SizedBox(height: 15),
         _buildFilters(),
         const SizedBox(height: 20),
-
-        // HEADER
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
           child: Column(
@@ -294,47 +273,69 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
         ),
-
         const SizedBox(height: 15),
-
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: filteredTasks.length,
-            itemBuilder: (context, index) {
-              final task = filteredTasks[index];
-              return GestureDetector(
-                onTap: () async {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => TicketDetailPage(
-                        task: task,
-                        staffList: staffList,
-                        onClose: () {
-                          setState(() {
-                            task["status"] = "Closed";
-                            task["statusColor"] = Colors.green;
-                          });
-                        },
-                        onReassign: (updatedTask) async {
-                          await _loadTasks();
-                        },
+          child: RefreshIndicator(
+            onRefresh: _loadTasks,
+            child: ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: filteredTasks.length,
+              itemBuilder: (context, index) {
+                final task = filteredTasks[index];
+                return GestureDetector(
+                  onTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => TicketDetailPage(
+                          task: task,      // 🟢 FIXED
+                          staffList: staffList,
+                          onClose: () {
+                            setState(() {
+                              final idx = tasks.indexWhere((t) =>
+                                  t["raw"]["service_request_id"] ==
+                                  task["raw"]["service_request_id"]);
+                              if (idx != -1) {
+                                tasks[idx]["status"] = "Closed";
+                                tasks[idx]["statusColor"] = getStatusColor("Closed");
+                                tasks[idx]["isAccepted"] = false;
+                              }
+                            });
+                          },
+                          onReassign: (updatedTask) {
+                            setState(() {
+                              final idx = tasks.indexWhere((t) =>
+                                  t["raw"]["service_request_id"] ==
+                                  updatedTask["service_request_id"]);
+                              if (idx != -1) {
+                                tasks[idx]["assignedTo"] =
+                                    updatedTask["assigned_to_name"] ?? "-";
+                                tasks[idx]["status"] =
+                                    updatedTask["status"] ?? tasks[idx]["status"];
+                                tasks[idx]["statusColor"] =
+                                    getStatusColor(tasks[idx]["status"]);
+                                tasks[idx]["isAccepted"] = true;
+                              }
+                            });
+                          },
+                        ),
                       ),
-                    ),
-                  );
-                  setState(() {});
-                },
-                child: _buildTaskCard(task),
-              );
-            },
+                    );
+
+                    // 🔥 Instant UI refresh — Closed tickets disappear immediately
+                    setState(() {});
+                  },
+                  child: _buildTaskCard(task),
+                );
+              },
+            ),
           ),
         ),
       ],
     );
   }
 
-  // FILTER TABS
   Widget _buildFilters() {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -373,14 +374,16 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // TASK CARD UI
+  /// ⬇️ Task Card ⬇️
   Widget _buildTaskCard(Map<String, dynamic> task) {
+    final createdAt = task["raw"]["created_at"] ?? task["created_at"] ?? "";
+    final stripColor = getTaskPriorityColor(createdAt);
+
     return Container(
       margin: const EdgeInsets.only(bottom: 18),
-      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
             color: Colors.black12.withOpacity(0.05),
@@ -389,64 +392,85 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Top Row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              _pill("Room ${task["room"]}", Colors.amber.shade100),
-              _pill(task["status"], task["statusColor"].withOpacity(0.2),
-                  textColor: task["statusColor"]),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-
-          // TITLE ONLY
-          Text(
-            task["title"],
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-
-          const SizedBox(height: 18),
-
-          // Buttons Row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              (task["status"] == "Open")
-                  ? ElevatedButton(
-                      onPressed: () => _acceptTask(task),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                      ),
-                      child: const Text("Accept"),
-                    )
-                  : Row(
-                      children: const [
-                        Icon(Icons.check_circle, size: 18, color: Colors.green),
-                        SizedBox(width: 6),
-                        Text(
-                          "Accepted",
-                          style: TextStyle(color: Colors.green, fontSize: 14),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Row(
+          children: [
+            Container(
+              width: 6,
+              height:160,
+              decoration: BoxDecoration(
+                color: stripColor,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _pill("Room ${task["room"]}", Colors.amber.shade100),
+                        _pill(
+                          task["status"],
+                          task["statusColor"].withOpacity(0.2),
+                          textColor: task["statusColor"],
                         ),
                       ],
                     ),
-              Text(
-                formatTimeAgo(task["raw"]["created_at"] ?? task["created_at"] ?? ""),
-                style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                    const SizedBox(height: 12),
+                    Text(
+                      task["title"],
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    if (task["isAccepted"] == true)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          "Assigned to ${task["assignedTo"] ?? "-"}",
+                          style:
+                              const TextStyle(color: Colors.green, fontSize: 14),
+                        ),
+                      ),
+                    const SizedBox(height: 18),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        (task["status"] == "Open")
+                            ? ElevatedButton(
+                                onPressed: () => _acceptTask(task),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 20, vertical: 8),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                ),
+                                child: const Text("Accept"),
+                              )
+                            : const SizedBox.shrink(),
+                        Text(
+                          formatTimeAgo(createdAt),
+                          style:
+                              TextStyle(color: Colors.grey[600], fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -454,9 +478,11 @@ class _HomePageState extends State<HomePage> {
   Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
       child: Text(text,
-          style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+          style:
+              TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 }

@@ -14,6 +14,9 @@ class ApiConstants {
   static const String closeServiceRequest = "$baseUrl/ScreenSync_close_service_request_mobile";
   static const String acceptTask = "$baseUrl/ScreenSync_task_accept_mobile";
   static const String taskSummary = "$baseUrl/ScreenSync_get_tasks_summary_mobile";
+  static const String sendOtp = "$baseUrl/ScreenSync_send_otp_mobile";
+  static const String verifyOtp = "$baseUrl/ScreenSync_verify_otp_mobile";
+  static const String resetPassword = "$baseUrl/ScreenSync_reset_password_mobile";
 }
 
 
