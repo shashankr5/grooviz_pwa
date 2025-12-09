@@ -37,6 +37,9 @@ class LoginService {
     );
   }
 
+  /// ----------------------------------------------------
+  /// LOGIN API
+  /// ----------------------------------------------------
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
@@ -65,30 +68,46 @@ class LoginService {
         return {"success": false, "message": "Server error ${response.statusCode}"};
       }
 
-      final statusList = response.data["STATUS"] as List?;
-      final resultList = response.data["RESULT"] as List?;
+      final statusRaw = response.data["STATUS"];
+      final resultRaw = response.data["RESULT"];
 
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response"};
+      List<Map<String, dynamic>> statusList = [];
+      List<Map<String, dynamic>> resultList = [];
+
+      if (statusRaw is List) {
+        statusList = List<Map<String, dynamic>>.from(statusRaw);
+      } else if (statusRaw is Map) {
+        statusList = [Map<String, dynamic>.from(statusRaw)];
       }
 
-      final statusFlag = statusList[0]["status"] ?? "F";
-      final statusMessage = statusList[0]["message"] ?? "Unknown";
+      if (resultRaw is List) {
+        resultList = List<Map<String, dynamic>>.from(resultRaw);
+      } else if (resultRaw is Map) {
+        resultList = [Map<String, dynamic>.from(resultRaw)];
+      }
+
+      if (statusList.isEmpty) {
+        return {"success": false, "message": "Invalid server response"};
+      }
+
+      final statusFlag = statusList[0]["status"]?.toString() ?? "F";
+      final statusMessage = statusList[0]["message"]?.toString() ?? "Unknown error";
 
       if (statusFlag != "S") {
         return {"success": false, "message": statusMessage};
       }
 
-      if (resultList == null || resultList.isEmpty) {
+      if (resultList.isEmpty) {
         return {"success": false, "message": "No user data returned"};
       }
 
-      final user = Map<String, dynamic>.from(resultList[0]);
+      final user = resultList[0];
 
-      /// Save session safely
-      final userId = user["user_id"];
-      await UserSessionHelper.saveUserId(userId is int ? userId : int.tryParse("$userId") ?? 0);
+      final userIdRaw = user["user_id"];
+      final userId =
+          userIdRaw is int ? userIdRaw : int.tryParse(userIdRaw.toString()) ?? 0;
 
+      await UserSessionHelper.saveUserId(userId);
       await UserSessionHelper.saveUserName(user["full_name"]?.toString() ?? "");
       await UserSessionHelper.saveEmail(user["email"]?.toString() ?? "");
       await UserSessionHelper.savePhone(user["phone"]?.toString() ?? "");
@@ -100,7 +119,6 @@ class LoginService {
         "user": user,
         "user_id": userId,
       };
-
     } on DioException catch (e) {
       dev.log("❌ Dio error: ${e.message}");
       return {"success": false, "message": "Network error"};
@@ -108,5 +126,120 @@ class LoginService {
       dev.log("⚠️ Exception: $e");
       return {"success": false, "message": "Error: $e"};
     }
+  }
+
+  /// ----------------------------------------------------
+  /// SEND OTP
+  /// ----------------------------------------------------
+  Future<Map<String, dynamic>> sendOtp({
+    required String mobile,
+  }) async {
+    try {
+      final payload = {
+        "mobile_no": mobile,
+        "action": "SEND_OTP",
+      };
+
+      dev.log("📤 Send OTP Payload: $payload");
+      final response = await _dio.post(ApiConstants.sendOtp, data: payload);
+
+      return _parseResponse(response);
+    } catch (e) {
+      return _handleError(e);
+    }
+  }
+
+  /// ----------------------------------------------------
+  /// VERIFY OTP
+  /// ----------------------------------------------------
+  Future<Map<String, dynamic>> verifyOtp({
+    required String mobile,
+    required String otp,
+  }) async {
+    try {
+      final payload = {
+        "mobile_no": mobile,
+        "otp": otp,
+        "action": "VERIFY_OTP",
+      };
+
+      dev.log("📤 Verify OTP Payload: $payload");
+      final response = await _dio.post(ApiConstants.verifyOtp, data: payload);
+
+      return _parseResponse(response);
+    } catch (e) {
+      return _handleError(e);
+    }
+  }
+
+  /// ----------------------------------------------------
+  /// RESET PASSWORD
+  /// ----------------------------------------------------
+  Future<Map<String, dynamic>> resetPassword({
+    required String mobile,
+    required String newPassword,
+  }) async {
+    try {
+      final payload = {
+        "mobile_no": mobile,
+        "new_pass": newPassword,
+        "action": "RESET_PASSWORD",
+      };
+
+      dev.log("📤 Reset Password Payload: $payload");
+      final response = await _dio.post(ApiConstants.resetPassword, data: payload);
+
+      return _parseResponse(response);
+    } catch (e) {
+      return _handleError(e);
+    }
+  }
+
+  /// ----------------------------------------------------
+  /// RESPONSE NORMALIZER
+  /// ----------------------------------------------------
+  Map<String, dynamic> _parseResponse(Response response) {
+    if (response.statusCode != 200) {
+      return {"success": false, "message": "Server error"};
+    }
+
+    final statusRaw = response.data["STATUS"];
+    final resultRaw = response.data["RESULT"];
+
+    List<Map<String, dynamic>> statusList = [];
+    List<Map<String, dynamic>> resultList = [];
+
+    if (statusRaw is List) {
+      statusList = List<Map<String, dynamic>>.from(statusRaw);
+    } else if (statusRaw is Map) {
+      statusList = [Map<String, dynamic>.from(statusRaw)];
+    }
+
+    if (resultRaw is List) {
+      resultList = List<Map<String, dynamic>>.from(resultRaw);
+    } else if (resultRaw is Map) {
+      resultList = [Map<String, dynamic>.from(resultRaw)];
+    }
+
+    if (statusList.isEmpty) {
+      return {"success": false, "message": "Invalid server response"};
+    }
+
+    final statusFlag = statusList[0]["status"]?.toString() ?? "F";
+    final message = statusList[0]["message"]?.toString() ?? "Unknown error";
+
+    return {
+      "success": statusFlag == "S",
+      "message": message,
+      "result": resultList.isNotEmpty ? resultList[0] : null,
+    };
+  }
+
+  /// ----------------------------------------------------
+  /// ERROR HANDLER
+  /// ----------------------------------------------------
+  Map<String, dynamic> _handleError(dynamic error) {
+    dev.log("❌ Error: $error");
+    return {"success": false, "message": "Something went wrong"};
   }
 }

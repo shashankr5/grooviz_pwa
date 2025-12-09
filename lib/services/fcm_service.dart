@@ -7,7 +7,7 @@ class FCMService {
 
   // Initialize FCM and get token
   static Future<void> initialize() async {
-    
+    try {
       // Request permissions
       await _fcm.requestPermission(
         alert: true,

@@ -1,0 +1,224 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../services/login_service.dart';
+import 'reset_password_page.dart';
+
+class OtpVerifyPage extends StatefulWidget {
+  final String mobile;
+
+  const OtpVerifyPage({super.key, required this.mobile});
+
+  @override
+  State<OtpVerifyPage> createState() => _OtpVerifyPageState();
+}
+
+class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateMixin {
+  final List<TextEditingController> _controllers = List.generate(6, (_) => TextEditingController());
+  final List<FocusNode> _focusNodes = List.generate(6, (_) => FocusNode());
+
+  bool _isLoading = false;
+  bool _isResending = false;
+  int _resendCountdown = 30;
+  Timer? _timer;
+
+  AnimationController? _successAnimationController;
+
+  @override
+  void initState() {
+    super.initState();
+    _startResendTimer();
+
+    _successAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    // Auto-focus first field
+    _focusNodes[0].requestFocus();
+  }
+
+  @override
+  void dispose() {
+    for (var c in _controllers) {
+      c.dispose();
+    }
+    for (var f in _focusNodes) {
+      f.dispose();
+    }
+    _timer?.cancel();
+    _successAnimationController?.dispose();
+    super.dispose();
+  }
+
+  String get _enteredOtp => _controllers.map((c) => c.text).join();
+
+  void _startResendTimer() {
+    _resendCountdown = 30;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_resendCountdown <= 0) {
+        timer.cancel();
+      } else {
+        setState(() => _resendCountdown--);
+      }
+    });
+  }
+
+  Future<void> _verifyOtp() async {
+    if (_enteredOtp.length != 6) {
+      _showSnack("Enter valid 6-digit OTP");
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    final response = await LoginService().verifyOtp(
+      mobile: widget.mobile,
+      otp: _enteredOtp,
+    );
+
+    setState(() => _isLoading = false);
+
+    if (!response['success']) {
+      _showSnack(response['message'] ?? "Invalid OTP");
+      return;
+    }
+
+    // Success animation
+    await _successAnimationController!.forward();
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ResetPasswordPage(mobile: widget.mobile),
+      ),
+    );
+  }
+
+  Future<void> _resendOtp() async {
+    if (_resendCountdown > 0) return;
+
+    setState(() => _isResending = true);
+    final response = await LoginService().sendOtp(mobile: widget.mobile);
+    setState(() => _isResending = false);
+
+    if (!mounted) return;
+
+    if (!response["success"]) {
+      _showSnack(response["message"] ?? "Failed to resend OTP");
+      return;
+    }
+
+    _showSnack("OTP sent successfully");
+    _startResendTimer();
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.black87,
+      ),
+    );
+  }
+
+  Widget _buildOtpField(int index) {
+    return SizedBox(
+      width: 45,
+      child: TextField(
+        controller: _controllers[index],
+        focusNode: _focusNodes[index],
+        keyboardType: TextInputType.number,
+        textAlign: TextAlign.center,
+        maxLength: 1,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: InputDecoration(
+          counterText: "",
+          filled: true,
+          fillColor: Colors.grey.shade100,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        onChanged: (val) {
+          if (val.isNotEmpty && index < 5) {
+            _focusNodes[index + 1].requestFocus();
+          }
+          if (val.isEmpty && index > 0) {
+            _focusNodes[index - 1].requestFocus();
+          }
+        },
+      ),
+    );
+  }
+
+  String get _maskedMobile {
+    if (widget.mobile.length != 10) return widget.mobile;
+    return "${widget.mobile.substring(0, 3)}****${widget.mobile.substring(7)}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black),
+        title: const Text("OTP Verification", style: TextStyle(color: Colors.black)),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const SizedBox(height: 20),
+            Text(
+              "Enter the 6-digit OTP sent to $_maskedMobile",
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, color: Colors.black87),
+            ),
+            const SizedBox(height: 30),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: List.generate(6, (i) => _buildOtpField(i)),
+            ),
+            const SizedBox(height: 30),
+
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton(
+                onPressed: _isLoading ? null : _verifyOtp,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFC107),
+                  disabledBackgroundColor: Colors.grey.shade400,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.black)
+                    : const Text("Verify OTP", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18, color: Colors.black87)),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            TextButton(
+              onPressed: (_resendCountdown == 0 && !_isResending) ? _resendOtp : null,
+              child: Text(
+                _isResending
+                    ? "Resending..."
+                    : (_resendCountdown > 0 ? "Resend OTP in $_resendCountdown s" : "Resend OTP"),
+                style: TextStyle(
+                  color: _resendCountdown == 0 ? Colors.blue : Colors.grey,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
