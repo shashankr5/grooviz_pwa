@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import 'ticket_details_page.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/app_snackbar.dart';
+
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -10,30 +12,60 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage>
+    with SingleTickerProviderStateMixin {
   String selectedFilter = "All";
-  String selectedDateFilter = "All Days"; 
+  String selectedDateFilter = "All Days";
   String userName = "";
+  int? loggedInUserId;
+  int _currentTabIndex = 0;
 
   bool _isLoading = true;
   String? _errorMessage;
+  bool _deptLoaded = false;
+  late TabController _tabController;
+
+  // Food Orders
+  bool isRoomServiceUser = false;
+  bool _foodLoading = true;
+  String? _foodError;
+  String selectedFoodFilter = "Ready";
 
   List<Map<String, dynamic>> tasks = [];
 
-  final List<Map<String, String>> staffList = [
-    {"name": "John Doe", "department": "Maintenance"},
-    {"name": "Aisha Sharma", "department": "Housekeeping"},
-    {"name": "Rahul Verma", "department": "Electrical"},
-    {"name": "Priya Nair", "department": "Plumbing"},
-    {"name": "Rahul Raj", "department": "Security"},
-    {"name": "Karun Nair", "department": "Admin"},
-  ];
+  final List<Map<String, dynamic>> readyOrders = [];
+  final List<Map<String, dynamic>> acceptedOrders = [];
+  final List<Map<String, dynamic>> deliveredOrders = [];
+  int get currentSectionCount => filteredTasks.length;
 
   @override
   void initState() {
     super.initState();
+
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging == false) {
+        _currentTabIndex = _tabController.index;
+      }
+    });
+
+    _loadUserId();
     _loadUserName();
     _loadTasks();
+    _initDepartmentsAndFood();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadUserId() async {
+    loggedInUserId = await UserSessionHelper.getUserId();
+    if (mounted) {
+      setState(() {}); // forces activeTasks to recalc
+    }
   }
 
   Color getStatusColor(String status) {
@@ -49,11 +81,39 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  DateTime _parseTimestamp(String ts) {
+  ButtonStyle _taskButtonStyle(Color bgColor) {
+    return ElevatedButton.styleFrom(
+      backgroundColor: bgColor,
+      foregroundColor: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+    );
+  }
+
+  DateTime _parseTimestamp(String? ts) {
+    if (ts == null || ts.trim().isEmpty) {
+      return DateTime.now().subtract(const Duration(minutes: 5));
+    }
+
     try {
-      return DateTime.parse(ts);
+      String fixed = ts.trim();
+
+      // Remove UTC if exists
+      fixed = fixed.replaceAll(" UTC", "");
+
+      // Convert space datetime to ISO
+      if (fixed.contains(" ") && !fixed.contains("T")) {
+        fixed = fixed.replaceFirst(" ", "T");
+      }
+
+      return DateTime.parse(fixed).toLocal();
     } catch (e) {
-      return DateTime.now();
+      debugPrint("❌ Timestamp parse failed: $ts");
+
+      // fallback far enough to avoid 0s ago
+      return DateTime.now().subtract(const Duration(minutes: 10));
     }
   }
 
@@ -71,6 +131,41 @@ class _HomePageState extends State<HomePage> {
         date.day == yesterday.day;
   }
 
+  String _formatOnlyTime(String? ts) {
+    if (ts == null || ts.isEmpty) return "";
+
+    try {
+      final utc = DateTime.parse(ts);
+      final ist = utc.add(const Duration(hours: 5, minutes: 30));
+
+      final h = ist.hour.toString().padLeft(2, '0');
+      final m = ist.minute.toString().padLeft(2, '0');
+      return "$h:$m";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  String _formatISTDateTime(String? ts) {
+    if (ts == null || ts.isEmpty) return "";
+
+    try {
+      final utc = DateTime.parse(ts);
+      final ist = utc.add(const Duration(hours: 5, minutes: 30));
+
+      final d = ist.day.toString().padLeft(2, '0');
+      final m = ist.month.toString().padLeft(2, '0');
+      final y = ist.year;
+
+      final h = ist.hour.toString().padLeft(2, '0');
+      final min = ist.minute.toString().padLeft(2, '0');
+
+      return "$d/$m/$y $h:$min";
+    } catch (e) {
+      return "";
+    }
+  }
+
   Future<void> _loadUserName() async {
     final name = await UserSessionHelper.getUserName();
     if (mounted) {
@@ -85,7 +180,12 @@ class _HomePageState extends State<HomePage> {
 
     final createdAt = _parseTimestamp(ts);
     final now = DateTime.now();
-    final diff = now.difference(createdAt);
+
+    Duration diff = now.difference(createdAt);
+
+    if (diff.isNegative) {
+      diff = Duration.zero;
+    }
 
     if (diff.inSeconds < 60) return "${diff.inSeconds}s ago";
     if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
@@ -96,6 +196,7 @@ class _HomePageState extends State<HomePage> {
   Color getTaskPriorityColor(String createdAt) {
     final taskTime = _parseTimestamp(createdAt);
     final diff = DateTime.now().difference(taskTime);
+
     if (diff.inHours < 1) return Colors.green;
     if (diff.inHours >= 1 && diff.inHours < 8) return Colors.yellow;
     return Colors.red;
@@ -120,8 +221,19 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    List<Map<String, dynamic>> raw =
-        List<Map<String, dynamic>>.from(result["tasks"]);
+    final List<Map<String, dynamic>> rawList =
+    List<Map<String, dynamic>>.from(result["tasks"]);
+
+    final Map<int, Map<String, dynamic>> uniqueMap = {};
+
+    for (final t in rawList) {
+      final id = t["service_request_id"] ?? t["raw"]?["service_request_id"];
+      if (id != null) {
+        uniqueMap[id] = t; // overwrite duplicates
+      }
+    }
+
+    final List<Map<String, dynamic>> raw = uniqueMap.values.toList();
 
     raw.sort((a, b) {
       final da = _parseTimestamp(a["raw"]["created_at"] ?? a["created_at"]);
@@ -131,19 +243,11 @@ class _HomePageState extends State<HomePage> {
 
     setState(() {
       tasks = raw.map((t) {
-        String? assignedTo;
-        if (t["status"] == "In Progress") {
-          assignedTo = t["raw"]["assigned_to_name"] ??
-              t["raw"]["assigned_user_name"] ??
-              t["raw"]["assigned_name"] ??
-              "-";
-        }
-
         return {
           ...t,
           "isAccepted": t["status"] == "In Progress",
           "statusColor": getStatusColor(t["status"]),
-          "assignedTo": assignedTo,
+          "assignedTo": t["raw"]?["assigned_to_name"] ?? "-",
         };
       }).toList();
 
@@ -151,43 +255,94 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  Future<void> _loadUserDepartments() async {
+    final depts = await UserSessionHelper.getDepartments();
+
+    debugPrint("🔥 RAW DEPARTMENTS = $depts");
+
+    final normalized = depts
+        .map((e) => e.toLowerCase().trim())
+        .toList();
+
+    if (!mounted) return;
+
+    setState(() {
+      isRoomServiceUser = normalized.any((d) {
+        return d.contains("room") && d.contains("service");
+      });
+
+      debugPrint("🔥 isRoomServiceUser = $isRoomServiceUser");
+      _deptLoaded = true;
+    });
+  }
+
+  Future<void> _initDepartmentsAndFood() async {
+    await _loadUserDepartments();
+
+    if (isRoomServiceUser) {
+      _loadReadyOrders();
+      _loadAcceptedOrders();
+      _loadDeliveredOrders();
+    }
+  }
+
   Future<void> _acceptTask(Map<String, dynamic> task) async {
     final taskId = task["raw"]?["service_request_id"];
     if (taskId == null) return;
 
     setState(() => _isLoading = true);
+
     final result = await HomeService().acceptTask(taskId: taskId);
+
+    if (!mounted) return;
+
     setState(() => _isLoading = false);
 
     if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result["message"] ?? "Failed to accept task")),
-      );
+      AppSnackBar.show(context, result["message"] ?? "Failed", isError: true);
       return;
     }
 
-    final updated = result["updatedTask"];
-    if (updated != null) {
-      setState(() {
-        task["status"] = "In Progress";
-        task["statusColor"] = Colors.orange;
-        task["assignedTo"] = updated["assigned_to_name"] ?? userName;
-      });
-    }
+    await _loadTasks();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Task Accepted 🎉")),
-    );
+    AppSnackBar.show(context, "Task Accepted 🎉");
   }
 
-  List<Map<String, dynamic>> get filteredTasks {
-    List<Map<String, dynamic>> byStatus =
-        selectedFilter == "All"
-            ? tasks.where((t) => t["status"] == "Open" || t["status"] == "In Progress").toList()
-            : tasks.where((t) => t["status"] == selectedFilter).toList();
 
-    return byStatus.where((t) {
-      final createdAt = t["raw"]?["created_at"] ?? t["created_at"] ?? "";
+  List<Map<String, dynamic>> get filteredTasks {
+    if (loggedInUserId == null) return [];
+
+    List<Map<String, dynamic>> list;
+
+    switch (selectedFilter) {
+      case "Open":
+        list = tasks.where((t) => t["status"] == "Open").toList();
+        break;
+
+      case "In Progress":
+        list = tasks.where((t) => t["status"] == "In Progress").toList();
+        break;
+
+      case "Closed":
+        list = tasks.where((t) => t["status"] == "Closed").toList()
+          ..sort((a, b) {
+            final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
+            final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
+            return db.compareTo(da);
+          });
+        break;
+
+      default:
+        list = tasks.where((t) => t["status"] != "Closed").toList()
+          ..sort((a, b) {
+            final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
+            final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
+            return db.compareTo(da);
+          });
+    }
+
+    return list.where((t) {
+      final createdAt = t["raw"]?["created_at"] ?? "";
       final date = _parseTimestamp(createdAt);
 
       switch (selectedDateFilter) {
@@ -204,25 +359,316 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<Map<String, dynamic>> get activeTasks {
-    return tasks
-        .where((t) => t["status"] == "Open" || t["status"] == "In Progress")
-        .toList();
+    if (loggedInUserId == null) return [];
+
+    return tasks.where((t) {
+      final assignedToId =
+      int.tryParse("${t["raw"]?["assigned_to"]}");
+      return assignedToId == loggedInUserId &&
+          (t["status"] == "Open" || t["status"] == "In Progress");
+    }).toList();
+  }
+
+  Future<void> _loadReadyOrders() async {
+    setState(() {
+      _foodLoading = true;
+      _foodError = null;
+    });
+
+    final result = await HomeService().getReadyOrdersForRoomService();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      setState(() {
+        _foodError = result["message"];
+        _foodLoading = false;
+      });
+      return;
+    }
+
+    final grouped = _groupReadyOrders(
+      List<Map<String, dynamic>>.from(result["orders"]),
+    );
+
+    setState(() {
+      readyOrders
+        ..clear()
+        ..addAll(
+          grouped.map((o) => {
+            ...o,
+            "uiStatus": "Ready",
+          }),
+        );
+
+      _foodLoading = false;
+    });
+  }
+
+  Future<void> _acceptFood(Map<String, dynamic> food) async {
+    final res = await HomeService().updateRoomServiceStatus(
+      orderNumber: food["orderNumber"],
+      action: "Accept",
+    );
+
+    if (!res["success"]) {
+      AppSnackBar.show(context, res["message"], isError: true);
+      return;
+    }
+
+    // ALWAYS reload from backend
+    await _loadReadyOrders();
+    await _loadAcceptedOrders();
+    await _loadDeliveredOrders();
+
+    AppSnackBar.show(context, "Order accepted");
+  }
+
+  Future<void> _deliverFood(Map<String, dynamic> food) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Confirm Delivery"),
+        content: const Text("Mark this order as delivered?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Deliver"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    final res = await HomeService().updateRoomServiceStatus(
+      orderNumber: food["orderNumber"],
+      action: "Delivered",
+    );
+
+    if (!res["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(res["message"])),
+      );
+      return;
+    }
+
+    // reload authoritative state
+    await _loadReadyOrders();
+    await _loadAcceptedOrders();
+    await _loadDeliveredOrders();
+
+    AppSnackBar.show(context, "Order delivered successfully");
+  }
+
+
+  List<Map<String, dynamic>> _groupReadyOrders(List<Map<String, dynamic>> apiOrders) {
+    final Map<String, Map<String, dynamic>> grouped = {};
+
+    for (final o in apiOrders) {
+      final orderNo = o["orderNumber"];
+
+      if (!grouped.containsKey(orderNo)) {
+        grouped[orderNo] = {
+          "orderNumber": orderNo,
+          "roomNumber": o["roomNumber"],
+          "guestName": o["guestName"],
+          "status": o["status"],
+          "items": [],
+          "orderTime": o["orderTime"],
+          "raw": o["raw"],
+        };
+      }
+
+      grouped[orderNo]!["items"].add({
+        "name": o["foodItem"],
+        "qty": o["quantity"],
+      });
+    }
+
+    return grouped.values.toList();
+  }
+
+  Future<void> _loadAcceptedOrders() async {
+    setState(() => _foodLoading = true);
+
+    final result = await HomeService().getAcceptedOrdersForRoomService();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result["message"] ?? "Failed to load accepted orders")),
+      );
+
+      // IMPORTANT: stop spinner on failure
+      setState(() => _foodLoading = false);
+      return;
+    }
+
+    final grouped = _groupAcceptedOrders(
+      List<Map<String, dynamic>>.from(result["orders"]),
+    );
+
+    setState(() {
+      acceptedOrders
+        ..clear()
+        ..addAll(grouped.map((o) => {...o, "uiStatus": "Accepted"}));
+
+      _foodLoading = false;
+    });
+  }
+
+  List<Map<String, dynamic>> _groupAcceptedOrders(List<Map<String, dynamic>> apiOrders) {
+    final Map<String, Map<String, dynamic>> grouped = {};
+
+    for (final o in apiOrders) {
+      final orderNo = o["orderNumber"];
+
+      if (!grouped.containsKey(orderNo)) {
+        grouped[orderNo] = {
+          "orderNumber": orderNo,
+          "roomNumber": o["roomNumber"],
+          "guestName": o["guestName"],
+          "status": o["status"],
+          "items": [],
+          "orderTime": o["orderTime"],
+          "raw": o["raw"],
+        };
+      }
+
+      grouped[orderNo]!["items"].add({
+        "name": o["foodItem"],
+        "qty": o["quantity"],
+      });
+    }
+
+    return grouped.values.toList();
+  }
+
+  Future<void> _loadDeliveredOrders() async {
+    setState(() => _foodLoading = true);
+
+    final result = await HomeService().getDeliveredOrdersForRoomService();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result["message"] ?? "Failed to load delivered orders")),
+      );
+      setState(() => _foodLoading = false);
+      return;
+    }
+
+    final grouped = _groupDeliveredOrders(
+      List<Map<String, dynamic>>.from(result["orders"]),
+    );
+
+    setState(() {
+      deliveredOrders
+        ..clear()
+        ..addAll(grouped.map((o) => {...o, "uiStatus": "Delivered"}));
+      _foodLoading = false;
+    });
+  }
+
+  List<Map<String, dynamic>> _groupDeliveredOrders(List<Map<String, dynamic>> apiOrders) {
+    final Map<String, Map<String, dynamic>> grouped = {};
+
+    for (final o in apiOrders) {
+      final orderNo = o["orderNumber"];
+
+      if (!grouped.containsKey(orderNo)) {
+        grouped[orderNo] = {
+          "orderNumber": orderNo,
+          "roomNumber": o["roomNumber"],
+          "guestName": o["guestName"],
+          "status": o["status"],
+          "items": [],
+          "orderTime": o["orderTime"],
+          "raw": o["raw"],
+        };
+      }
+
+      grouped[orderNo]!["items"].add({
+        "name": o["foodItem"],
+        "qty": o["quantity"],
+      });
+    }
+
+    return grouped.values.toList();
+  }
+
+  List<Map<String, dynamic>> get filteredFoodOrders {
+    switch (selectedFoodFilter) {
+      case "Ready":
+        return readyOrders;
+      case "Accepted":
+        return acceptedOrders;
+      case "Delivered":
+        return deliveredOrders;
+      default:
+        return readyOrders;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_deptLoaded) {
+      return Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    // 🔹 NON Room Service → ONLY TASKS (NO TABS)
+    if (!isRoomServiceUser) {
+      return Scaffold(
+        backgroundColor: Colors.grey[100],
+        appBar: _buildSimpleAppBar(),
+        body: Stack(
+          children: [
+            _errorMessage != null ? _buildError() : _buildContent(),
+
+            if (_isLoading)
+              const Positioned.fill(
+                child: ColoredBox(
+                  color: Colors.black26,
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    // 🔹 Room Service → TASKS + FOOD TABS
     return Scaffold(
       backgroundColor: Colors.grey[100],
-      appBar: _buildAppBar(),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _errorMessage != null
+      appBar: _buildAppBarWithTabs(),
+      body: Stack(
+        children: [
+          _errorMessage != null
               ? _buildError()
-              : _buildContent(),
+              : _buildTabsBody(),
+
+          if (_isLoading)
+            const Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black26,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
-  AppBar _buildAppBar() {
+  AppBar _buildSimpleAppBar() {
     return AppBar(
       automaticallyImplyLeading: false,
       backgroundColor: Colors.white,
@@ -230,7 +676,31 @@ class _HomePageState extends State<HomePage> {
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Welcome,", style: TextStyle(fontSize: 14, color: Colors.black54)),
+          const Text(
+            "Welcome,",
+            style: TextStyle(fontSize: 14, color: Colors.black54),
+          ),
+          Text(
+            "$userName 👋",
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
+  }
+
+  AppBar _buildAppBarWithTabs() {
+    return AppBar(
+      automaticallyImplyLeading: false,
+      backgroundColor: Colors.white,
+      elevation: 1,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "Welcome,",
+            style: TextStyle(fontSize: 14, color: Colors.black54),
+          ),
           Text(
             "$userName 👋",
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
@@ -238,21 +708,51 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.notifications_outlined, size: 28),
-          onPressed: () {},
-        ),
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: CircleAvatar(
             backgroundColor: Colors.deepPurple,
             child: Text(
               userName.isNotEmpty ? userName[0].toUpperCase() : "?",
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
-        )
+        ),
       ],
+
+      // 👇 TAB BAR ADDED HERE
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(60),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Container(
+            height: 45,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: TabBar(
+              controller: _tabController,
+              indicatorSize: TabBarIndicatorSize.tab,
+              dividerColor: Colors.transparent,
+              labelColor: Colors.white,
+              unselectedLabelColor: Colors.black87,
+              indicator: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.all(Radius.circular(30)),
+              ),
+              tabs: [
+                Tab(text: "Tasks"),
+                Tab(text: "Food"),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -272,6 +772,199 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildFoodTab() {
+    if (_foodLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_foodError != null) {
+      return Center(child: Text(_foodError!));
+    }
+
+    return Column(
+      children: [
+        const SizedBox(height: 16),
+
+        // Filters
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: ["Ready", "Accepted", "Delivered"].map((f) {
+            final selected = selectedFoodFilter == f;
+
+            return GestureDetector(
+              onTap: () {
+                setState(() => selectedFoodFilter = f);
+              },
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                decoration: BoxDecoration(
+                  color: selected ? Colors.amber[700] : Colors.white,
+                  borderRadius: BorderRadius.circular(25),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Text(
+                  f,
+                  style: TextStyle(
+                    color: selected ? Colors.white : Colors.black,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+
+        const SizedBox(height: 16),
+
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () async {
+              await _loadReadyOrders();
+              await _loadAcceptedOrders();
+              await _loadDeliveredOrders();
+            },
+            child: filteredFoodOrders.isEmpty
+                ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: const [
+                SizedBox(height: 200),
+                Center(child: Text("No orders")),
+              ],
+            )
+                : ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: filteredFoodOrders.length,
+              itemBuilder: (context, index) {
+                return _buildFoodCard(filteredFoodOrders[index]);
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFoodCard(Map<String, dynamic> food) {
+    final items = food["items"] as List;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black12.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Order ${food["orderNumber"]}",
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    "Room ${food["roomNumber"]}",
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+              _foodStatusPill(food["uiStatus"])
+            ],
+          ),
+
+          const SizedBox(height: 10),
+          const Divider(),
+          // Items list
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: items.map<Widget>((i) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  "${i["name"]} × ${i["qty"]}",
+                  style: const TextStyle(fontSize: 16),
+                ),
+              );
+            }).toList(),
+          ),
+
+
+          const SizedBox(height: 6),
+
+          Text(
+            _formatISTDateTime(food["orderTime"]),
+            style: const TextStyle(color: Colors.grey, fontSize: 13),
+          ),
+
+          const SizedBox(height: 12),
+
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (food["uiStatus"] == "Ready")
+                ElevatedButton(
+                  onPressed: () => _acceptFood(food),
+                  style: _taskButtonStyle(Colors.green),
+                  child: const Text("Accept"),
+                ),
+
+              if (food["uiStatus"] == "Accepted")
+                ElevatedButton(
+                  onPressed: () => _deliverFood(food),
+                  style: _taskButtonStyle(Colors.indigo),
+                  child: const Text("Deliver"),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _foodStatusPill(String status) {
+    Color color;
+
+    switch (status) {
+      case "Ready":
+        color = Colors.orange;
+        break;
+      case "Accepted":
+        color = Colors.indigo;
+        break;
+      case "Delivered":
+        color = Colors.green;
+        break;
+      default:
+        color = Colors.grey;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color),
+      ),
+      child: Text(
+        status,
+        style: TextStyle(color: color, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
   Widget _buildContent() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -280,7 +973,6 @@ class _HomePageState extends State<HomePage> {
         _buildFilters(),
         const SizedBox(height: 25),
 
-        // ⭐ MODIFIED — Heading + Black & White Dropdown
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
           child: Row(
@@ -292,15 +984,16 @@ class _HomePageState extends State<HomePage> {
                   const Text("Tasks",
                       style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
-                  Text("${activeTasks.length} active tickets",
-                      style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+                  Text(
+                    "$currentSectionCount ${selectedFilter == "All" ? "active" : selectedFilter.toLowerCase()} tickets",
+                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                  ),
                 ],
               ),
 
-              // ⭐ NEW Black & White Dropdown
               Theme(
                 data: Theme.of(context).copyWith(
-                  canvasColor: Colors.white, // dropdown background
+                  canvasColor: Colors.white,
                   textTheme: const TextTheme(
                     bodyMedium: TextStyle(color: Colors.black),
                   ),
@@ -311,10 +1004,9 @@ class _HomePageState extends State<HomePage> {
                   underline: const SizedBox(),
                   iconEnabledColor: Colors.black,
                   items: const [
-                    DropdownMenuItem(value: "All Days", child: Text("All Days")),
                     DropdownMenuItem(value: "Today", child: Text("Today")),
                     DropdownMenuItem(value: "Yesterday", child: Text("Yesterday")),
-                    DropdownMenuItem(value: "Older", child: Text("Older")),
+                    DropdownMenuItem(value: "All Days", child: Text("All Days")),
                   ],
                   onChanged: (value) {
                     setState(() => selectedDateFilter = value!);
@@ -336,49 +1028,51 @@ class _HomePageState extends State<HomePage> {
               itemCount: filteredTasks.length,
               itemBuilder: (context, index) {
                 final task = filteredTasks[index];
-                return GestureDetector(
-                  onTap: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => TicketDetailPage(
-                          task: task,
-                          staffList: staffList,
-                          onClose: () {
-                            setState(() {
-                              final idx = tasks.indexWhere((t) =>
-                                  t["raw"]["service_request_id"] ==
-                                  task["raw"]["service_request_id"]);
-                              if (idx != -1) {
-                                tasks[idx]["status"] = "Closed";
-                                tasks[idx]["statusColor"] = getStatusColor("Closed");
-                                tasks[idx]["isAccepted"] = false;
-                              }
-                            });
-                          },
-                          onReassign: (updatedTask) {
-                            setState(() {
-                              final idx = tasks.indexWhere((t) =>
-                                  t["raw"]["service_request_id"] ==
-                                  updatedTask["service_request_id"]);
-                              if (idx != -1) {
-                                tasks[idx]["assignedTo"] =
-                                    updatedTask["assigned_to_name"] ?? "-";
-                                tasks[idx]["status"] =
-                                    updatedTask["status"] ?? tasks[idx]["status"];
-                                tasks[idx]["statusColor"] =
-                                    getStatusColor(tasks[idx]["status"]);
-                                tasks[idx]["isAccepted"] = true;
-                              }
-                            });
-                          },
+                return KeyedSubtree(
+                  key: ValueKey(task["raw"]["service_request_id"]),
+                  child: GestureDetector(
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => TicketDetailPage(
+                            task: task,
+                            onClose: () {
+                              setState(() {
+                                final idx = tasks.indexWhere((t) =>
+                                t["raw"]["service_request_id"] ==
+                                    task["raw"]["service_request_id"]);
+                                if (idx != -1) {
+                                  tasks[idx]["status"] = "Closed";
+                                  tasks[idx]["statusColor"] =
+                                      getStatusColor("Closed");
+                                  tasks[idx]["isAccepted"] = false;
+                                }
+                              });
+                            },
+                            onReassign: (updatedTask) {
+                              setState(() {
+                                final idx = tasks.indexWhere((t) =>
+                                t["raw"]["service_request_id"] ==
+                                    updatedTask["service_request_id"]);
+                                if (idx != -1) {
+                                  tasks[idx]["assignedTo"] =
+                                      updatedTask["assigned_to_name"] ?? "-";
+                                  tasks[idx]["status"] =
+                                      updatedTask["status"] ?? tasks[idx]["status"];
+                                  tasks[idx]["statusColor"] =
+                                      getStatusColor(tasks[idx]["status"]);
+                                  tasks[idx]["isAccepted"] = true;
+                                }
+                              });
+                            },
+                          ),
                         ),
-                      ),
-                    );
-
-                    setState(() {});
-                  },
-                  child: _buildTaskCard(task),
+                      );
+                      setState(() {});
+                    },
+                    child: _buildTaskCard(task),
+                  ),
                 );
               },
             ),
@@ -389,40 +1083,51 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildFilters() {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
+    final filters = ["All", "Open", "In Progress", "Closed"];
+
+    return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
-        children: [
-          _buildFilterChip("All"),
-          _buildFilterChip("Open"),
-          _buildFilterChip("In Progress"),
-          _buildFilterChip("Closed"),
-        ],
+        children: filters.map((text) {
+          final selected = selectedFilter == text;
+
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => selectedFilter = text),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: selected ? Colors.amber[700] : Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Center(
+                  child: Text(
+                    text,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: selected ? Colors.white : Colors.black87,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
 
-  Widget _buildFilterChip(String text) {
-    bool selected = selectedFilter == text;
-    return GestureDetector(
-      onTap: () => setState(() => selectedFilter = text),
-      child: Container(
-        margin: const EdgeInsets.only(right: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? Colors.amber[700] : Colors.white,
-          borderRadius: BorderRadius.circular(25),
-          border: Border.all(color: Colors.grey.shade300),
-        ),
-        child: Text(
-          text,
-          style: TextStyle(
-              fontSize: 14,
-              color: selected ? Colors.white : Colors.black87,
-              fontWeight: FontWeight.w600),
-        ),
-      ),
+  Widget _buildTabsBody() {
+    return TabBarView(
+      controller: _tabController,
+      children: [
+        _buildContent(),
+        _buildFoodTab(),
+      ],
     );
   }
 
@@ -487,7 +1192,7 @@ class _HomePageState extends State<HomePage> {
                         child: Text(
                           "Assigned: ${task["assignedTo"] ?? "-"}",
                           style:
-                              const TextStyle(color: Colors.green, fontSize: 14),
+                          const TextStyle(color: Colors.green, fontSize: 14),
                         ),
                       ),
                     const SizedBox(height: 18),
@@ -496,23 +1201,23 @@ class _HomePageState extends State<HomePage> {
                       children: [
                         (task["status"] == "Open")
                             ? ElevatedButton(
-                                onPressed: () => _acceptTask(task),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 20, vertical: 8),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                ),
-                                child: const Text("Accept"),
-                              )
+                          onPressed: () => _acceptTask(task),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 8),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                          ),
+                          child: const Text("Accept"),
+                        )
                             : const SizedBox.shrink(),
                         Text(
                           formatTimeAgo(createdAt),
                           style:
-                              TextStyle(color: Colors.grey[600], fontSize: 13),
+                          TextStyle(color: Colors.grey[600], fontSize: 13),
                         ),
                       ],
                     ),
@@ -530,10 +1235,10 @@ class _HomePageState extends State<HomePage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
       child: Text(text,
-          style:
-              TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+          style: TextStyle(
+              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
     );
   }
 }

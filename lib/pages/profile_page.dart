@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 
 import '../services/profile_service.dart';
 import '../services/logout_service.dart';
+import '../utils/user_session_helper.dart';
+
 import 'login_page.dart';
-import 'notification_page.dart';
-import 'privacy_page.dart'; // ⭐ ADD THIS
+import 'privacy_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -44,14 +45,13 @@ class _ProfilePageState extends State<ProfilePage> {
           backgroundColor: Colors.redAccent,
         ),
       );
-
       setState(() => _isLoading = false);
       return;
     }
 
     final profile = result["profile"];
-
     List<String> deptList = [];
+
     try {
       final raw = profile["departments"];
       if (raw is String) {
@@ -170,7 +170,9 @@ class _ProfilePageState extends State<ProfilePage> {
                         radius: 30,
                         backgroundColor: Colors.amber.shade600,
                         child: Text(
-                          name.isNotEmpty ? name.substring(0, 1).toUpperCase() : "?",
+                          name.isNotEmpty
+                              ? name.substring(0, 1).toUpperCase()
+                              : "?",
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
@@ -179,62 +181,91 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       const SizedBox(width: 14),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              name,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            designation,
-                            style: const TextStyle(
-                              color: Colors.grey,
-                              fontSize: 14,
+                            const SizedBox(height: 4),
+                            Text(
+                              designation,
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 14,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 18),
                   Divider(color: Colors.grey.shade300),
                   const SizedBox(height: 18),
+
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Email", style: TextStyle(color: Colors.grey.shade600)),
-                          const SizedBox(height: 4),
-                          Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 10),
-                          Text("Phone", style: TextStyle(color: Colors.grey.shade600)),
-                          const SizedBox(height: 4),
-                          Text(phone, style: const TextStyle(fontWeight: FontWeight.w600)),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("Email",
+                                style: TextStyle(
+                                    color: Colors.grey.shade600)),
+                            const SizedBox(height: 4),
+                            Text(
+                              email,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 10),
+                            Text("Phone",
+                                style: TextStyle(
+                                    color: Colors.grey.shade600)),
+                            const SizedBox(height: 4),
+                            Text(
+                              phone,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
                       ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Departments", style: TextStyle(color: Colors.grey.shade600)),
-                          const SizedBox(height: 4),
-                          ...departments.map(
-                            (d) => Padding(
-                              padding: const EdgeInsets.only(bottom: 2),
-                              child: Text(
-                                d,
-                                style: const TextStyle(fontWeight: FontWeight.w600),
+                      const SizedBox(width: 30),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("Departments",
+                                style: TextStyle(
+                                    color: Colors.grey.shade600)),
+                            const SizedBox(height: 4),
+                            ...departments.map(
+                                  (d) => Padding(
+                                padding:
+                                const EdgeInsets.only(bottom: 2),
+                                child: Text(
+                                  d,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -242,7 +273,6 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
             const SizedBox(height: 20),
-
             // -------------------------- SETTINGS CARD --------------------------
             Container(
               width: double.infinity,
@@ -259,31 +289,19 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
               child: Column(
                 children: [
-                  // ⭐ NOTIFICATIONS TILE
-                  ListTile(
-                    leading: _circleIcon(Icons.notifications_none,
-                        Colors.amber.shade800, Colors.amber.shade100),
-                    title: const Text("Notifications",
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                    subtitle: const Text("Manage notification preferences"),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const NotificationPage(),
-                        ),
-                      );
-                    },
-                  ),
-                  Divider(color: Colors.grey.shade300),
-                  // ⭐ PRIVACY TILE NAVIGATION
                   ListTile(
                     leading: _circleIcon(
-                        Icons.security, Colors.grey.shade800, Colors.grey.shade200),
-                    title: const Text("Privacy",
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                    subtitle: const Text("Security and privacy settings"),
+                      Icons.security,
+                      Colors.grey.shade800,
+                      Colors.grey.shade200,
+                    ),
+                    title: const Text(
+                      "Privacy",
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle:
+                    const Text("Security and privacy settings"),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
                       Navigator.push(
@@ -298,7 +316,7 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
             const SizedBox(height: 30),
-
+            // -------------------------- LOGOUT BUTTON --------------------------
             GestureDetector(
               onTap: () => _handleLogout(context),
               onTapDown: (_) => setState(() => _isPressed = true),
@@ -310,20 +328,26 @@ class _ProfilePageState extends State<ProfilePage> {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color: _isPressed ? Colors.red.shade700 : Colors.white,
-                  border: Border.all(color: Colors.red.shade300, width: 1.5),
+                  color:
+                  _isPressed ? Colors.red.shade700 : Colors.white,
+                  border: Border.all(
+                      color: Colors.red.shade300, width: 1.5),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(Icons.logout,
-                        color: _isPressed ? Colors.white : Colors.red),
+                        color: _isPressed
+                            ? Colors.white
+                            : Colors.red),
                     const SizedBox(width: 8),
                     Text(
                       "Log Out",
                       style: TextStyle(
                         fontSize: 16,
-                        color: _isPressed ? Colors.white : Colors.red,
+                        color: _isPressed
+                            ? Colors.white
+                            : Colors.red,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

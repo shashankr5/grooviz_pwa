@@ -12,18 +12,18 @@ class LoginService {
 
   LoginService()
       : _dio = Dio(
-          BaseOptions(
-            baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': ApiConstants.apiKey,
-            },
-            validateStatus: (code) => code != null && code < 500,
-          ),
-        ) {
+    BaseOptions(
+      baseUrl: ApiConstants.baseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+      sendTimeout: const Duration(seconds: 60),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ApiConstants.apiKey,
+      },
+      validateStatus: (code) => code != null && code < 500,
+    ),
+  ) {
     _dio.interceptors.add(
       LogInterceptor(
         request: true,
@@ -36,9 +36,8 @@ class LoginService {
     );
   }
 
-  /// ----------------------------------------------------
   /// LOGIN API
-  /// ----------------------------------------------------
+
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
@@ -104,7 +103,7 @@ class LoginService {
 
       final userIdRaw = user["user_id"];
       final userId =
-          userIdRaw is int ? userIdRaw : int.tryParse(userIdRaw.toString()) ?? 0;
+      userIdRaw is int ? userIdRaw : int.tryParse(userIdRaw.toString()) ?? 0;
 
       await UserSessionHelper.saveUserId(userId);
       await UserSessionHelper.saveUserName(user["full_name"]?.toString() ?? "");
@@ -127,9 +126,8 @@ class LoginService {
     }
   }
 
-  /// ----------------------------------------------------
   /// SEND OTP
-  /// ----------------------------------------------------
+
   Future<Map<String, dynamic>> sendOtp({
     required String mobile,
   }) async {
@@ -163,10 +161,8 @@ class LoginService {
       return _handleError(e);
     }
   }
-
-  /// ----------------------------------------------------
   /// VERIFY OTP
-  /// ----------------------------------------------------
+
   Future<Map<String, dynamic>> verifyOtp({
     required String mobile,
     required String otp,
@@ -188,9 +184,8 @@ class LoginService {
     }
   }
 
-  /// ----------------------------------------------------
   /// RESET PASSWORD
-  /// ----------------------------------------------------
+
   Future<Map<String, dynamic>> resetPassword({
     required String mobile,
     required String newPassword,
@@ -212,10 +207,8 @@ class LoginService {
       return _handleError(e);
     }
   }
-
-  /// ----------------------------------------------------
   /// RESPONSE NORMALIZER
-  /// ----------------------------------------------------
+
   Map<String, dynamic> _parseResponse(Response response) {
     if (response.statusCode != 200) {
       return {"success": false, "message": "Server error"};
@@ -256,10 +249,8 @@ class LoginService {
       "result": resultList.isNotEmpty ? resultList[0] : null,
     };
   }
-
-  /// ----------------------------------------------------
   /// ERROR HANDLER
-  /// ----------------------------------------------------
+
   Map<String, dynamic> _handleError(dynamic error) {
     dev.log("❌ Error: $error");
     return {"success": false, "message": "Something went wrong"};

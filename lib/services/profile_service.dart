@@ -1,7 +1,7 @@
 // lib/services/profile_service.dart
 import 'dart:developer' as dev;
 import 'package:dio/dio.dart';
-
+import 'dart:convert';
 import '../constants/api_constants.dart';
 import '../utils/user_session_helper.dart';
 
@@ -10,18 +10,18 @@ class ProfileService {
 
   ProfileService()
       : _dio = Dio(
-          BaseOptions(
-            baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': ApiConstants.apiKey,
-            },
-            validateStatus: (code) => code != null && code < 500,
-          ),
-        ) {
+    BaseOptions(
+      baseUrl: ApiConstants.baseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+      sendTimeout: const Duration(seconds: 60),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ApiConstants.apiKey,
+      },
+      validateStatus: (code) => code != null && code < 500,
+    ),
+  ) {
     _dio.interceptors.add(
       LogInterceptor(
         request: true,
@@ -86,6 +86,25 @@ class ProfileService {
         dev.log("⚠️ Profile save error: $e");
       }
 
+      // ✅ SAVE DEPARTMENTS FROM PROFILE ALSO
+      try {
+        List<String> deptList = [];
+
+        final rawDepts = profile["departments"];
+
+        if (rawDepts is String) {
+          deptList = List<String>.from(jsonDecode(rawDepts));
+        } else if (rawDepts is List) {
+          deptList = List<String>.from(rawDepts);
+        }
+
+        await UserSessionHelper.saveDepartments(deptList);
+
+        dev.log("✅ Departments saved from profile: $deptList");
+      } catch (e) {
+        dev.log("⚠️ Failed to save departments from profile: $e");
+      }
+
       return {"success": true, "message": message, "profile": profile};
 
     } on DioException catch (e) {
@@ -96,4 +115,6 @@ class ProfileService {
       return {"success": false, "message": "Exception: $e"};
     }
   }
+
+  Future<dynamic> deactivateAccount(userId) async {}
 }

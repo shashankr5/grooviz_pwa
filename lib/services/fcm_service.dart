@@ -2,11 +2,14 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'fcm_background.dart';
+
 class FCMService {
   static final FirebaseMessaging _fcm = FirebaseMessaging.instance;
 
   // Initialize FCM and get token
   static Future<void> initialize() async {
+
     try {
       // Request permissions
       await _fcm.requestPermission(
@@ -17,10 +20,10 @@ class FCMService {
 
       // Get initial token
       await _getAndSaveToken();
-      
+
       // Listen for token refresh
       _fcm.onTokenRefresh.listen(_onTokenRefresh);
-      
+
     } catch (e) {
       print('FCM Initialization Error: $e');
     }

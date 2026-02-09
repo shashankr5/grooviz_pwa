@@ -26,24 +26,17 @@ class _TasksPageState extends State<TasksPage> {
 
   Future<void> _loadTasks() async {
     final res = await _taskService.fetchTaskSummary();
+    print("TASK SUMMARY RESPONSE: $res");
 
     if (!mounted) return;
 
     if (res["success"]) {
-      List<dynamic> tasks = res["tasks"];
-
       setState(() {
-        _recentTasks = tasks;
+        _recentTasks = res["tasks"] ?? [];
 
-        totalTasks = tasks.length;
-
-        // ✅ Count both Completed and Closed as completed today
-        completedTasks = tasks
-            .where((t) => t["status"] == "Completed" || t["status"] == "Closed")
-            .length;
-
-        inProgressTasks =
-            tasks.where((t) => t["status"] == "In Progress").length;
+        totalTasks = res["totalTasks"] ?? 0;
+        completedTasks = res["completedToday"] ?? 0;
+        inProgressTasks = res["inProgressTasks"] ?? 0;
 
         _isLoading = false;
       });
@@ -61,78 +54,91 @@ class _TasksPageState extends State<TasksPage> {
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            : RefreshIndicator(
+          onRefresh: _loadTasks,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "My Tasks",
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  "Your performance overview",
+                  style: TextStyle(fontSize: 15, color: Colors.grey),
+                ),
+                const SizedBox(height: 20),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      "My Tasks",
-                      style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                    _buildStatBox(
+                      icon: Icons.access_time,
+                      count: "$totalTasks",
+                      label: "Total Tasks",
+                      iconColor: Colors.amber.shade600,
                     ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      "Your performance overview",
-                      style: TextStyle(fontSize: 15, color: Colors.grey),
+                    _buildStatBox(
+                      icon: Icons.check_circle,
+                      count: "$completedTasks",
+                      label: "Completed Today",
+                      iconColor: Colors.green.shade600,
                     ),
-                    const SizedBox(height: 20),
-
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildStatBox(
-                          icon: Icons.access_time,
-                          count: "$totalTasks",
-                          label: "Total Tasks",
-                          iconColor: Colors.amber.shade600,
-                        ),
-                        _buildStatBox(
-                          icon: Icons.check_circle,
-                          count: "$completedTasks",
-                          label: "Completed Today",
-                          iconColor: Colors.green.shade600,
-                        ),
-                        _buildStatBox(
-                          icon: Icons.timelapse_outlined,
-                          count: "$inProgressTasks",
-                          label: "In Progress",
-                          iconColor: Colors.orange.shade600,
-                        ),
-                      ],
+                    _buildStatBox(
+                      icon: Icons.timelapse_outlined,
+                      count: "$inProgressTasks",
+                      label: "In Progress",
+                      iconColor: Colors.orange.shade600,
                     ),
-
-                    const SizedBox(height: 28),
-
-                    const Text(
-                      "Recent Activity",
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 16),
-
-                    if (_recentTasks.isEmpty)
-                      const Text("No recent tasks found",
-                          style: TextStyle(color: Colors.grey))
-                    else
-                      ..._recentTasks.map((task) {
-                        String status = task["status"] ?? "";
-                        Color statusColor = (status == "Completed" || status == "Closed")
-                            ? Colors.green
-                            : Colors.orange;
-
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: _buildActivityCard(
-                            room: task["roomNumber"] ?? "-",
-                            title: task["question"] ?? "",
-                            time: task["timeAgo"] ?? "",
-                            status: status,
-                            statusColor: statusColor,
-                          ),
-                        );
-                      }),
                   ],
                 ),
-              ),
+
+                const SizedBox(height: 28),
+
+                const Text(
+                  "Recent Activity",
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 16),
+
+                if (_recentTasks.isEmpty)
+                  const Text("No recent tasks found",
+                      style: TextStyle(color: Colors.grey))
+                else
+                  ..._recentTasks.map((task) {
+                    String status = task["status"] ?? "";
+
+                    Color statusColor;
+                    switch (status) {
+                      case "Closed":
+                        statusColor = Colors.green;
+                        break;
+                      case "In Progress":
+                        statusColor = Colors.orange;
+                        break;
+                      default:
+                        statusColor = Colors.blue; // Open
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _buildActivityCard(
+                        room: task["roomNumber"] ?? "-",
+                        title: task["question"] ?? "",
+                        time: task["timeAgo"] ?? "",
+                        status: status,
+                        statusColor: statusColor,
+                      ),
+                    );
+                  }),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -163,7 +169,7 @@ class _TasksPageState extends State<TasksPage> {
           const SizedBox(height: 8),
           Text(count,
               style:
-                  const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
           Text(label,
               textAlign: TextAlign.center,
@@ -202,7 +208,7 @@ class _TasksPageState extends State<TasksPage> {
             children: [
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: Colors.amber.shade100,
                   borderRadius: BorderRadius.circular(8),
@@ -214,7 +220,7 @@ class _TasksPageState extends State<TasksPage> {
               ),
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 decoration: BoxDecoration(
                   color: statusColor.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(20),

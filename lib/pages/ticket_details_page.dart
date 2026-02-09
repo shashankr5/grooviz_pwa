@@ -5,14 +5,12 @@ import '../services/home_service.dart';
 class TicketDetailPage extends StatefulWidget {
   final Map<String, dynamic> task;
   final VoidCallback onClose;
-  final List<Map<String, String>> staffList;
   final Function(Map<String, dynamic> updatedTask)? onReassign;
 
   const TicketDetailPage({
     super.key,
     required this.task,
     required this.onClose,
-    required this.staffList,
     this.onReassign,
   });
 
@@ -22,6 +20,11 @@ class TicketDetailPage extends StatefulWidget {
 
 class _TicketDetailPageState extends State<TicketDetailPage> {
   late Map<String, dynamic> task;
+
+  final HomeService _homeService = HomeService();
+
+
+
 
   @override
   void initState() {
@@ -64,13 +67,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     String dateStr;
     if (createdDate == today) {
       dateStr =
-          "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+      "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     } else if (createdDate == yesterday) {
       dateStr =
-          "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+      "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     } else {
       dateStr =
-          "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+      "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     }
 
     return "$timeAgo • $dateStr";
@@ -132,7 +135,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
           const SizedBox(height: 25),
 
-          _actionButtons(context),
+          if ((task["status"] ?? "").toString().toLowerCase() != "open")
+            _actionButtons(context),
         ],
       ),
     );
@@ -144,7 +148,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
       child: Text(text,
           style: TextStyle(
               color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
@@ -177,7 +181,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               children: [
                 const Text("Guest Information",
                     style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 6),
                 Text(name,
                     style: const TextStyle(
@@ -204,7 +208,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               children: [
                 const Text("Assigned To",
                     style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 6),
                 Text(name,
                     style: const TextStyle(
@@ -291,7 +295,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             foregroundColor: Colors.white,
             minimumSize: const Size(double.infinity, 50),
             shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         ),
       ],
@@ -341,7 +345,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     final List<Map<String, dynamic>> staffList =
-        List<Map<String, dynamic>>.from(staffResult["staff"]);
+    List<Map<String, dynamic>>.from(staffResult["staff"]);
 
     await showReassignPopup(
       context,
@@ -379,151 +383,4 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       },
     );
   }
-}
-
-// ---------------- CLEAN POPUPS -------------------
-
-Future<String?> showAddNotesPopup(BuildContext context) {
-  final controller = TextEditingController();
-
-  return showDialog<String>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => Dialog(
-      backgroundColor: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Add Notes",
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black)),
-            const SizedBox(height: 16),
-
-            TextField(
-              controller: controller,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: "Enter note",
-                border: OutlineInputBorder(
-                  borderSide: const BorderSide(color: Colors.black54),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.pop(context),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.black),
-                    ),
-                    child: const Text("Cancel",
-                        style: TextStyle(color: Colors.black)),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.pop(context, controller.text),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text("Add"),
-                  ),
-                ),
-              ],
-            )
-          ],
-        ),
-      ),
-    ),
-  );
-}
-
-// ---------------- REASSIGN POPUP -------------------
-
-Future<void> showReassignPopup(
-  BuildContext context,
-  List<Map<String, dynamic>> staffList, {
-  required Function(Map<String, dynamic>) onSelect,
-}) {
-  return showDialog(
-    context: context,
-    barrierDismissible: true,
-    builder: (_) => Dialog(
-      backgroundColor: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Reassign",
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black)),
-            const SizedBox(height: 14),
-
-            SizedBox(
-              height: 260,
-              child: ListView.separated(
-                itemCount: staffList.length,
-                separatorBuilder: (_, __) => Container(
-                  color: Colors.grey.shade300,
-                  height: 1,
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                ),
-                itemBuilder: (_, i) {
-                  final staff = staffList[i];
-                  return InkWell(
-                    onTap: () => onSelect(staff),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 10, horizontal: 4),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.person_outline,
-                              color: Colors.black),
-                          const SizedBox(width: 12),
-
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  staff["name"],
-                                  style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.black),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  staff["department_name"] ?? "No department",
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      color: Colors.grey.shade700),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
 }

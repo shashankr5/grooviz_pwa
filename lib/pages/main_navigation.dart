@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
 import 'profile_page.dart';
+import 'food_orders_page.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -13,17 +14,21 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    HomePage(),
-    TasksPage(),
-    ProfilePage(),
+  /// Order of pages MUST match BottomNavigationBar items
+  final List<Widget> _pages = [
+    const HomePage(key: PageStorageKey('home')),
+    const FoodOrdersPage(key: PageStorageKey('food')),
+    const TasksPage(key: PageStorageKey('tasks')),
+    const ProfilePage(key: PageStorageKey('profile')),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _pages[_currentIndex],
-
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _pages,
+      ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -44,32 +49,33 @@ class _MainNavigationState extends State<MainNavigation> {
           backgroundColor: Colors.white,
           elevation: 0,
           type: BottomNavigationBarType.fixed,
-
           selectedFontSize: 12,
           unselectedFontSize: 12,
-
-          selectedItemColor: const Color(0xFFFFC107), // yellow highlight
+          selectedItemColor: const Color(0xFFFFC107),
           unselectedItemColor: Colors.grey.shade600,
-
           onTap: (index) {
             setState(() => _currentIndex = index);
           },
-
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined, size: 26),
               activeIcon: Icon(Icons.home, size: 26),
-              label: "Home",
+              label: 'Home',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.folder_copy_outlined, size: 26),
-              activeIcon: Icon(Icons.folder_copy, size: 26),
-              label: "My Tasks",
+              icon: Icon(Icons.fastfood, size: 26),
+              activeIcon: Icon(Icons.fastfood, size: 26),
+              label: 'Food',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.task_alt_outlined, size: 26),
+              activeIcon: Icon(Icons.task_alt, size: 26),
+              label: 'My Tasks',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.person_outline, size: 26),
               activeIcon: Icon(Icons.person, size: 26),
-              label: "Profile",
+              label: 'Profile',
             ),
           ],
         ),

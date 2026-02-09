@@ -59,6 +59,18 @@ class UserSessionHelper {
     return prefs.getString("phone");
   }
 
+  // ---------- DEPARTMENTS ----------
+
+  static Future<void> saveDepartments(List<String> depts) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList("departments", depts);
+  }
+
+  static Future<List<String>> getDepartments() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList("departments") ?? [];
+  }
+
   // ---------- LOGIN STATE ----------
   static Future<void> saveIsLoggedIn(bool value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -83,6 +95,7 @@ class UserSessionHelper {
     await prefs.remove("user_name");
     await prefs.remove("email");
     await prefs.remove("phone");
+    await prefs.remove("departments");
     await prefs.remove("is_logged_in");
 
     // Restore installation ID and device identifier

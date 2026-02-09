@@ -1,27 +1,27 @@
 import 'dart:developer' as dev;
 import 'package:dio/dio.dart';
-
+import 'dart:convert';
 import '../utils/user_session_helper.dart';
 import '../constants/api_constants.dart';
-
+import 'home_service.dart';
 
 class TaskService {
   final Dio _dio;
 
   TaskService()
       : _dio = Dio(
-          BaseOptions(
-            baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': ApiConstants.apiKey,
-            },
-            validateStatus: (code) => code != null && code < 500,
-          ),
-        ) {
+    BaseOptions(
+      baseUrl: ApiConstants.baseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+      sendTimeout: const Duration(seconds: 60),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ApiConstants.apiKey,
+      },
+      validateStatus: (code) => code != null && code < 500,
+    ),
+  ) {
     _dio.interceptors.add(
       LogInterceptor(
         request: true,
@@ -31,15 +31,38 @@ class TaskService {
     );
   }
 
+  //  COMMON STATUS NORMALIZER  (same as HomeService)
+
+  String normalizeStatus(String? status, int? closedFlag) {
+    if (closedFlag == 1) return "Closed";
+
+    if (status == null) return "Open";
+
+    switch (status.toUpperCase()) {
+      case "PENDING":
+        return "Open";
+      case "INPROGRESS":
+      case "IN_PROGRESS":
+      case "IN PROGRESS":
+        return "In Progress";
+      case "CLOSED":
+        return "Closed";
+      default:
+        return status;
+    }
+  }
+
+  //  MAIN SUMMARY METHOD
+
   Future<Map<String, dynamic>> fetchTaskSummary() async {
     try {
       final int? userId = await UserSessionHelper.getUserId();
       final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
 
-      if (userId == null || userId == 0 || enterpriseId == null || enterpriseId == 0) {
+      if (userId == null || userId == 0) {
         return {
           "success": false,
-          "message": "User session missing (user_id or enterprise_id)",
+          "message": "User session missing (user_id)",
         };
       }
 
@@ -49,52 +72,86 @@ class TaskService {
         "stage": "dev",
       };
 
-      dev.log("📤 Fetching task summary...");
+      dev.log("📤 Fetching task summary (TaskService)…");
+
       final response = await _dio.post(ApiConstants.taskSummary, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
       }
 
-      final status = response.data["STATUS"];
-      final result = response.data["RESULT"];
+      final statusList = response.data["STATUS"];
 
-      if (status == null || status.isEmpty || status[0]["status"] != "S") {
-        return {
-          "success": false,
-          "message": status?[0]["message"] ?? "Failed",
-        };
+      if (statusList == null || statusList.isEmpty) {
+        return {"success": false, "message": "Invalid server response"};
       }
 
-      // Convert result to a list of tasks
-      final List<dynamic> tasks = result ?? [];
+      final rawResponse = statusList[0]["response"];
 
-      dev.log("RAW SUMMARY LIST: $tasks");
+      if (rawResponse == null) {
+        return {"success": false, "message": "Missing summary response"};
+      }
+
+      // 🔥 Decode the nested JSON string
+      final decoded = jsonDecode(rawResponse);
+
+      final summary = decoded["summary"];
+
+      final int totalTasks = summary["totalTasks"] ?? 0;
+      final int completedToday = summary["completedToday"] ?? 0;
+      final int inProgressTasks = summary["inProgressTasks"] ?? 0;
+
+      // Fetch real tasks from HomeService for recent activity
+      // Fetch real tasks from HomeService for recent activity
+      final homeRes = await HomeService().getTasks();
+
+      List<dynamic> recentTasks = [];
+
+      if (homeRes["success"]) {
+        List<dynamic> allTasks = homeRes["tasks"];
+
+        // 1️⃣ Keep only CLOSED
+        final closedTasks = allTasks
+            .where((t) => t["status"] == "Closed")
+            .toList();
+
+        // 2️⃣ Sort by time DESC (latest first)
+        closedTasks.sort((a, b) {
+          final aTime = a["raw"]?["timestamp"];
+          final bTime = b["raw"]?["timestamp"];
+
+          if (aTime == null || bTime == null) return 0;
+
+          return DateTime.parse(bTime)
+              .compareTo(DateTime.parse(aTime));
+        });
+
+        // Take only top 5
+        recentTasks = closedTasks.take(5).map((t) {
+          return {
+            "roomNumber": t["room"],
+            "question": t["title"],
+            "timeAgo": t["time"],
+            "status": t["status"],
+          };
+        }).toList();
+      }
 
       return {
         "success": true,
-        "message": status[0]["message"],
-        "tasks": tasks.map((task) {
-          return {
-            "roomId": task["room_id"],
-            "roomNumber":
-                task["room_number"] ??
-                task["requested_room"] ??
-                task["requested_room_id"]?.toString() ??
-                "-",
-            "status": task["status"],
-            "question": task["question"],
-            "timeAgo": task["time_ago"],
-            "totalTasks": task["total_tasks"],
-            "completedTasks": task["completed_tasks"],
-          };
-        }).toList(),
+        "message": decoded["message"] ?? "Success",
+        "totalTasks": totalTasks,
+        "completedToday": completedToday,
+        "inProgressTasks": inProgressTasks,
+        "tasks": recentTasks,
       };
     } catch (e) {
+      dev.log("❌ ERROR (fetchTaskSummary): $e");
       return {
         "success": false,
         "message": "Exception: $e",
       };
     }
   }
+
 }
