@@ -1,3 +1,4 @@
+//main.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -18,9 +19,11 @@ void main() async {
 
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-  await FCMService.initialize();
+  FCMService.initialize();
 
   await setupFirebaseNotifications();
+
+  await createNotificationChannel();
 
   // ✅ Check if user is logged in
   final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
@@ -49,7 +52,7 @@ class MyApp extends StatelessWidget {
           ),
       ),
 
-      // 👇 This decides startup screen
+      // This decides startup screen
       home: isLoggedIn ? const MainNavigation() : const LoginPage(),
     );
   }

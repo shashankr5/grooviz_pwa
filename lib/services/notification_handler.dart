@@ -1,5 +1,7 @@
+//notification_handler.dart
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 
 final FlutterLocalNotificationsPlugin localNotifications = FlutterLocalNotificationsPlugin();
 
@@ -16,8 +18,13 @@ Future<void> setupFirebaseNotifications() async {
   );
 
   // Token already saved by FCMService – this just logs
-  final token = await messaging.getToken();
-  print('📱 FCM Token: $token');
+  String? token;
+  try {
+    token = await messaging.getToken();
+    print('📱 FCM Token: $token');
+  } catch (e) {
+    print('⚠️ FCM token fetch failed (will retry automatically): $e');
+  }
 
   // FOREGROUND
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
@@ -48,6 +55,22 @@ Future<void> _initializeLocalNotifications() async {
   await localNotifications.initialize(initSettings);
 }
 
+Future<void> createNotificationChannel() async {
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'high_importance_channel', // MUST match showNotification
+    'High Importance Notifications',
+    description: 'This channel is used for important notifications.',
+    importance: Importance.max,
+    playSound: true,
+    sound: RawResourceAndroidNotificationSound('bell_notification'),
+  );
+
+  await localNotifications
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+}
+
 void _showNotification(RemoteMessage message) {
   final data = message.data;
   final title = message.notification?.title ?? 'Notification';
@@ -72,6 +95,7 @@ void _showNotification(RemoteMessage message) {
         importance: Importance.max,
         priority: Priority.high,
         playSound: true,
+        sound: RawResourceAndroidNotificationSound('bell_notification'),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,

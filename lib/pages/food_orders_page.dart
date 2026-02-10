@@ -396,7 +396,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       if (backendStatus != null) {
         order["raw"]["order_status"] = backendStatus;
       }
-      AppSnackBar.show(context, "Order accepted");
       // Optional: auto move READY orders out of Preparing list
       await _loadFoodOrders();
       AppSnackBar.show(context, "Order marked Ready");
@@ -935,6 +934,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           if (backendStatus != null) {
                             order["raw"]["order_status"] = backendStatus;
                           }
+                          AppSnackBar.show(context, "Order accepted");
                         }
                         setState(() => _acceptingIndex = null);
                       },
