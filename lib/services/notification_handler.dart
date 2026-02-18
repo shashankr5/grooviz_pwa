@@ -1,6 +1,8 @@
 //notification_handler.dart
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import '../utils/order_alert_sound.dart';
+import '../services/order_alert_service.dart';
 
 
 final FlutterLocalNotificationsPlugin localNotifications = FlutterLocalNotificationsPlugin();
@@ -10,12 +12,6 @@ Future<void> setupFirebaseNotifications() async {
   await _initializeLocalNotifications();
 
   final messaging = FirebaseMessaging.instance;
-
-  await messaging.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
-  );
 
   // Token already saved by FCMService – this just logs
   String? token;
@@ -29,6 +25,13 @@ Future<void> setupFirebaseNotifications() async {
   // FOREGROUND
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
     print('📨 Foreground message');
+
+    // Ignore totally empty/system messages
+    if (message.data.isEmpty && message.notification == null) {
+      print('⛔ Empty message ignored');
+      return;
+    }
+
     _showNotification(message);
   });
 
@@ -71,16 +74,24 @@ Future<void> createNotificationChannel() async {
       ?.createNotificationChannel(channel);
 }
 
-void _showNotification(RemoteMessage message) {
+Future<void> _showNotification(RemoteMessage message) async {
   final data = message.data;
   final title = message.notification?.title ?? 'Notification';
   final body = message.notification?.body ?? '';
+  final String? type = data['type'];
 
   print('🎯 Showing notification');
   print('Title: $title');
   print('Body: $body');
   print('Type: ${data['type']}');
   print('Instance: ${data['instance_id']}');
+
+  if (type == 'NEW_FOOD_ORDER') {
+    // 🔔 Foreground sound
+    //OrderAlertSound.start();
+    // 🔔 Background / closed app sound
+    await OrderAlertService.start();
+  }
 
   // Display notification on device
   localNotifications.show(

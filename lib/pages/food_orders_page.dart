@@ -9,6 +9,8 @@ import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/order_alert_sound.dart';
+import '../services/order_alert_service.dart';
 
 
 class FoodOrdersPage extends StatefulWidget {
@@ -190,24 +192,30 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   Future<void> _loadDeliveredOrders() async {
+    setState(() => _isLoading = true);
+
     final result = await _homeService.getDeliveredOrdersForRoomService();
 
     if (!mounted) return;
 
-    if (result["success"] != true) return;
+    if (result["success"] != true) {
+      setState(() => _isLoading = false);
+      return;
+    }
 
     final List rawDelivered = result["orders"] ?? [];
-
-    // Reuse your grouping logic
     final groupedDelivered = _groupApiOrders(rawDelivered);
-    // 🔥 FORCE delivered status for UI consistency
+
     for (final o in groupedDelivered) {
       o["status"] = FoodOrderStatus.delivered.label;
     }
+
     setState(() {
       deliveredOrders
         ..clear()
         ..addAll(groupedDelivered);
+
+      _isLoading = false;
     });
   }
 
@@ -258,6 +266,28 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     return grouped.values.toList();
   }
 
+  Future<void> _handleFilterChange(String filter) async {
+    if (selectedFilter == filter) return;
+
+    setState(() => selectedFilter = filter);
+
+    if (filter == FoodOrderStatus.delivered.label) {
+      await _loadDeliveredOrders();
+    } else if (filter == FoodOrderStatus.cancelled.label) {
+      await _loadFoodOrders();
+    }
+  }
+
+  Future<void> _checkAndStopAlertIfNeeded() async {
+    final hasPending = foodOrders.any(
+      (o) => o['status'] == FoodOrderStatus.pending.label,
+    );
+
+    if (!hasPending) {
+      await OrderAlertService.stop();
+    }
+  }
+  
 
   @override
   void initState() {
@@ -332,6 +362,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _delayBlinkController.dispose();
     _acceptController.dispose();
     _blinkController.dispose();
+    OrderAlertSound.stop();
     super.dispose();
   }
 
@@ -419,39 +450,78 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (order['status'] == FoodOrderStatus.ready.label) return;
 
     final remaining = _remainingSeconds(order);
-    if (remaining < 0 || _orderProgress(order) >= 0.75) {
-      _markReady(order);
+    final isDelayed = remaining < 0;
+
+    // If delayed → ALWAYS confirm
+    if (isDelayed) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Order Delayed'),
+          content: const Text(
+            'Are you sure you want to mark it as Ready?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('NO'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('YES'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm == true) {
+        _markReady(order);
+      }
+
       return;
     }
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Mark order as Ready?'),
-        content: const Text('Is the order fully prepared?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('NO'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('YES'),
-          ),
-        ],
-      ),
-    );
+    // 🟡 If still early (<75%) → confirm
+    if (_orderProgress(order) < 0.75) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Mark order as Ready?'),
+          content: const Text('Is the order fully prepared?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('NO'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('YES'),
+            ),
+          ],
+        ),
+      );
 
-    if (confirm == true) {
-      _markReady(order);
+      if (confirm == true) {
+        _markReady(order);
+      }
+
+      return;
     }
+
+    // 🟢 ≥75% progress → direct
+    _markReady(order);
   }
 
-  String _formattedTime(DateTime time) {
+  String _formattedDateTime(DateTime time) {
+    final day = time.day.toString().padLeft(2, '0');
+    final month = time.month.toString().padLeft(2, '0');
+    final year = time.year;
+
     final hour = time.hour > 12 ? time.hour - 12 : time.hour;
     final minute = time.minute.toString().padLeft(2, '0');
     final period = time.hour >= 12 ? 'PM' : 'AM';
-    return '${hour == 0 ? 12 : hour}:$minute $period';
+
+    return '$day/$month/$year • ${hour == 0 ? 12 : hour}:$minute $period';
   }
 
   DateTime _safeParseDate(String s) {
@@ -650,7 +720,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 final bool isActive = selectedFilter == f;
 
                 return GestureDetector(
-                  onTap: () => setState(() => selectedFilter = f),
+                  onTap: () => _handleFilterChange(f),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 8),
@@ -792,7 +862,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      _formattedTime(order['createdAt']),
+                      _formattedDateTime(order['createdAt']),
                       style: const TextStyle(color: Colors.grey, fontSize: 13),
                     ),
                   ],
@@ -803,29 +873,37 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             const SizedBox(height: 12),
 
             // Items
-            ...items.map((i) {
-              return Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _fssaiIcon(_isVeg(i['name'])),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        i['name'],
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'x${i['qty']}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-              );
-            }),
+            // Items
+...items.map((i) {
+  return Padding(
+    padding: const EdgeInsets.only(top: 6),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _fssaiIcon(_isVeg(i['name'])),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            i['name'],
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          '${i['qty']}',
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w500,     // ← bold quantity
+            color: Colors.black87,
+          ),
+        ),
+      ],
+    ),
+  );
+}),
 
             const SizedBox(height: 12),
 
@@ -933,7 +1011,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           final backendStatus = result["data"]?["new_status"];
                           if (backendStatus != null) {
                             order["raw"]["order_status"] = backendStatus;
-                          }
+                          }                          
+                          // STOP alert sound
+                          //await OrderAlertSound.stop();
+                          await OrderAlertService.stop();
+
                           AppSnackBar.show(context, "Order accepted");
                         }
                         setState(() => _acceptingIndex = null);
@@ -1128,6 +1210,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         foodOrders.remove(order);
                         cancelledOrders.insert(0, order);
                       });
+
+                      await _checkAndStopAlertIfNeeded();
+
                       AppSnackBar.show(context, "Order cancelled");
                     },
                     child: Container(
@@ -1181,6 +1266,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   void _showError(String? message) {
     if (!mounted) return;
-    AppSnackBar.show(context, message ?? "Something went wrong", isError: true);
+
+    // Always show safe generic message to user
+    AppSnackBar.show(
+      context,
+      "Something went wrong. Please try again.",
+      isError: true,
+    );
   }
+
 }

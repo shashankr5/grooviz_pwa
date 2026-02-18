@@ -246,22 +246,24 @@ class FoodOrderService {
   Future<Map<String, dynamic>> getOrderSummary({DateTime? date}) async {
     try {
       final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
+      final int? userId = await UserSessionHelper.getUserId();
 
       if (enterpriseId == null || enterpriseId == 0) {
         return {"success": false, "message": "Enterprise ID missing"};
       }
 
+      if (userId == null || userId == 0) {
+        return {"success": false, "message": "User ID missing"};
+      }
+
       final payload = {
         "enterprise_id": enterpriseId,
-        if (date != null) ...{
-          "date": (() {
-            final d = DateTime.utc(date.year, date.month, date.day);
-            return "${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}";
-          })(),
-        },
+        "user_id": userId,
+        if (date != null)
+          "date":
+              "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}",
         "stage": "dev",
       };
-
 
       dev.log("📤 Fetching Order Summary");
       dev.log("Payload: $payload");
@@ -282,17 +284,17 @@ class FoodOrderService {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final flag = statusList[0]["status"];
+      final statusFlag = statusList[0]["status"];
       final responseString = statusList[0]["response"];
 
-      if (flag != "S" || responseString == null) {
+      if (statusFlag != "S" || responseString == null) {
         return {
           "success": false,
           "message": "Failed to fetch order summary"
         };
       }
 
-      // response is STRING → decode JSON
+      // ✅ Decode STRING response
       final decoded = json.decode(responseString);
 
       final summary = decoded["summary"] ?? {};
@@ -309,7 +311,7 @@ class FoodOrderService {
             "orderNumber": m["order_number"],
             "roomNumber": m["room_number"],
             "roomId": m["room_id"],
-            "guestName": m["guest_name"],
+            "guestName": m["guest_name"] ?? "Guest",
             "foodItem": m["food_item"],
             "quantity": m["quantity"],
             "status": _statusText(m["order_status"]),
@@ -323,4 +325,5 @@ class FoodOrderService {
       return {"success": false, "message": "Network error"};
     }
   }
+
 }

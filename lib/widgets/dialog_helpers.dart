@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../utils/app_snackbar.dart';
 
 /// ---------------- ADD NOTES POPUP ----------------
 
@@ -170,51 +171,14 @@ Future<void> showReassignPopup(
 
 /// ---------------- CUSTOM SNACKBAR ----------------
 
-void showCustomSnackBar(BuildContext context, String message) {
-  final overlay = Overlay.of(context);
-  if (overlay == null) return;
-
-  final entry = OverlayEntry(
-    builder: (_) => Positioned(
-      bottom: 20,
-      left: 20,
-      right: 20,
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.black, width: 1.2),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black12.withOpacity(0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.check_circle_outline, color: Colors.black),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  message,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
+void showCustomSnackBar(
+  BuildContext context,
+  String message, {
+  bool isError = false,
+}) {
+  AppSnackBar.show(
+    context,
+    message,
+    isError: isError,
   );
-
-  overlay.insert(entry);
-  Future.delayed(const Duration(seconds: 2), entry.remove);
 }
