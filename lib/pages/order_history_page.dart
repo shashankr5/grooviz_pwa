@@ -46,56 +46,64 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
 
   int get weeklyTotal => summary["weeklyTotal"] ?? 0;
 
-  int get dailyTotal => summary["dailyTotal"] ?? summary["totalOrders"] ?? 0;
+  int get dailyTotal => summary["dailyTotal"] ?? 0;
 
-  int get weeklyCancelled =>
-      summary["weeklyCancelled"] ??
-          summary["weekly_cancelled"] ??
-          summary["cancelled_orders"] ??
-          0;
+  int get weeklyCancelled => summary["weeklyCancelled"] ?? 0;
 
 
-  int get dailyCancelled =>
-      allOrders.where((o) {
-        final dt = DateTime.tryParse(o["raw"]["order_time"]);
-        if (dt == null) return false;
-
-        return dt.year == selectedDate.year &&
-            dt.month == selectedDate.month &&
-            dt.day == selectedDate.day &&
-            (o["status"] ?? "").toString().toUpperCase() == "CANCELLED";
-      }).length;
+  int get dailyCancelled => summary["dailyCancelled"] ?? 0;
 
 
   @override
   void initState() {
     super.initState();
     _loadSummary(date: selectedDate);
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    )..forward();
   }
 
   Future<void> _loadSummary({DateTime? date}) async {
     setState(() => isLoading = true);
 
-    final result = await _service.getOrderSummary(date: date);
+    try {
+      final results = await Future.wait([
+        _service.getOrderSummary(date: date), // daily
+        _service.getOrderSummary(),           // weekly
+      ]);
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (result["success"] != true) {
+      final dailyResult = results[0];
+      final weeklyResult = results[1];
+
+      setState(() {
+        summary.clear();
+
+        // ✅ DAILY DATA
+        if (dailyResult["success"] == true) {
+          summary["dailyTotal"] =
+              dailyResult["summary"]?["todayTotal"] ?? 0;
+
+          summary["dailyCancelled"] =
+              dailyResult["summary"]?["todayCancelled"] ?? 0;
+
+          allOrders =
+              List<Map<String, dynamic>>.from(dailyResult["orders"] ?? []);
+        }
+
+        // ✅ WEEKLY DATA
+        if (weeklyResult["success"] == true) {
+          summary["weeklyTotal"] =
+              weeklyResult["summary"]?["weeklyTotal"] ?? 0;
+
+          summary["weeklyCancelled"] =
+              weeklyResult["summary"]?["weeklyCancelled"] ?? 0;
+        }
+
+        isLoading = false;
+      });
+    } catch (e) {
       setState(() => isLoading = false);
-      return;
     }
-
-    setState(() {
-      summary = result["summary"] ?? {};
-      allOrders = List<Map<String, dynamic>>.from(result["orders"] ?? []);
-      isLoading = false;
-    });
   }
-
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(

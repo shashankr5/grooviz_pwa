@@ -224,83 +224,106 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   // ---------------- Action Buttons -------------------
 
   Widget _actionButtons(BuildContext context) {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton(
-                onPressed: () => _addNotes(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                child: const Text("Add Notes"),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: () => _reassign(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                child: const Text("Reassign"),
-              ),
-            ),
-          ],
+  final status =
+      (task["status"] ?? "").toString().toLowerCase();
+
+  final isClosed = status == "closed";
+
+  // 🔒 CLOSED STATE
+  if (isClosed) {
+    return ElevatedButton.icon(
+      onPressed: null,
+      icon: const Icon(Icons.lock_outline),
+      label: const Text("Ticket Closed"),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.grey.shade400,
+        foregroundColor: Colors.white,
+        minimumSize: const Size(double.infinity, 50),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
         ),
-
-        const SizedBox(height: 12),
-
-        ElevatedButton.icon(
-          onPressed: () async {
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (_) => const Center(child: CircularProgressIndicator()),
-            );
-
-            final result = await HomeService().closeServiceRequest(
-              serviceRequestId: task["raw"]["service_request_id"],
-            );
-
-            Navigator.pop(context);
-
-            if (!result["success"]) {
-              showCustomSnackBar(context, result["message"]);
-              return;
-            }
-
-            setState(() {
-              task["status"] = "Closed";
-              task["statusColor"] = Colors.green;
-            });
-
-            showCustomSnackBar(context, "Ticket closed successfully!");
-            widget.onClose();
-            Navigator.pop(context);
-          },
-          icon: const Icon(Icons.check_circle_outline),
-          label: const Text("Close Ticket"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.green,
-            foregroundColor: Colors.white,
-            minimumSize: const Size(double.infinity, 50),
-            shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        ),
-      ],
+      ),
     );
   }
+
+  // ✅ IN PROGRESS (or anything except open/closed)
+  return Column(
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: ElevatedButton(
+              onPressed: () => _addNotes(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text("Add Notes"),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton(
+              onPressed: () => _reassign(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text("Reassign"),
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      ElevatedButton.icon(
+        onPressed: () async {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) =>
+                const Center(child: CircularProgressIndicator()),
+          );
+
+          final result = await HomeService().closeServiceRequest(
+            serviceRequestId: task["raw"]["service_request_id"],
+          );
+
+          Navigator.pop(context);
+
+          if (!result["success"]) {
+            return; // silently fail
+          }
+
+          setState(() {
+            task["status"] = "Closed";
+            task["statusColor"] = Colors.green;
+          });
+
+          showCustomSnackBar(context, "Ticket closed successfully!");
+          widget.onClose();
+        },
+        icon: const Icon(Icons.check_circle_outline),
+        label: const Text("Close Ticket"),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.green,
+          foregroundColor: Colors.white,
+          minimumSize: const Size(double.infinity, 50),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+      ),
+    ],
+  );
+}
 
   // ---------------- FUNCTIONS -------------------
 
@@ -322,10 +345,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     Navigator.pop(context);
 
     if (!result["success"]) {
-      showCustomSnackBar(context, result["message"]);
       return;
     }
-
     showCustomSnackBar(context, "Note added successfully!");
   }
 
@@ -340,7 +361,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     Navigator.pop(context);
 
     if (!staffResult["success"]) {
-      showCustomSnackBar(context, staffResult["message"]);
+      showCustomSnackBar(
+        context,
+        "Failed to load staff",
+        isError: true,
+      );
       return;
     }
 
@@ -367,7 +392,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         Navigator.pop(context);
 
         if (!apiResult["success"]) {
-          showCustomSnackBar(context, apiResult["message"]);
+          showCustomSnackBar(
+            context,
+            "Reassign failed",
+            isError: true,
+          );
           return;
         }
 

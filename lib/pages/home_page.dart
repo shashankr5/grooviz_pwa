@@ -81,6 +81,16 @@ class _HomePageState extends State<HomePage>
     }
   }
 
+  void _showGenericError() {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Something went wrong. Please try again."),
+      ),
+    );
+  }
+
   ButtonStyle _taskButtonStyle(Color bgColor) {
     return ElevatedButton.styleFrom(
       backgroundColor: bgColor,
@@ -94,26 +104,23 @@ class _HomePageState extends State<HomePage>
 
   DateTime _parseTimestamp(String? ts) {
     if (ts == null || ts.trim().isEmpty) {
-      return DateTime.now().subtract(const Duration(minutes: 5));
+      return DateTime.now();
     }
 
     try {
       String fixed = ts.trim();
 
-      // Remove UTC if exists
-      fixed = fixed.replaceAll(" UTC", "");
-
-      // Convert space datetime to ISO
+      // Convert "yyyy-mm-dd hh:mm:ss" → ISO
       if (fixed.contains(" ") && !fixed.contains("T")) {
         fixed = fixed.replaceFirst(" ", "T");
       }
 
+      // ✅ ALWAYS convert to device local time
       return DateTime.parse(fixed).toLocal();
+
     } catch (e) {
       debugPrint("❌ Timestamp parse failed: $ts");
-
-      // fallback far enough to avoid 0s ago
-      return DateTime.now().subtract(const Duration(minutes: 10));
+      return DateTime.now();
     }
   }
 
@@ -131,39 +138,20 @@ class _HomePageState extends State<HomePage>
         date.day == yesterday.day;
   }
 
-  String _formatOnlyTime(String? ts) {
-    if (ts == null || ts.isEmpty) return "";
+  String formatDateTime(String ts) {
+    if (ts.isEmpty) return "";
 
-    try {
-      final utc = DateTime.parse(ts);
-      final ist = utc.add(const Duration(hours: 5, minutes: 30));
+    final date = _parseTimestamp(ts);
 
-      final h = ist.hour.toString().padLeft(2, '0');
-      final m = ist.minute.toString().padLeft(2, '0');
-      return "$h:$m";
-    } catch (e) {
-      return "";
-    }
-  }
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    final year = date.year;
 
-  String _formatISTDateTime(String? ts) {
-    if (ts == null || ts.isEmpty) return "";
+    final hour12 = date.hour > 12 ? date.hour - 12 : date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final period = date.hour >= 12 ? "PM" : "AM";
 
-    try {
-      final utc = DateTime.parse(ts);
-      final ist = utc.add(const Duration(hours: 5, minutes: 30));
-
-      final d = ist.day.toString().padLeft(2, '0');
-      final m = ist.month.toString().padLeft(2, '0');
-      final y = ist.year;
-
-      final h = ist.hour.toString().padLeft(2, '0');
-      final min = ist.minute.toString().padLeft(2, '0');
-
-      return "$d/$m/$y $h:$min";
-    } catch (e) {
-      return "";
-    }
+    return "$day/$month/$year • ${hour12 == 0 ? 12 : hour12}:$minute $period";
   }
 
   Future<void> _loadUserName() async {
@@ -202,6 +190,20 @@ class _HomePageState extends State<HomePage>
     return Colors.red;
   }
 
+  Future<void> _loadFoodByFilter(String filter) async {
+    switch (filter) {
+      case "Ready":
+        await _loadReadyOrders();
+        break;
+      case "Accepted":
+        await _loadAcceptedOrders();
+        break;
+      case "Delivered":
+        await _loadDeliveredOrders();
+        break;
+    }
+  }
+
   Future<void> _loadTasks() async {
     if (tasks.isEmpty) {
       setState(() {
@@ -213,9 +215,9 @@ class _HomePageState extends State<HomePage>
     final result = await HomeService().getTasks();
     if (!mounted) return;
 
-    if (!result["success"]) {
+    if (result["success"] != true) {
       setState(() {
-        _errorMessage = result["message"];
+        _errorMessage = "Unable to load tasks.";
         _isLoading = false;
       });
       return;
@@ -299,7 +301,7 @@ class _HomePageState extends State<HomePage>
     setState(() => _isLoading = false);
 
     if (!result["success"]) {
-      AppSnackBar.show(context, result["message"] ?? "Failed", isError: true);
+      _showGenericError();
       return;
     }
 
@@ -379,9 +381,9 @@ class _HomePageState extends State<HomePage>
 
     if (!mounted) return;
 
-    if (!result["success"]) {
+    if (result["success"] != true) {
       setState(() {
-        _foodError = result["message"];
+        _foodError = "Unable to load orders.";
         _foodLoading = false;
       });
       return;
@@ -412,7 +414,7 @@ class _HomePageState extends State<HomePage>
     );
 
     if (!res["success"]) {
-      AppSnackBar.show(context, res["message"], isError: true);
+      _showGenericError();
       return;
     }
 
@@ -450,10 +452,8 @@ class _HomePageState extends State<HomePage>
       action: "Delivered",
     );
 
-    if (!res["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(res["message"])),
-      );
+    if (res["success"] != true) {
+      _showGenericError();
       return;
     }
 
@@ -500,13 +500,9 @@ class _HomePageState extends State<HomePage>
 
     if (!mounted) return;
 
-    if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result["message"] ?? "Failed to load accepted orders")),
-      );
-
-      // IMPORTANT: stop spinner on failure
+    if (result["success"] != true) {
       setState(() => _foodLoading = false);
+      _showGenericError();
       return;
     }
 
@@ -557,11 +553,9 @@ class _HomePageState extends State<HomePage>
 
     if (!mounted) return;
 
-    if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result["message"] ?? "Failed to load delivered orders")),
-      );
+    if (result["success"] != true) {
       setState(() => _foodLoading = false);
+      _showGenericError();
       return;
     }
 
@@ -792,8 +786,11 @@ class _HomePageState extends State<HomePage>
             final selected = selectedFoodFilter == f;
 
             return GestureDetector(
-              onTap: () {
+              onTap: () async {
+                if (selectedFoodFilter == f) return;
+
                 setState(() => selectedFoodFilter = f);
+                await _loadFoodByFilter(f);
               },
               child: Container(
                 margin: const EdgeInsets.symmetric(horizontal: 6),
@@ -889,24 +886,42 @@ class _HomePageState extends State<HomePage>
           const SizedBox(height: 10),
           const Divider(),
           // Items list
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: items.map<Widget>((i) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  "${i["name"]} × ${i["qty"]}",
-                  style: const TextStyle(fontSize: 16),
-                ),
-              );
-            }).toList(),
-          ),
-
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: items.map<Widget>((i) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          i["name"],
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        "${i["qty"]}",
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,          // ← quantity is bold
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
 
           const SizedBox(height: 6),
 
           Text(
-            _formatISTDateTime(food["orderTime"]),
+            formatDateTime(food["orderTime"] ?? ""),
             style: const TextStyle(color: Colors.grey, fontSize: 13),
           ),
 
@@ -1197,30 +1212,29 @@ class _HomePageState extends State<HomePage>
                       ),
                     const SizedBox(height: 18),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        (task["status"] == "Open")
-                            ? ElevatedButton(
-                          onPressed: () => _acceptTask(task),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 8),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                          ),
-                          child: const Text("Accept"),
-                        )
-                            : const SizedBox.shrink(),
                         Text(
-                          formatTimeAgo(createdAt),
-                          style:
-                          TextStyle(color: Colors.grey[600], fontSize: 13),
+                          formatDateTime(createdAt),
+                          style: TextStyle(color: Colors.grey[600], fontSize: 13),
                         ),
+                        const Spacer(),
+                        if (task["status"] == "Open")
+                          ElevatedButton(
+                            onPressed: () => _acceptTask(task),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 20, vertical: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                            ),
+                            child: const Text("Accept"),
+                          ),
                       ],
                     ),
+
                   ],
                 ),
               ),

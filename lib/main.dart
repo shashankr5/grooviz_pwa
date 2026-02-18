@@ -10,6 +10,8 @@ import 'services/fcm_service.dart';
 import 'utils/user_session_helper.dart';
 import 'services/notification_handler.dart';
 import 'services/fcm_background.dart';
+import 'utils/notification_permission_manager.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 
 void main() async {
@@ -17,11 +19,38 @@ void main() async {
 
   await Firebase.initializeApp();
 
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'order_alert_service',
+      channelName: 'Order Alert Service',
+      channelDescription: 'Plays alert sound for new orders',
+      channelImportance: NotificationChannelImportance.HIGH,
+      priority: NotificationPriority.HIGH,
+      iconData: const NotificationIconData(
+        resType: ResourceType.mipmap,
+        resPrefix: ResourcePrefix.ic,
+        name: 'launcher',
+      ),
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(
+      showNotification: true,
+      playSound: false,
+    ),
+    foregroundTaskOptions: const ForegroundTaskOptions(
+      autoRunOnBoot: false,
+      allowWakeLock: true,
+    ),
+  );
+
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
   FCMService.initialize();
 
+  await NotificationPermissionManager.requestSafely();
+
   await setupFirebaseNotifications();
+
+  await localNotifications.cancelAll();
 
   await createNotificationChannel();
 
