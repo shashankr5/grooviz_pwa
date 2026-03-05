@@ -72,6 +72,21 @@ Future<void> createNotificationChannel() async {
       .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(channel);
+/*
+    // Also create the channel used by the foreground service (important for Android 13+ to ensure service notifications work properly)
+    const AndroidNotificationChannel fgChannel = AndroidNotificationChannel(
+    'order_alert_service', // used by FlutterForegroundTask.init
+    'Order Alert Service',
+    description: 'Foreground service notifications for order alerts.',
+    importance: Importance.high,
+    playSound: false, // foreground service plays audio itself; don't play notification sound
+    );
+
+    await localNotifications
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(fgChannel);
+  // Order Alert Service */
 }
 
 Future<void> _showNotification(RemoteMessage message) async {
@@ -91,6 +106,8 @@ Future<void> _showNotification(RemoteMessage message) async {
     //OrderAlertSound.start();
     // 🔔 Background / closed app sound
     await OrderAlertService.start();
+
+    OrderAlertService.notifyNewOrder();
   }
 
   // Display notification on device
@@ -124,8 +141,15 @@ void _handleMessage(RemoteMessage message) {
   final type = message.data['type'];
 
   switch (type) {
+
+    case 'NEW_FOOD_ORDER':
+      // 🔔 ensure alert sound stops if running
+      OrderAlertService.notifyNewOrder();
+      break;
+
     case 'NEW_SERVICE_REQUEST':
       print('➡ Navigate to service request');
+      // TODO: add navigation logic here
       break;
 
     default:

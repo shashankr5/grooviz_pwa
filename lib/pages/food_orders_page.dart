@@ -21,7 +21,7 @@ class FoodOrdersPage extends StatefulWidget {
 }
 
 class _FoodOrdersPageState extends State<FoodOrdersPage>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final String userRole = 'Food & Beverage';
   late Timer _timer;
   late AnimationController _pulseController;
@@ -51,6 +51,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   bool _isLoading = true;
   bool _hasError = false;
   String? _errorMessage;
+
+  StreamSubscription? _orderSubscription;
 
   bool _isValidTransition(String from, String to) {
     if (from == FoodOrderStatus.pending.label &&
@@ -344,18 +346,28 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       if (!mounted) return;
 
       final now = DateTime.now();
-      if (!_normalizeDate(now).isAtSameMomentAs(_normalizeDate(_currentDay))) {
-        setState(() {
+      setState(() {
+        // Always rebuild to update timer display
+        if (!_normalizeDate(now).isAtSameMomentAs(_normalizeDate(_currentDay))) {
           _currentDay = now;
-        });
-      }
+        }
+      });
     });
 
+    WidgetsBinding.instance.addObserver(this);
+
     _loadFoodOrders();
+
+    _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
+      if (!mounted) return;
+      _loadFoodOrders();
+    });  
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _orderSubscription?.cancel();
     _timer.cancel();
     _rushTimer?.cancel();
     _pulseController.dispose();
@@ -651,6 +663,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   String _formatDay(DateTime d) {
     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     return '${days[d.weekday % 7]} • ${d.day}/${d.month}';
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadFoodOrders();
+    }
   }
 
   @override

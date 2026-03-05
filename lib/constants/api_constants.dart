@@ -2,8 +2,8 @@ class ApiConstants {
   // Base URL
   static const String baseUrl = "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production";
   static const String apiKey = "sa9F4GyTT45OImNkKjaHu6bsJbk8UWmZfKdzmeoc";
-
   // Endpoints
+  // Authentication
   static const String login = "$baseUrl/ScreenSync_login_mobile";
   static const String logout = "$baseUrl/ScreenSync_logout_mobile";
   static const String sendOtp = "$baseUrl/ScreenSync_send_otp_mobile";
@@ -30,4 +30,10 @@ class ApiConstants {
   static const String foodOrderDetails = "$baseUrl/ScreenSync_get_food_orders_for_fnb";
   static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile";
   static const String orderSummary = "$baseUrl/ScreenSync_get_order_summary_mobile";
+  // Camera Page
+  static const String getRooms = "$baseUrl/ScreenSync_get_rooms_web";
+  static const String uploadImage = "$baseUrl/ScreenSync_add_image_from_mobile";
+  static const String getContents = "$baseUrl/ScreenSync_get_contents_mobile";
+  static const String updateContent = "$baseUrl/ScreenSync_update_image_from_mobile";
+  static const String deleteContent = "$baseUrl/ScreenSync_delete_content_web";
 }

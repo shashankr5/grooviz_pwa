@@ -3,6 +3,7 @@ import 'home_page.dart';
 import 'tasks_page.dart';
 import 'profile_page.dart';
 import 'food_orders_page.dart';
+import 'camera_content_page.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -14,10 +15,11 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  /// Order of pages MUST match BottomNavigationBar items
+  /// Order of pages MUST match BottomNavigationBar items exactly
   final List<Widget> _pages = [
     const HomePage(key: PageStorageKey('home')),
     const FoodOrdersPage(key: PageStorageKey('food')),
+    const CameraContentPage(key: PageStorageKey('camera')),
     const TasksPage(key: PageStorageKey('tasks')),
     const ProfilePage(key: PageStorageKey('profile')),
   ];
@@ -46,15 +48,19 @@ class _MainNavigationState extends State<MainNavigation> {
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
-          backgroundColor: Colors.white,
+          backgroundColor: Colors.transparent,
           elevation: 0,
-          type: BottomNavigationBarType.fixed,
+          type: BottomNavigationBarType.fixed, // Required for 5 items
           selectedFontSize: 12,
           unselectedFontSize: 12,
           selectedItemColor: const Color(0xFFFFC107),
           unselectedItemColor: Colors.grey.shade600,
+          showSelectedLabels: true,
+          showUnselectedLabels: true,
           onTap: (index) {
-            setState(() => _currentIndex = index);
+            setState(() {
+              _currentIndex = index;
+            });
           },
           items: const [
             BottomNavigationBarItem(
@@ -63,9 +69,14 @@ class _MainNavigationState extends State<MainNavigation> {
               label: 'Home',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.fastfood, size: 26),
+              icon: Icon(Icons.fastfood_outlined, size: 26),
               activeIcon: Icon(Icons.fastfood, size: 26),
               label: 'Food',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.camera_alt_outlined, size: 26),
+              activeIcon: Icon(Icons.camera_alt, size: 26),
+              label: 'Camera',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.task_alt_outlined, size: 26),
