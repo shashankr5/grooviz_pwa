@@ -87,7 +87,12 @@ class HomeService {
       final m = Map<String, dynamic>.from(t);
 
       return {
-        "room": (m["requested_room"] ?? m["room_id"] ?? "-").toString(),
+        "service_request_id": m["service_request_id"],
+        "room": (
+          m["room_id"] ??
+          m["requested_room"] ??
+          "-"
+        ).toString(),
 
         "status": _statusText(m["status"], m["closed"]),
         "statusColor": _statusColor(m["status"]),
@@ -99,16 +104,19 @@ class HomeService {
 
         "guest": m["guest_name"] ?? "Unknown Guest",
         "guestNote":
-        "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
+            "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
 
         "assignedTo": (
             m["assigned_to_name"] ??
-                m["assigned_user_name"] ??
-                m["assigned_name"] ??
-                m["name"] ??
-                m["assigned_to"] ??
-                "-"
+            m["assigned_user_name"] ??
+            m["assigned_name"] ??
+            m["name"] ??
+            m["assigned_to"] ??
+            "-"
         ).toString(),
+
+        // ⭐ NEW FIELD
+        "note": m["note_text"],
 
         "raw": m
       };

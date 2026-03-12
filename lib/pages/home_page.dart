@@ -229,9 +229,24 @@ class _HomePageState extends State<HomePage>
     final Map<int, Map<String, dynamic>> uniqueMap = {};
 
     for (final t in rawList) {
-      final id = t["service_request_id"] ?? t["raw"]?["service_request_id"];
-      if (id != null) {
-        uniqueMap[id] = t; // overwrite duplicates
+      final id = t["service_request_id"];
+      if (id == null) continue;
+
+      if (!uniqueMap.containsKey(id)) {
+        uniqueMap[id] = t;
+      } else {
+        final existing = uniqueMap[id]!;
+
+        final existingRoom = existing["room"];
+        final newRoom = t["room"];
+
+        // Prefer the record that has a valid room
+        if ((existingRoom == null || existingRoom == "-" || existingRoom == "0") &&
+            newRoom != null &&
+            newRoom != "-" &&
+            newRoom != "0") {
+          uniqueMap[id] = t;
+        }
       }
     }
 

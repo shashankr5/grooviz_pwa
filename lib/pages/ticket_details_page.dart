@@ -137,6 +137,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
           if ((task["status"] ?? "").toString().toLowerCase() != "open")
             _actionButtons(context),
+
+          const SizedBox(height: 16),
+
+          _notesSection(task["note"] ?? task["raw"]["note_text"]),
         ],
       ),
     );
@@ -213,6 +217,47 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 Text(name,
                     style: const TextStyle(
                         fontSize: 15, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _notesSection(String? note) {
+    if (note == null || note.isEmpty) return const SizedBox();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.blue.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.withOpacity(0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.note_alt_outlined, color: Colors.blue, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Note",
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.blue,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  note,
+                  style: const TextStyle(fontSize: 14),
+                ),
               ],
             ),
           ),
