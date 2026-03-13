@@ -159,7 +159,7 @@ class HomeService {
     if (timestamp == null) return "-";
 
     try {
-      DateTime dt = DateTime.parse(timestamp).toLocal();
+      DateTime dt = DateTime.parse(timestamp);
       return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} • ${dt.day}/${dt.month}";
     } catch (_) {
       return "-";

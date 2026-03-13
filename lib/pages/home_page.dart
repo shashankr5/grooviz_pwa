@@ -110,13 +110,13 @@ class _HomePageState extends State<HomePage>
     try {
       String fixed = ts.trim();
 
-      // Convert "yyyy-mm-dd hh:mm:ss" → ISO
+      // Convert MySQL format → ISO
       if (fixed.contains(" ") && !fixed.contains("T")) {
         fixed = fixed.replaceFirst(" ", "T");
       }
 
-      // ✅ ALWAYS convert to device local time
-      return DateTime.parse(fixed).toLocal();
+      // DO NOT convert timezone
+      return DateTime.parse(fixed);
 
     } catch (e) {
       debugPrint("❌ Timestamp parse failed: $ts");

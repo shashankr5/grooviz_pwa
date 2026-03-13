@@ -7,6 +7,12 @@ import '../services/order_alert_service.dart';
 
 final FlutterLocalNotificationsPlugin localNotifications = FlutterLocalNotificationsPlugin();
 
+bool _hasPendingOrders(RemoteMessage message) {
+  final value = (message.data['has_pending_orders'] ?? '').toString().toLowerCase();
+  return value == 'true' || value == '1' || value == 'yes';
+}
+
+
 Future<void> setupFirebaseNotifications() async {
   // Initialize local notifications
   await _initializeLocalNotifications();
@@ -110,6 +116,17 @@ Future<void> _showNotification(RemoteMessage message) async {
     OrderAlertService.notifyNewOrder();
   }
 
+  if (type == 'FOOD_ORDER_STATUS_CHANGED') {
+    OrderAlertService.notifyNewOrder();
+
+    final hasPendingOrders =
+        (message.data['has_pending_orders'] ?? '').toString().toLowerCase() == 'true';
+
+    if (!hasPendingOrders) {
+      await OrderAlertService.stop();
+    }
+    return;
+  }
   // Display notification on device
   localNotifications.show(
     message.hashCode,
@@ -144,6 +161,10 @@ void _handleMessage(RemoteMessage message) {
 
     case 'NEW_FOOD_ORDER':
       // 🔔 ensure alert sound stops if running
+      OrderAlertService.notifyNewOrder();
+      break;
+    
+    case 'FOOD_ORDER_STATUS_CHANGED':
       OrderAlertService.notifyNewOrder();
       break;
 
