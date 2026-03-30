@@ -73,8 +73,10 @@ class FoodOrderService {
         return {"success": false, "message": "Invalid server response"};
       }
 
+      final statusFlag = statusList[0]["status"];
       final responseString = statusList[0]["response"];
-      if (responseString == null) {
+
+      if (statusFlag != "S" || responseString == null) {
         return {"success": false, "message": "Invalid server response"};
       }
 
@@ -111,6 +113,8 @@ class FoodOrderService {
 
         "foodItem": m["food_item"] ?? "-",
         "quantity": m["quantity"] ?? 0,
+
+        "cookingInstructions": (m["cooking_instructions"] ?? "").toString().trim(),
 
         "status": _statusText(m["order_status"]),
         "statusColor": _statusColor(m["order_status"]),

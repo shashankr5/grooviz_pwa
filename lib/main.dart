@@ -44,7 +44,7 @@ void main() async {
 
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-  FCMService.initialize();
+  await FCMService.initialize();
 
   await NotificationPermissionManager.requestSafely();
 

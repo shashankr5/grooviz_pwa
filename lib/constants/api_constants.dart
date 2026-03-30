@@ -36,4 +36,6 @@ class ApiConstants {
   static const String getContents = "$baseUrl/ScreenSync_get_contents_mobile";
   static const String updateContent = "$baseUrl/ScreenSync_update_image_from_mobile";
   static const String deleteContent = "$baseUrl/ScreenSync_delete_content_web";
+  // Checkout
+  static const String checkoutReport = "$baseUrl/ScreenSync_get_guest_checkout_report_mobile";
 }

@@ -1,3 +1,4 @@
+// login_service.dart
 import 'dart:developer' as dev;
 import 'dart:convert';
 import 'package:dio/dio.dart';
@@ -43,13 +44,22 @@ class LoginService {
     required String password,
   }) async {
     try {
-      final fcmToken = await FCMService.getFCMToken();
+      final fcmToken = await FCMService.getFCMToken(
+        timeout: const Duration(seconds: 20),
+      );
+
+      if (fcmToken == null || fcmToken.isEmpty) {
+        return {
+          "success": false,
+          "message": "Push registration is still in progress. Please try again in a moment."
+        };
+      }
       final deviceInfo = await DeviceInfo.getDeviceInfo();
 
       final payload = {
         "username": username,
         "password": password,
-        "fcm_token": fcmToken ?? "",
+        "fcm_token": fcmToken,
         "installation_id": deviceInfo["installation_id"],
         "device_identifier": deviceInfo["device_identifier"],
         "device_type": deviceInfo["device_type"],

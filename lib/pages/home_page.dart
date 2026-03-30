@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
+import 'guest_checkout_page.dart';
 import 'ticket_details_page.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
@@ -717,6 +718,19 @@ class _HomePageState extends State<HomePage>
         ],
       ),
       actions: [
+        IconButton(
+          icon: const Icon(Icons.insert_chart_outlined),
+          tooltip: "Reports",
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const GuestCheckoutPage(),
+              ),
+            );
+          },
+        ),
+
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: CircleAvatar(

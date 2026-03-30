@@ -262,6 +262,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       grouped[orderNo]!["items"].add({
         "name": o["foodItem"],
         "qty": o["quantity"],
+        "instructions": o["cookingInstructions"],
       });
     }
 
@@ -802,6 +803,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             order['status'] == FoodOrderStatus.preparing.label) &&
             _remainingSeconds(order) < 0;
 
+    final instructionsList = items
+    .map((i) => (i['instructions'] ?? "").toString().trim())
+    .where((i) => i.isNotEmpty)
+    .toSet()
+    .toList();
+
 
     return AnimatedBuilder(
       animation: Listenable.merge([_delayBlinkController, _acceptController]),
@@ -892,39 +899,115 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             const SizedBox(height: 12),
 
             // Items
-            // Items
-...items.map((i) {
-  return Padding(
-    padding: const EdgeInsets.only(top: 6),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fssaiIcon(_isVeg(i['name'])),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            i['name'],
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Text(
-          '${i['qty']}',
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,     // ← bold quantity
-            color: Colors.black87,
-          ),
-        ),
-      ],
-    ),
-  );
-}),
+            ...items.map((i) {
+              final instructions =
+                  (i['instructions'] ?? "").toString().trim();
+
+              return Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _fssaiIcon(_isVeg(i['name'])),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            i['name'],
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '${i['qty']}',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ),
+
+
+                  ],
+                ),
+              );
+            }),
 
             const SizedBox(height: 12),
+
+            // ✅ GROUPED COOKING INSTRUCTIONS (like Notes UI but food styled)
+            if (instructionsList.isNotEmpty) ...[
+              const SizedBox(height: 12),
+
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white, // ✅ white background
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.blue.withOpacity(0.25), // ✅ light blue border
+                  ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.04),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],                  
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.restaurant_menu,
+                      color: Colors.blue, // ✅ blue icon
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            "Cooking Instructions",
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.blue, // ✅ blue title
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+
+                          ...instructionsList.map(
+                            (ins) => Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Text(
+                                ins,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 14), // ✅ spacing before buttons
+            ],
 
             // Cancel reason block
             if (order['status'] == FoodOrderStatus.cancelled.label &&
