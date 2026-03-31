@@ -641,7 +641,7 @@ class HomeService {
   // UPDATE ROOM SERVICE STATUS (Accept / Delivered)
   Future<Map<String, dynamic>> updateRoomServiceStatus({
     required String orderNumber,
-    required String action, // "Delivered" or "Accepted"
+    required String action,
   }) async {
     try {
       final int? userId = await UserSessionHelper.getUserId();
@@ -671,38 +671,20 @@ class HomeService {
         return {"success": false, "message": "Server error"};
       }
 
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
+      final resultList = response.data["RESULT"] as List?;
+
+      if (resultList == null || resultList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final flag = statusList[0]["status"];
-      final rawResponse = statusList[0]["response"];
-
-      String message = "Action failed";
-
-      // Backend nests message inside a JSON string
-      if (rawResponse is String) {
-        try {
-          final decoded = jsonDecode(rawResponse);
-          message = decoded["STATUS"]?[0]?["response"]?["message"] ?? message;
-        } catch (e) {
-          dev.log("⚠️ JSON decode failed: $e");
-          message = rawResponse;
-        }
-      }
-
-      if (flag != "S") {
-        return {
-          "success": false,
-          "message": message,
-        };
-      }
+      final flag = resultList[0]["status"];
+      final message = resultList[0]["message"] ?? "Action failed";
 
       return {
-        "success": true,
+        "success": flag == "S",
         "message": message,
       };
+
     } catch (e) {
       dev.log("❌ ERROR (updateRoomServiceStatus): $e");
       return {"success": false, "message": "Network error"};

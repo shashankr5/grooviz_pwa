@@ -4,8 +4,20 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'order_alert_foreground_task.dart';
 
 class OrderAlertService {
+  static DateTime? _lastTrigger;
+
   static Future<bool> start() async {
     try {
+      final now = DateTime.now();
+
+      // Debounce (avoid spam from multiple FCMs)
+      if (_lastTrigger != null &&
+          now.difference(_lastTrigger!) < const Duration(seconds: 2)) {
+        print('⏱ Debounced duplicate order alert');
+        return true;
+      }
+      _lastTrigger = now;
+      
       if (await FlutterForegroundTask.isRunningService) return true;
 
       await FlutterForegroundTask.startService(

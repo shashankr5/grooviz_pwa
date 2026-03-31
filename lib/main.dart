@@ -44,6 +44,8 @@ void main() async {
 
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
+  await FlutterForegroundTask.requestNotificationPermission(); // permission for foreground service notifications (Android 13+)
+
   await FCMService.initialize();
 
   await NotificationPermissionManager.requestSafely();
