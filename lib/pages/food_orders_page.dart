@@ -1369,10 +1369,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   void _showError(String? message) {
     if (!mounted) return;
 
-    // Always show safe generic message to user
     AppSnackBar.show(
       context,
-      "Something went wrong. Please try again.",
+      message ?? "Something went wrong. Please try again.",
       isError: true,
     );
   }

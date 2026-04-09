@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../services/profile_service.dart';
 import '../services/logout_service.dart';
+import '../services/order_alert_service.dart';
 import '../utils/user_session_helper.dart';
 
 import 'login_page.dart';
@@ -78,6 +79,8 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _isPressed = false);
 
     final result = await LogoutService().logout();
+
+    await OrderAlertService.stop();
 
     if (!mounted) return;
 

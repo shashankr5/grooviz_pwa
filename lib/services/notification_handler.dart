@@ -7,11 +7,6 @@ import '../services/order_alert_service.dart';
 
 final FlutterLocalNotificationsPlugin localNotifications = FlutterLocalNotificationsPlugin();
 
-bool _hasPendingOrders(RemoteMessage message) {
-  final value = (message.data['has_pending_orders'] ?? '').toString().toLowerCase();
-  return value == 'true' || value == '1' || value == 'yes';
-}
-
 
 Future<void> setupFirebaseNotifications() async {
   // Initialize local notifications
@@ -78,7 +73,7 @@ Future<void> createNotificationChannel() async {
       .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(channel);
-/*
+      
     // Also create the channel used by the foreground service (important for Android 13+ to ensure service notifications work properly)
     const AndroidNotificationChannel fgChannel = AndroidNotificationChannel(
     'order_alert_service', // used by FlutterForegroundTask.init
@@ -92,13 +87,13 @@ Future<void> createNotificationChannel() async {
       .resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(fgChannel);
-  // Order Alert Service */
+    // Order Alert Service
 }
 
 Future<void> _showNotification(RemoteMessage message) async {
   final data = message.data;
-  final title = message.notification?.title ?? 'Notification';
-  final body = message.notification?.body ?? '';
+  final title = data['title'] ?? '📢 New Service Request';
+  final body = data['body'] ?? data['message'] ?? '';
   final String? type = data['type'];
 
   print('🎯 Showing notification');
@@ -112,21 +107,8 @@ Future<void> _showNotification(RemoteMessage message) async {
     //OrderAlertSound.start();
     // 🔔 Background / closed app sound
     await OrderAlertService.start();
-
-    OrderAlertService.notifyNewOrder();
   }
 
-  if (type == 'FOOD_ORDER_STATUS_CHANGED') {
-    OrderAlertService.notifyNewOrder();
-
-    final hasPendingOrders =
-        (message.data['has_pending_orders'] ?? '').toString().toLowerCase() == 'true';
-
-    if (!hasPendingOrders) {
-      await OrderAlertService.stop();
-    }
-    return;
-  }
   // Display notification on device
   localNotifications.show(
     message.hashCode,
@@ -161,10 +143,6 @@ void _handleMessage(RemoteMessage message) {
 
     case 'NEW_FOOD_ORDER':
       // 🔔 ensure alert sound stops if running
-      OrderAlertService.notifyNewOrder();
-      break;
-    
-    case 'FOOD_ORDER_STATUS_CHANGED':
       OrderAlertService.notifyNewOrder();
       break;
 

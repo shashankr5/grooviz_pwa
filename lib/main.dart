@@ -44,17 +44,15 @@ void main() async {
 
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-  await FlutterForegroundTask.requestNotificationPermission(); // permission for foreground service notifications (Android 13+)
+  //await NotificationPermissionManager.requestAllNotificationPermissions(); // permission for foreground service notifications (Android 13+)
 
   await FCMService.initialize();
-
-  await NotificationPermissionManager.requestSafely();
-
-  await setupFirebaseNotifications();
 
   await localNotifications.cancelAll();
 
   await createNotificationChannel();
+
+  await setupFirebaseNotifications();
 
   // ✅ Check if user is logged in
   final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
@@ -82,7 +80,6 @@ class MyApp extends StatelessWidget {
             ),
           ),
       ),
-
       // This decides startup screen
       home: isLoggedIn ? const MainNavigation() : const LoginPage(),
     );

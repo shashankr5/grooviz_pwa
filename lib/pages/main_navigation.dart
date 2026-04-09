@@ -4,6 +4,7 @@ import 'tasks_page.dart';
 import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
+import '../utils/notification_permission_manager.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -23,6 +24,21 @@ class _MainNavigationState extends State<MainNavigation> {
     const TasksPage(key: PageStorageKey('tasks')),
     const ProfilePage(key: PageStorageKey('profile')),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+
+    // 🔥 Request permission AFTER user enters app
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    await Future.delayed(const Duration(milliseconds: 500)); 
+    // small delay = smoother UX
+
+    await NotificationPermissionManager.requestAllNotificationPermissions();
+  }
 
   @override
   Widget build(BuildContext context) {

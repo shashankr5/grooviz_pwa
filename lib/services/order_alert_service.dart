@@ -8,6 +8,7 @@ class OrderAlertService {
 
   static Future<bool> start() async {
     try {
+      //if (await FlutterForegroundTask.isRunningService) return true;
       final now = DateTime.now();
 
       // Debounce (avoid spam from multiple FCMs)
@@ -17,8 +18,17 @@ class OrderAlertService {
         return true;
       }
       _lastTrigger = now;
-      
-      if (await FlutterForegroundTask.isRunningService) return true;
+
+      final isRunning = await FlutterForegroundTask.isRunningService;
+
+      // 🔥 FORCE RESTART (CRITICAL)
+      if (isRunning) {
+        print('🔄 Restarting existing foreground service...');
+        await FlutterForegroundTask.stopService();
+
+        // Small delay ensures clean restart
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
 
       await FlutterForegroundTask.startService(
         notificationTitle: 'New Order',
@@ -47,6 +57,7 @@ class OrderAlertService {
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();
       }
+      _lastTrigger = null;
     } catch (e) {
       print('OrderAlertService.stop failed: $e');
     }
