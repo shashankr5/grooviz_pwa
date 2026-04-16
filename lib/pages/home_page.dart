@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import 'guest_checkout_page.dart';
 import 'ticket_details_page.dart';
+import 'profile_page.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
 
@@ -718,29 +719,57 @@ class _HomePageState extends State<HomePage>
         ],
       ),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.insert_chart_outlined),
-          tooltip: "Reports",
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const GuestCheckoutPage(),
-              ),
-            );
-          },
-        ),
-
         Padding(
           padding: const EdgeInsets.only(right: 12),
-          child: CircleAvatar(
-            backgroundColor: Colors.deepPurple,
-            child: Text(
-              userName.isNotEmpty ? userName[0].toUpperCase() : "?",
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+          child: GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const GuestCheckoutPage(),
+                ),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade100,
+                shape: BoxShape.circle,
+              ),
+              child: Image.asset(
+                "assets/icons/checkout_report.png",
+                width: 22,
+                height: 22,
+                color: Colors.black, // 🔥 remove if your icon is already colored
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(50),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ProfilePage(),
+                  ),
+                );
+              },
+              child: CircleAvatar(
+                backgroundColor: Colors.deepPurple,
+                child: Text(
+                  userName.isNotEmpty
+                      ? userName[0].toUpperCase()
+                      : "?",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ),
           ),

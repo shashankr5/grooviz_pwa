@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/dialog_helpers.dart';
 import '../services/home_service.dart';
+import '../utils/user_session_helper.dart';
 
 class TicketDetailPage extends StatefulWidget {
   final Map<String, dynamic> task;
@@ -22,14 +23,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   late Map<String, dynamic> task;
 
   final HomeService _homeService = HomeService();
-
-
+  int? loggedInUserId;
 
 
   @override
   void initState() {
     super.initState();
     task = Map<String, dynamic>.from(widget.task);
+    _loadUserId();
+  }
+
+  Future<void> _loadUserId() async {
+    loggedInUserId = await UserSessionHelper.getUserId();
+    setState(() {});
   }
 
   // ---------------- Time Formatting -------------------
@@ -47,13 +53,21 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     final createdAt = _parseTimestamp(ts);
     final now = DateTime.now();
-    final diff = now.difference(createdAt);
+
+    Duration diff = now.difference(createdAt);
+
+    // ✅ FIX: Prevent negative time
+    if (diff.isNegative) {
+      diff = Duration.zero;
+    }
 
     String timeAgo;
-    if (diff.inSeconds < 60) {
+    if (diff.inSeconds < 5) {
+      timeAgo = "Just now";
+    } else if (diff.inSeconds < 60) {
       timeAgo = "${diff.inSeconds}s ago";
     } else if (diff.inMinutes < 60) {
-      timeAgo = "${diff.inMinutes}m ago";
+      timeAgo = "${diff.inMinutes}m ago";   // ⚠️ You missed this
     } else if (diff.inHours < 24) {
       timeAgo = "${diff.inHours}h ago";
     } else {
@@ -67,13 +81,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     String dateStr;
     if (createdDate == today) {
       dateStr =
-      "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+          "Today ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     } else if (createdDate == yesterday) {
       dateStr =
-      "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+          "Yesterday ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     } else {
       dateStr =
-      "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
+          "${createdAt.day.toString().padLeft(2, '0')}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.year} ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}";
     }
 
     return "$timeAgo • $dateStr";
@@ -269,106 +283,118 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   // ---------------- Action Buttons -------------------
 
   Widget _actionButtons(BuildContext context) {
-  final status =
-      (task["status"] ?? "").toString().toLowerCase();
+    final status = (task["status"] ?? "").toString().toLowerCase();
+    final isClosed = status == "closed";
 
-  final isClosed = status == "closed";
+    final assignedToId = int.tryParse("${task["raw"]?["assigned_to"]}");
+    final isAssignedToMe = assignedToId == loggedInUserId;
 
-  // 🔒 CLOSED STATE
-  if (isClosed) {
-    return ElevatedButton.icon(
-      onPressed: null,
-      icon: const Icon(Icons.lock_outline),
-      label: const Text("Ticket Closed"),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.grey.shade400,
-        foregroundColor: Colors.white,
-        minimumSize: const Size(double.infinity, 50),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-      ),
-    );
-  }
-
-  // ✅ IN PROGRESS (or anything except open/closed)
-  return Column(
-    children: [
-      Row(
-        children: [
-          Expanded(
-            child: ElevatedButton(
-              onPressed: () => _addNotes(context),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black,
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: const Text("Add Notes"),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton(
-              onPressed: () => _reassign(context),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black,
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: const Text("Reassign"),
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 12),
-      ElevatedButton.icon(
-        onPressed: () async {
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (_) =>
-                const Center(child: CircularProgressIndicator()),
-          );
-
-          final result = await HomeService().closeServiceRequest(
-            serviceRequestId: task["raw"]["service_request_id"],
-          );
-
-          Navigator.pop(context);
-
-          if (!result["success"]) {
-            return; // silently fail
-          }
-
-          setState(() {
-            task["status"] = "Closed";
-            task["statusColor"] = Colors.green;
-          });
-
-          showCustomSnackBar(context, "Ticket closed successfully!");
-          widget.onClose();
-        },
-        icon: const Icon(Icons.check_circle_outline),
-        label: const Text("Close Ticket"),
+    // 🔒 CLOSED STATE
+    if (isClosed) {
+      return ElevatedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.lock_outline),
+        label: const Text("Ticket Closed"),
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.green,
+          backgroundColor: Colors.grey.shade400,
           foregroundColor: Colors.white,
           minimumSize: const Size(double.infinity, 50),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
         ),
-      ),
-    ],
-  );
-}
+      );
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton(
+                onPressed: isAssignedToMe ? () => _addNotes(context) : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
+                  minimumSize: const Size(double.infinity, 50),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text("Add Notes"),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: isAssignedToMe ? () => _reassign(context) : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
+                  minimumSize: const Size(double.infinity, 50),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text("Reassign"),
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 12),
+
+        // 🔥 KEY CHANGE: Only show close button if assigned to me
+        if (isAssignedToMe)
+          ElevatedButton.icon(
+            onPressed: () async {
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) =>
+                    const Center(child: CircularProgressIndicator()),
+              );
+
+              final result = await HomeService().closeServiceRequest(
+                serviceRequestId: task["raw"]["service_request_id"],
+              );
+
+              Navigator.pop(context);
+
+              if (!result["success"]) return;
+
+              setState(() {
+                task["status"] = "Closed";
+                task["statusColor"] = Colors.green;
+              });
+
+              showCustomSnackBar(context, "Ticket closed successfully!");
+              widget.onClose();
+            },
+            icon: const Icon(Icons.check_circle_outline),
+            label: const Text("Close Ticket"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(double.infinity, 50),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          ),
+
+        // 👇 Optional UX improvement
+        if (!isAssignedToMe)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              "This ticket is assigned to another user",
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
 
   // ---------------- FUNCTIONS -------------------
 

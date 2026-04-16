@@ -11,6 +11,7 @@ import '../utils/food_order_status.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
+import '../services/websocket_service.dart';
 
 
 class FoodOrdersPage extends StatefulWidget {
@@ -48,11 +49,136 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   final FoodOrderService _foodOrderService = FoodOrderService();
   final HomeService _homeService = HomeService();
 
+  //  Prevent duplicate WebSocket events
+  final Set<String> _processedOrders = {};
+
   bool _isLoading = true;
   bool _hasError = false;
   String? _errorMessage;
 
+  StreamSubscription? _wsSubscription;
+
   StreamSubscription? _orderSubscription;
+
+  Future<void> _initializeWebSocket() async {
+    final ws = WebSocketService();
+
+    final userId = await UserSessionHelper.getUserId();
+    final enterpriseId = await UserSessionHelper.getEnterpriseId();
+
+    ws.connect(
+      userId: userId?.toString(),
+      enterpriseId: enterpriseId?.toString(),
+    );
+
+    await _wsSubscription?.cancel();
+
+    _wsSubscription = ws.stream.listen((event) {
+      if (!mounted) return;
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+
+        final type = (event['type'] ?? '').toString().toUpperCase();
+
+        switch (type) {
+          case 'NEW_FOOD_ORDER':
+            _handleSocketNewOrder(event['data'] ?? event);
+            break;
+
+          case 'ORDER_ACCEPTED':
+          case 'ORDER_DELIVERED':
+          case 'ORDER_STATUS_CHANGED':
+          case 'ORDER_STATUS_UPDATED':
+          case 'ORDER_CANCELLED':
+            _handleSocketUpdate(event['data'] ?? event);
+            break;
+        }
+      });
+    });
+  }
+
+  void _handleSocketNewOrder(dynamic data) {
+    if (data == null) return;
+
+    try {
+      final newOrders = _groupApiOrders([data]);
+      if (newOrders.isEmpty) return;
+
+      final newOrder = newOrders.first;
+
+      // prevent duplicates
+      if (foodOrders.any((o) => o['orderNo'] == newOrder['orderNo'])) return;
+
+      _addNewOrder(newOrder);
+
+      // start alert sound
+      OrderAlertService.start();
+
+      // LIMIT CACHE SIZE
+      if (_processedOrders.length > 100) {
+        _processedOrders.clear();
+      }
+    } catch (e) {
+      print('WS new order error: $e');
+      _loadFoodOrders();
+    }
+  }
+
+  void _handleSocketUpdate(dynamic data) {
+    final orderNo =
+        data['order_number']?.toString() ?? data['orderNo']?.toString();
+
+    if (orderNo == null) return;
+
+    final newStatus =
+        (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
+
+    // stop alert if accepted
+    if (newStatus == 'ACCEPTED') {
+      OrderAlertService.stop();
+    }
+
+    final index =
+        foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
+
+    // if not found → fallback once
+    if (index == -1) {
+      _loadFoodOrders(); // fallback safety
+      return;
+    }
+
+    setState(() {
+      if (newStatus == 'DELIVERED') {
+        final order = foodOrders.removeAt(index);
+        order['status'] = FoodOrderStatus.delivered.label;
+        order['raw']['order_status'] = 'DELIVERED';
+        deliveredOrders.insert(0, order);
+        return;
+      }
+
+      if (newStatus == 'CANCELLED') {
+        final order = foodOrders.removeAt(index);
+        order['status'] = FoodOrderStatus.cancelled.label;
+        order['cancelReason'] = data['cancel_reason'];
+        order['raw']['order_status'] = 'CANCELLED';
+        cancelledOrders.insert(0, order);
+        return;
+      }
+
+      if (newStatus == 'ACCEPTED') {
+        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
+        foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
+        foodOrders[index]['acceptedAt'] = DateTime.now();
+        return;
+      }
+
+      if (newStatus == 'READY') {
+        foodOrders[index]['status'] = FoodOrderStatus.ready.label;
+        foodOrders[index]['raw']['order_status'] = 'READY';
+        return;
+      }
+    });
+  }
 
   bool _isValidTransition(String from, String to) {
     if (from == FoodOrderStatus.pending.label &&
@@ -296,6 +422,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   void initState() {
     super.initState();
 
+    _initializeWebSocket();
+
+    _loadFoodOrders(); 
+
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -357,8 +487,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     WidgetsBinding.instance.addObserver(this);
 
-    _loadFoodOrders();
-
     _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
       if (!mounted) return;
       _loadFoodOrders();
@@ -376,6 +504,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _acceptController.dispose();
     _blinkController.dispose();
     OrderAlertSound.stop();
+    _wsSubscription?.cancel();
     super.dispose();
   }
 
@@ -933,8 +1062,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         ),
                       ],
                     ),
-
-
                   ],
                 ),
               );
@@ -1375,5 +1502,4 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       isError: true,
     );
   }
-
 }

@@ -3,6 +3,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
+import 'fcm_service.dart';
 
 
 final FlutterLocalNotificationsPlugin localNotifications = FlutterLocalNotificationsPlugin();
@@ -22,6 +23,9 @@ Future<void> setupFirebaseNotifications() async {
   } catch (e) {
     print('⚠️ FCM token fetch failed (will retry automatically): $e');
   }
+
+  //final token = await FCMService.getCachedFCMToken();
+  //print('FCM token (cached): $token');
 
   // FOREGROUND
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
@@ -107,6 +111,7 @@ Future<void> _showNotification(RemoteMessage message) async {
     //OrderAlertSound.start();
     // 🔔 Background / closed app sound
     await OrderAlertService.start();
+    OrderAlertService.notifyNewOrder();
   }
 
   // Display notification on device

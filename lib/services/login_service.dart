@@ -46,6 +46,7 @@ class LoginService {
     try {
       final fcmToken = await FCMService.getFCMToken(
         timeout: const Duration(seconds: 20),
+        preferFresh: true,
       );
 
       if (fcmToken == null || fcmToken.isEmpty) {

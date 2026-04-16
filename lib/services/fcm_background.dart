@@ -1,14 +1,14 @@
+// fcm_background.dart
+import 'package:com.tekchant.screensyncmobileapp/services/order_alert_service.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'order_alert_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
 
-  // 🔥 Foreground service init (for food orders)
+  // Initialize foreground task (required for stop() to work in background)
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
       channelId: 'order_alert_service',
@@ -27,56 +27,43 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     ),
   );
 
-  // Ignore empty messages
-  if (message.data.isEmpty && message.notification == null) {
-    return;
-  }
+  final type = message.data['type'];
+  final stopAlert = message.data['stop_alert'];
 
   print('📩 Background message received');
-  print('Data: ${message.data}');
+  print('Type: $type');
+  print('stopAlert: $stopAlert');
 
-  final type = message.data['type'];
-
-  // ✅ CASE 1: FOOD ORDER → START LOOP SOUND
   if (type == 'NEW_FOOD_ORDER') {
     await OrderAlertService.start();
     return;
   }
 
-  // ✅ CASE 2: SERVICE REQUEST → SHOW NORMAL NOTIFICATION
-
-  try {
-    final FlutterLocalNotificationsPlugin notifications =
-        FlutterLocalNotificationsPlugin();
-
-    // 🔥 MUST initialize inside background isolate
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-
-    const InitializationSettings initSettings =
-        InitializationSettings(android: androidSettings);
-
-    await notifications.initialize(initSettings);
-
-    await notifications.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      message.data['title'] ?? '📢 New Service Request',
-      message.data['body'] ?? message.data['message'] ?? '',
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'high_importance_channel',
-          'High Importance Notifications',
-          channelDescription:
-              'This channel is used for important notifications.',
-          importance: Importance.max,
-          priority: Priority.high,
-          playSound: true,
-        ),
-      ),
-    );
-
-    print('✅ Background service request notification shown');
-  } catch (e) {
-    print('❌ Background notification failed: $e');
+  if (type == 'ORDER_ACCEPTED') {
+    if (stopAlert == 'true') {
+      print('Background: stopping alert for acceptor');
+      await OrderAlertService.stop();
+    } else {
+      print('Background: other user, alert continues');
+    }
+    return;
   }
+
+  if (type == 'ORDER_DELIVERED') {
+    print('Background: order delivered, stopping alert');
+    await OrderAlertService.stop();
+    return;
+  }
+
+  if (type == 'ORDER_STATUS_CHANGED') {
+    // READY, PREPARING, etc.
+    final hasPending = (message.data['has_pending_orders'] ?? '').toString().toLowerCase() == 'true';
+    if (!hasPending) {
+      print('Background: no pending orders, stopping alert');
+      await OrderAlertService.stop();
+    }
+    return;
+  }
+
+  print('Background: unhandled message type $type');
 }

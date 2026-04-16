@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'dart:async';
 
 import 'pages/login_page.dart';
 import 'pages/main_navigation.dart';
@@ -58,7 +59,16 @@ void main() async {
   final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
 
   runApp(MyApp(isLoggedIn: isLoggedIn));
+
+  //unawaited(_bootstrapPush());
 }
+
+//Future<void> _bootstrapPush() async {
+//  await FCMService.initialize();
+//  await localNotifications.cancelAll();
+//  await createNotificationChannel();
+//  await setupFirebaseNotifications();
+//}
 
 class MyApp extends StatelessWidget {
   final bool isLoggedIn;

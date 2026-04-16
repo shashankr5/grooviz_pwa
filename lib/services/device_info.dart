@@ -39,7 +39,7 @@ class DeviceInfo {
     try {
       if (Platform.isAndroid) {
         final android = await _deviceInfo.androidInfo;
-        final id = (android.id?.isNotEmpty == true) ? android.id! : "android_${_uuid.v4()}";
+        final id = (android.id.isNotEmpty == true) ? android.id : "android_${_uuid.v4()}";
         await prefs.setString("device_identifier", id);  // SAVE HERE
         return id;
       } else {

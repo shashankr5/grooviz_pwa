@@ -20,16 +20,15 @@ class _MainNavigationState extends State<MainNavigation> {
   final List<Widget> _pages = [
     const HomePage(key: PageStorageKey('home')),
     const FoodOrdersPage(key: PageStorageKey('food')),
-    const CameraContentPage(key: PageStorageKey('camera')),
     const TasksPage(key: PageStorageKey('tasks')),
-    const ProfilePage(key: PageStorageKey('profile')),
+    const CameraContentPage(key: PageStorageKey('camera')),
   ];
 
   @override
   void initState() {
     super.initState();
 
-    // 🔥 Request permission AFTER user enters app
+    // Request permission AFTER user enters app
     _requestPermissions();
   }
 
@@ -90,19 +89,14 @@ class _MainNavigationState extends State<MainNavigation> {
               label: 'Food',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.camera_alt_outlined, size: 26),
-              activeIcon: Icon(Icons.camera_alt, size: 26),
-              label: 'Camera',
-            ),
-            BottomNavigationBarItem(
               icon: Icon(Icons.task_alt_outlined, size: 26),
               activeIcon: Icon(Icons.task_alt, size: 26),
               label: 'My Tasks',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline, size: 26),
-              activeIcon: Icon(Icons.person, size: 26),
-              label: 'Profile',
+              icon: Icon(Icons.camera_alt_outlined, size: 26),
+              activeIcon: Icon(Icons.camera_alt, size: 26),
+              label: 'Camera',
             ),
           ],
         ),

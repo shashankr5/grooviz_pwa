@@ -4,11 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:numberpicker/numberpicker.dart';
+import 'package:image/image.dart' as img;
+
 import 'my_contents_page.dart'; 
 import '../services/rooms_service.dart';
 import '../services/upload_service.dart';
 import '../utils/user_session_helper.dart';
-
 
 class CameraContentPage extends StatefulWidget {
   final Map<String, dynamic>? existingContent;
@@ -210,8 +211,28 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
       /// upload new image ONLY if user selected one
       if (_selectedImage != null) {
-        final bytes = await _selectedImage!.readAsBytes();
-        final base64Image = "data:image/jpeg;base64,${base64Encode(bytes)}";
+        final originalBytes = await _selectedImage!.readAsBytes();
+
+      // decode image
+      final originalImage = img.decodeImage(originalBytes);
+
+      if (originalImage == null) {
+        throw Exception("Invalid image");
+      }
+
+      // 🔥 Resize EXACT 1920x1080
+      final resizedImage = img.copyResize(
+        originalImage,
+        width: 1920,
+        height: 1080,
+      );
+
+      // compress to JPEG
+      final resizedBytes = img.encodeJpg(resizedImage, quality: 90);
+
+      // convert to base64
+      final base64Image =
+          "data:image/jpeg;base64,${base64Encode(resizedBytes)}";
 
         final enterpriseId =
             (await UserSessionHelper.getEnterpriseId())?.toString() ?? "";

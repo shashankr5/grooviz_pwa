@@ -39,15 +39,30 @@ class FCMService {
 
   static Future<String?> getFCMToken({
     Duration timeout = const Duration(seconds: 20),
+    bool preferFresh = false,
   }) async {
-    return ensureFCMToken(timeout: timeout);
+    return ensureFCMToken(
+      timeout: timeout,
+      preferFresh: preferFresh,
+      );
   }
 
   static Future<String?> ensureFCMToken({
     Duration timeout = const Duration(seconds: 20),
+    bool preferFresh = false,
   }) async {
     final cached = await getCachedFCMToken();
     if (cached != null && cached.isNotEmpty) return cached;
+    if (!preferFresh && cached != null && cached.isNotEmpty) {
+      unawaited(_refreshTokenInBackground());
+      return cached;
+    }
+
+    final immediate = await _tryGetTokenOnce();
+    if (immediate != null && immediate.isNotEmpty) {
+      await _saveToken(immediate);
+      return immediate;
+    }
 
     final completer = Completer<String?>();
 
@@ -79,6 +94,12 @@ class FCMService {
 
       if (!completer.isCompleted) {
         completer.complete(await getCachedFCMToken());
+
+      if (!completer.isCompleted && cached != null && cached.isNotEmpty) {
+        completer.complete(cached);
+      } else if (!completer.isCompleted) {
+          completer.complete(await getCachedFCMToken());
+        }
       }
 
       return await completer.future.timeout(
@@ -100,6 +121,13 @@ class FCMService {
     } catch (e) {
       print('FCM token fetch failed (will retry automatically): $e');
       return null;
+    }
+  }
+
+  static Future<void> _refreshTokenInBackground() async {
+    final token = await _tryGetTokenOnce();
+    if (token != null && token.isNotEmpty) {
+      await _saveToken(token);
     }
   }
 
