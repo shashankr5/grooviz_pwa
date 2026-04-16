@@ -1,40 +1,21 @@
 {
   "project_info": {
-    "project_number": "791831704762",
-    "project_id": "screensyncapp-c45b5",
-    "storage_bucket": "screensyncapp-c45b5.firebasestorage.app"
+    "project_number": "15090156869",
+    "project_id": "screensyncmobileapp",
+    "storage_bucket": "screensyncmobileapp.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:791831704762:android:2eb0efd4eb3a6e5a827e83",
+        "mobilesdk_app_id": "1:15090156869:android:3809326980137036586a2c",
         "android_client_info": {
-          "package_name": "com.tekchant.screensyncapp"
+          "package_name": "com.tekchant.screensyncmobileapp"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyAHHpB6PSzGopWDdjE-Z_0GaLrT9HegiyE"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:791831704762:android:2736c9207824e511827e83",
-        "android_client_info": {
-          "package_name": "com.tekchant.screensyncapp"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyAHHpB6PSzGopWDdjE-Z_0GaLrT9HegiyE"
+          "current_key": "AIzaSyC-faCSvYHFYVEh1CzSA0KOnQTS_LfxtlY"
         }
       ],
       "services": {
