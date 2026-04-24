@@ -37,7 +37,7 @@
             </intent-filter>
         </activity>
 
-        <!-- REQUIRED for background FCM -->
+        <!-- REQUIRED for background FCM 
         <service
             android:name="com.google.firebase.messaging.FirebaseMessagingService"
             android:exported="false">
@@ -45,6 +45,7 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT"/>
             </intent-filter>
         </service>
+        -->
 
         <meta-data
             android:name="flutterEmbedding"

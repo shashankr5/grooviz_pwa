@@ -1,32 +1,32 @@
-// services/fcm_service.dart
-import 'dart:io';
 import 'dart:async';
+import 'dart:io';
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'fcm_background.dart';
-
 
 class FCMService {
   static final FirebaseMessaging _fcm = FirebaseMessaging.instance;
   static StreamSubscription<String>? _refreshSub;
+  static Completer<String?>? _pendingTokenCompleter;
+  static DateTime? _lastDirectFetchAt;
+  static const Duration _directFetchThrottle = Duration(seconds: 15);
 
   static Future<void> initialize() async {
     try {
+      await _fcm.setAutoInitEnabled(true);
       await _fcm.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
+        alert: true, 
+        badge: true, 
+        sound: true
       );
 
       _refreshSub ??= _fcm.onTokenRefresh.listen((token) async {
+        if (token.isEmpty) return;
         await _saveToken(token);
+        _completePending(token);
       });
 
-      final token = await _tryGetTokenOnce();
-      if (token != null && token.isNotEmpty) {
-        await _saveToken(token);
-      }
+      unawaited(probeTokenAvailability(force: true));
     } catch (e) {
       print('FCM initialization error: $e');
     }
@@ -38,77 +38,56 @@ class FCMService {
   }
 
   static Future<String?> getFCMToken({
-    Duration timeout = const Duration(seconds: 20),
+    Duration timeout = const Duration(minutes: 2),
     bool preferFresh = false,
   }) async {
-    return ensureFCMToken(
-      timeout: timeout,
-      preferFresh: preferFresh,
-      );
+    return ensureFCMToken(timeout: timeout, preferFresh: preferFresh);
   }
 
   static Future<String?> ensureFCMToken({
-    Duration timeout = const Duration(seconds: 20),
+    Duration timeout = const Duration(minutes: 2),
     bool preferFresh = false,
   }) async {
     final cached = await getCachedFCMToken();
-    if (cached != null && cached.isNotEmpty) return cached;
+
     if (!preferFresh && cached != null && cached.isNotEmpty) {
-      unawaited(_refreshTokenInBackground());
+      unawaited(probeTokenAvailability());
       return cached;
     }
 
-    final immediate = await _tryGetTokenOnce();
+    final immediate = await _getTokenDirect(force: true);
     if (immediate != null && immediate.isNotEmpty) {
       await _saveToken(immediate);
       return immediate;
     }
 
-    final completer = Completer<String?>();
+    final pending = _pendingTokenCompleter ??= Completer<String?>();
+    unawaited(probeTokenAvailability());
 
-    late final StreamSubscription<String> sub;
-    sub = _fcm.onTokenRefresh.listen((token) async {
-      if (token.isNotEmpty && !completer.isCompleted) {
-        await _saveToken(token);
-        completer.complete(token);
-      }
-    });
+    final token = await pending.future.timeout(timeout, onTimeout: () => null);
+    if (token != null && token.isNotEmpty) return token;
 
-    try {
-      final deadline = DateTime.now().add(timeout);
-      var delay = const Duration(seconds: 2);
+    return cached ?? await getCachedFCMToken();
+  }
 
-      while (DateTime.now().isBefore(deadline)) {
-        final token = await _tryGetTokenOnce();
-        if (token != null && token.isNotEmpty) {
-          await _saveToken(token);
-          if (!completer.isCompleted) completer.complete(token);
-          break;
-        }
-
-        await Future.delayed(delay);
-        if (delay < const Duration(seconds: 5)) {
-          delay += const Duration(seconds: 1);
-        }
-      }
-
-      if (!completer.isCompleted) {
-        completer.complete(await getCachedFCMToken());
-
-      if (!completer.isCompleted && cached != null && cached.isNotEmpty) {
-        completer.complete(cached);
-      } else if (!completer.isCompleted) {
-          completer.complete(await getCachedFCMToken());
-        }
-      }
-
-      return await completer.future.timeout(
-        timeout + const Duration(seconds: 1),
-        onTimeout: () => null,
-      );
-    } finally {
-      await sub.cancel();
+  static Future<void> probeTokenAvailability({bool force = false}) async {
+    final token = await _getTokenDirect(force: force);
+    if (token != null && token.isNotEmpty) {
+      await _saveToken(token);
+      _completePending(token);
     }
+  }
+
+  static Future<String?> _getTokenDirect({bool force = false}) async {
+    final now = DateTime.now();
+    if (!force &&
+        _lastDirectFetchAt != null &&
+        now.difference(_lastDirectFetchAt!) < _directFetchThrottle) {
+      return null;
+    }
+
+    _lastDirectFetchAt = now;
+    return _tryGetTokenOnce();
   }
 
   static Future<String?> _tryGetTokenOnce() async {
@@ -124,11 +103,12 @@ class FCMService {
     }
   }
 
-  static Future<void> _refreshTokenInBackground() async {
-    final token = await _tryGetTokenOnce();
-    if (token != null && token.isNotEmpty) {
-      await _saveToken(token);
+  static void _completePending(String? token) {
+    final completer = _pendingTokenCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(token);
     }
+    _pendingTokenCompleter = null;
   }
 
   static Future<void> _saveToken(String token) async {

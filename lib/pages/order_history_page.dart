@@ -1,6 +1,7 @@
 //order_history_page.dart
 import 'package:flutter/material.dart';
 import '../services/food_order_service.dart';
+import '../utils/app_colors.dart';
 
 class OrderHistoryPage extends StatefulWidget {
 
@@ -25,12 +26,15 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
   late AnimationController _controller;
 
   DateTime _normalize(DateTime d) => DateTime(d.year, d.month, d.day);
+  static const List<String> _weekLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
-  List<DateTime> _last7Days() {
+  List<DateTime> _currentWeek() {
     final today = _normalize(DateTime.now());
-    return List.generate(7, (i) => today.subtract(Duration(days: i)))
-        .reversed
-        .toList();
+
+    // Find Monday of current week
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+
+    return List.generate(7, (i) => monday.add(Duration(days: i)));
   }
 
   int _orderCountForDate(DateTime date) {
@@ -79,14 +83,35 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
 
         // ✅ DAILY DATA
         if (dailyResult["success"] == true) {
-          summary["dailyTotal"] =
-              dailyResult["summary"]?["todayTotal"] ?? 0;
+        final orders =
+            List<Map<String, dynamic>>.from(dailyResult["orders"] ?? []);
 
-          summary["dailyCancelled"] =
-              dailyResult["summary"]?["todayCancelled"] ?? 0;
+        allOrders = orders;
 
-          allOrders =
-              List<Map<String, dynamic>>.from(dailyResult["orders"] ?? []);
+        // ✅ normalize selected date
+        final selected = _normalize(selectedDate);
+
+        // ✅ calculate total orders (IMPORTANT: unique orderNumber)
+        final todayOrders = orders.where((o) {
+          final dt = DateTime.tryParse(o["raw"]["order_time"]);
+          if (dt == null) return false;
+
+          return dt.year == selected.year &&
+              dt.month == selected.month &&
+              dt.day == selected.day;
+        }).toList();
+
+        // 🔥 FIX: count UNIQUE orders (not items)
+        final uniqueOrderNumbers = todayOrders
+            .map((o) => o["orderNumber"])
+            .toSet();
+
+        summary["dailyTotal"] = uniqueOrderNumbers.length;
+
+        // ✅ cancelled count
+        summary["dailyCancelled"] = todayOrders.where((o) {
+          return (o["status"] ?? "").toString().toUpperCase() == "CANCELLED";
+        }).length;
         }
 
         // ✅ WEEKLY DATA
@@ -140,10 +165,15 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
 
 
     return Scaffold(
-      backgroundColor: const Color(0xffF5F6FA),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        title: const Text('Order History'),
+        title: const Text(
+          'Order History',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),        
         centerTitle: true,
+        backgroundColor: Colors.white,
+        elevation: 1,
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -154,14 +184,18 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
             /// WEEKLY SUMMARY
             const Text(
               'Weekly Summary',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontSize: 17, 
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary,
+                ),
             ),
             const SizedBox(height: 12),
             Row(
               children: [
-                _summaryTile('Total Orders', weeklyTotal),
+                Expanded(child: _summaryTile('Total Orders', weeklyTotal)),
                 const SizedBox(width: 12),
-                _summaryTile('Cancelled', weeklyCancelled, Colors.red),
+                Expanded(child: _summaryTile('Cancelled', weeklyCancelled, AppColors.error)),
               ],
             ),
 
@@ -175,7 +209,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
               child: _cardContainer(
                 child: Row(
                   children: [
-                    const Icon(Icons.calendar_today_outlined, size: 18),
+                    const Icon(Icons.calendar_today_outlined, size: 18, color: AppColors.primary),
                     const SizedBox(width: 10),
                     Text(
                       '${selectedDate.day}/${selectedDate.month}/${selectedDate.year}',
@@ -183,7 +217,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                           fontWeight: FontWeight.w600, fontSize: 15),
                     ),
                     const Spacer(),
-                    const Icon(Icons.chevron_right),
+                    const Icon(Icons.chevron_right, color: AppColors.textSecondary),
                   ],
                 ),
               ),
@@ -241,7 +275,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                 padding: EdgeInsets.all(16),
                 child: Text(
                   'No orders available',
-                  style: TextStyle(color: Colors.grey),
+                  style: const TextStyle(color: AppColors.textSecondary),
                 ),
               )
             else
@@ -313,7 +347,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
   /// ================== UI HELPERS ==================
 
   Widget _weeklyBarChart() {
-    final data = _last7Days();
+    final data = _currentWeek();
     final max = data
         .map((d) => _orderCountForDate(d))
         .fold<int>(1, (a, b) => a > b ? a : b);
@@ -322,14 +356,16 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Orders (Last 7 Days)',
+          const Text('Orders (This Week)',
               style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 16),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: data.map((d) {
               final height = (_orderCountForDate(d) / max) * 80;
-              return Expanded(
+
+              return SizedBox(
+                width: 30,
                 child: Column(
                   children: [
                     AnimatedContainer(
@@ -337,15 +373,14 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                       height: height,
                       width: 16,
                       decoration: BoxDecoration(
-                        color: Colors.blue,
+                        color: AppColors.primary,
                         borderRadius: BorderRadius.circular(6),
                       ),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      ['S', 'M', 'T', 'W', 'T', 'F', 'S'][d.weekday % 7],
-                      style: const TextStyle(
-                          fontSize: 12, color: Colors.grey),
+                      _weekLabels[d.weekday - 1],
+                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                     ),
                   ],
                 ),
@@ -367,7 +402,8 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
       child: Row(
         children: [
           Icon(Icons.room_service_outlined,
-              color: cancelled ? Colors.red : Colors.green),
+              color: cancelled ? AppColors.error : AppColors.secondary,
+              ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -377,8 +413,11 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                     style: const TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
                 Text(o['guestName'],
-                    style:
-                    const TextStyle(color: Colors.grey, fontSize: 13)),
+                    style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 13,
+                  ),
+                ),
               ],
             ),
           ),
@@ -386,7 +425,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
             o['status'],
             style: TextStyle(
               fontSize: 12,
-              color: cancelled ? Colors.red : Colors.green,
+              color: cancelled ? AppColors.error : AppColors.secondary,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -416,26 +455,29 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
   }
 
   Widget _summaryTile(String label, int value, [Color? color]) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: _boxDecoration,
-        child: Column(
-          children: [
-            Text(
-              '$value',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: color ?? Colors.black,
-              ),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: _boxDecoration,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$value',
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: color ?? AppColors.textPrimary,
             ),
-            const SizedBox(height: 6),
-            Text(label,
-                style:
-                const TextStyle(color: Colors.grey, fontSize: 13)),
-          ],
-        ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -461,6 +503,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
   BoxDecoration get _boxDecoration => BoxDecoration(
     color: Colors.white,
     borderRadius: BorderRadius.circular(16),
+    border: Border.all(color: AppColors.border),
     boxShadow: [
       BoxShadow(
         color: Colors.black.withOpacity(0.03),

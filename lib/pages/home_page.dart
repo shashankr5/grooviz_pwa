@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
-import '../services/home_service.dart';
+import 'dart:async';
 import 'guest_checkout_page.dart';
 import 'ticket_details_page.dart';
 import 'profile_page.dart';
+import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/app_colors.dart';
+import '../services/websocket_service.dart';
 
 
 class HomePage extends StatefulWidget {
@@ -29,6 +32,7 @@ class _HomePageState extends State<HomePage>
 
   // Food Orders
   bool isRoomServiceUser = false;
+  bool isFrontOfficeUser = false;
   bool _foodLoading = true;
   String? _foodError;
   String selectedFoodFilter = "Ready";
@@ -39,6 +43,8 @@ class _HomePageState extends State<HomePage>
   final List<Map<String, dynamic>> acceptedOrders = [];
   final List<Map<String, dynamic>> deliveredOrders = [];
   int get currentSectionCount => filteredTasks.length;
+
+  StreamSubscription? _wsSubscription;
 
   @override
   void initState() {
@@ -51,6 +57,8 @@ class _HomePageState extends State<HomePage>
       }
     });
 
+    _initWebSocket();
+
     _loadUserId();
     _loadUserName();
     _loadTasks();
@@ -59,6 +67,7 @@ class _HomePageState extends State<HomePage>
 
   @override
   void dispose() {
+    _wsSubscription?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -73,11 +82,11 @@ class _HomePageState extends State<HomePage>
   Color getStatusColor(String status) {
     switch (status) {
       case "Open":
-        return Colors.blue;
+        return AppColors.accent;
       case "In Progress":
         return Colors.orange;
       case "Closed":
-        return Colors.green;
+        return AppColors.secondary;
       default:
         return Colors.grey;
     }
@@ -187,8 +196,8 @@ class _HomePageState extends State<HomePage>
     final taskTime = _parseTimestamp(createdAt);
     final diff = DateTime.now().difference(taskTime);
 
-    if (diff.inHours < 1) return Colors.green;
-    if (diff.inHours >= 1 && diff.inHours < 8) return Colors.yellow;
+    if (diff.inHours < 1) return AppColors.secondary;
+    if (diff.inHours >= 1 && diff.inHours < 8) return AppColors.accent;
     return Colors.red;
   }
 
@@ -205,6 +214,131 @@ class _HomePageState extends State<HomePage>
         break;
     }
   }
+
+  Future<void> _initWebSocket() async {
+    final ws = WebSocketService();
+
+    final userId = await UserSessionHelper.getUserId();
+    final enterpriseId = await UserSessionHelper.getEnterpriseId();
+
+    ws.connect(
+      userId: userId?.toString(),
+      enterpriseId: enterpriseId?.toString(),
+    );
+
+    await _wsSubscription?.cancel();
+
+    _wsSubscription = ws.stream.listen((event) {
+      if (!mounted) return;
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final type = (event['type'] ?? '').toString().toUpperCase();
+
+        print('🔥 Home WS Event: $type');
+      });
+    });
+  }
+
+  void _handleNewTask(dynamic data) {
+    try {
+      final newTask = Map<String, dynamic>.from(data);
+
+      final id = newTask["service_request_id"];
+      if (id == null) return;
+
+      // ✅ Prevent duplicates
+      if (tasks.any((t) =>
+          t["service_request_id"] == id ||
+          t["raw"]?["service_request_id"] == id)) {
+        return;
+      }
+
+      // ✅ Normalize structure to match API response
+      final normalizedTask = {
+        ...newTask,
+
+        // 🔥 CRITICAL → make WS data same as API
+        "raw": newTask,
+
+        // UI fields
+        "isAccepted": newTask["status"] == "In Progress",
+        "statusColor": getStatusColor(newTask["status"]),
+
+        "assignedTo":
+            newTask["assigned_to_name"] ??
+            newTask["assignedTo"] ??
+            "-",
+
+        // fallback fields (avoid crashes in UI)
+        "title": newTask["title"] ?? newTask["service_name"] ?? "Task",
+        "room": newTask["room"] ?? newTask["room_no"] ?? "-",
+      };
+
+      setState(() {
+        tasks.insert(0, normalizedTask);
+      });
+
+      print("✅ WS Task Added: $id");
+
+    } catch (e) {
+      print('❌ New task WS error: $e');
+
+      // fallback safety
+      _loadTasks();
+    }
+  }
+/*
+  void _handleTaskUpdate(dynamic data) {
+    final id = data["service_request_id"];
+    if (id == null) return;
+
+    final index = tasks.indexWhere(
+      (t) => t["service_request_id"] == id,
+    );
+
+    if (index == -1) {
+      _loadTasks(); // fallback safety
+      return;
+    }
+
+    setState(() {
+      tasks[index]["status"] = data["status"];
+      tasks[index]["statusColor"] =
+          getStatusColor(data["status"]);
+
+      tasks[index]["assignedTo"] =
+          data["assigned_to_name"] ?? tasks[index]["assignedTo"];
+
+      tasks[index]["isAccepted"] =
+          data["status"] == "In Progress";
+    });
+  }
+  */
+/*
+  void _handleNewFoodOrder(dynamic data) {
+    try {
+      final grouped = _groupReadyOrders([data]);
+      if (grouped.isEmpty) return;
+
+      final newOrder = grouped.first;
+
+      if (readyOrders.any((o) => o["orderNumber"] == newOrder["orderNumber"])) {
+        return;
+      }
+
+      setState(() {
+        readyOrders.insert(0, {
+          ...newOrder,
+          "uiStatus": "Ready",
+        });
+      });
+
+    } catch (e) {
+      print('❌ WS food error: $e');
+      _loadReadyOrders(); // fallback
+    }
+  }
+  */
 
   Future<void> _loadTasks() async {
     if (tasks.isEmpty) {
@@ -290,7 +424,11 @@ class _HomePageState extends State<HomePage>
         return d.contains("room") && d.contains("service");
       });
 
-      debugPrint("🔥 isRoomServiceUser = $isRoomServiceUser");
+      isFrontOfficeUser = normalized.any((d) {
+        return d.contains("front") && d.contains("office");
+      });
+
+      debugPrint("isRoomServiceUser = $isRoomServiceUser");
       _deptLoaded = true;
     });
   }
@@ -618,13 +756,21 @@ class _HomePageState extends State<HomePage>
   List<Map<String, dynamic>> get filteredFoodOrders {
     switch (selectedFoodFilter) {
       case "Ready":
-        return readyOrders;
+        return [...readyOrders]
+          ..sort((a, b) => _parseTimestamp(b["orderTime"] ?? "")
+              .compareTo(_parseTimestamp(a["orderTime"] ?? "")));
       case "Accepted":
-        return acceptedOrders;
+        return [...acceptedOrders]
+          ..sort((a, b) => _parseTimestamp(b["orderTime"] ?? "")
+              .compareTo(_parseTimestamp(a["orderTime"] ?? "")));
       case "Delivered":
-        return deliveredOrders;
+        return [...deliveredOrders]
+          ..sort((a, b) => _parseTimestamp(b["orderTime"] ?? "")
+              .compareTo(_parseTimestamp(a["orderTime"] ?? "")));
       default:
-        return readyOrders;
+        return [...readyOrders]
+          ..sort((a, b) => _parseTimestamp(b["orderTime"] ?? "")
+              .compareTo(_parseTimestamp(a["orderTime"] ?? "")));
     }
   }
 
@@ -639,7 +785,7 @@ class _HomePageState extends State<HomePage>
     // 🔹 NON Room Service → ONLY TASKS (NO TABS)
     if (!isRoomServiceUser) {
       return Scaffold(
-        backgroundColor: Colors.grey[100],
+        backgroundColor: AppColors.bgLight,
         appBar: _buildSimpleAppBar(),
         body: Stack(
           children: [
@@ -659,7 +805,7 @@ class _HomePageState extends State<HomePage>
 
     // 🔹 Room Service → TASKS + FOOD TABS
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: AppColors.bgLight,
       appBar: _buildAppBarWithTabs(),
       body: Stack(
         children: [
@@ -697,6 +843,9 @@ class _HomePageState extends State<HomePage>
           ),
         ],
       ),
+      actions: [
+        _buildProfileIcon(),
+      ],        
     );
   }
 
@@ -719,6 +868,7 @@ class _HomePageState extends State<HomePage>
         ],
       ),
       actions: [
+      if (isFrontOfficeUser)
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: GestureDetector(
@@ -733,47 +883,19 @@ class _HomePageState extends State<HomePage>
             child: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.amber.shade100,
+                color: AppColors.primaryLight,
                 shape: BoxShape.circle,
               ),
               child: Image.asset(
                 "assets/icons/checkout_report.png",
                 width: 22,
                 height: 22,
-                color: Colors.black, // 🔥 remove if your icon is already colored
+                color: Colors.black,
               ),
             ),
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.only(right: 12),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(50),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const ProfilePage(),
-                  ),
-                );
-              },
-              child: CircleAvatar(
-                backgroundColor: Colors.deepPurple,
-                child: Text(
-                  userName.isNotEmpty
-                      ? userName[0].toUpperCase()
-                      : "?",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
+        _buildProfileIcon(),
       ],
 
       // 👇 TAB BAR ADDED HERE
@@ -784,7 +906,7 @@ class _HomePageState extends State<HomePage>
           child: Container(
             height: 45,
             decoration: BoxDecoration(
-              color: Colors.grey.shade200,
+              color: AppColors.border,
               borderRadius: BorderRadius.circular(30),
             ),
             child: TabBar(
@@ -792,9 +914,9 @@ class _HomePageState extends State<HomePage>
               indicatorSize: TabBarIndicatorSize.tab,
               dividerColor: Colors.transparent,
               labelColor: Colors.white,
-              unselectedLabelColor: Colors.black87,
+              unselectedLabelColor: AppColors.textSecondary,
               indicator: BoxDecoration(
-                color: Colors.black,
+                color: AppColors.primaryDark,
                 borderRadius: BorderRadius.all(Radius.circular(30)),
               ),
               tabs: [
@@ -820,6 +942,38 @@ class _HomePageState extends State<HomePage>
             child: const Text("Retry"),
           )
         ],
+      ),
+    );
+  }
+
+  Widget _buildProfileIcon() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(50),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const ProfilePage(),
+              ),
+            );
+          },
+          child: CircleAvatar(
+            backgroundColor: AppColors.primaryDark,
+            child: Text(
+              userName.isNotEmpty
+                  ? userName[0].toUpperCase()
+                  : "?",
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -854,9 +1008,9 @@ class _HomePageState extends State<HomePage>
                 margin: const EdgeInsets.symmetric(horizontal: 6),
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 decoration: BoxDecoration(
-                  color: selected ? Colors.amber[700] : Colors.white,
+                  color: selected ? AppColors.primary : Colors.white,
                   borderRadius: BorderRadius.circular(25),
-                  border: Border.all(color: Colors.grey.shade300),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Text(
                   f,
@@ -928,7 +1082,7 @@ class _HomePageState extends State<HomePage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "Order ${food["orderNumber"]}",
+                    "${food["orderNumber"]}",
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   Text(
@@ -980,7 +1134,10 @@ class _HomePageState extends State<HomePage>
 
           Text(
             formatDateTime(food["orderTime"] ?? ""),
-            style: const TextStyle(color: Colors.grey, fontSize: 13),
+            style: const TextStyle(
+              color: AppColors.textPrimary, // 🔥 consistent darker
+              fontSize: 13,
+            ),
           ),
 
           const SizedBox(height: 12),
@@ -991,14 +1148,14 @@ class _HomePageState extends State<HomePage>
               if (food["uiStatus"] == "Ready")
                 ElevatedButton(
                   onPressed: () => _acceptFood(food),
-                  style: _taskButtonStyle(Colors.green),
+                  style: _taskButtonStyle(AppColors.secondary),
                   child: const Text("Accept"),
                 ),
 
               if (food["uiStatus"] == "Accepted")
                 ElevatedButton(
                   onPressed: () => _deliverFood(food),
-                  style: _taskButtonStyle(Colors.indigo),
+                  style: _taskButtonStyle(AppColors.primary),
                   child: const Text("Deliver"),
                 ),
             ],
@@ -1016,10 +1173,10 @@ class _HomePageState extends State<HomePage>
         color = Colors.orange;
         break;
       case "Accepted":
-        color = Colors.indigo;
+        color = AppColors.primary;
         break;
       case "Delivered":
-        color = Colors.green;
+        color = AppColors.secondary;
         break;
       default:
         color = Colors.grey;
@@ -1171,9 +1328,9 @@ class _HomePageState extends State<HomePage>
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 decoration: BoxDecoration(
-                  color: selected ? Colors.amber[700] : Colors.white,
+                  color: selected ? AppColors.primary : Colors.white,
                   borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: Colors.grey.shade300),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Center(
                   child: Text(
@@ -1181,7 +1338,7 @@ class _HomePageState extends State<HomePage>
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 13,
-                      color: selected ? Colors.white : Colors.black87,
+                      color: selected ? Colors.white : AppColors.textPrimary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -1245,11 +1402,18 @@ class _HomePageState extends State<HomePage>
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        _pill("Room ${task["room"]}", Colors.amber.shade100),
+                        _pill("Room ${task["room"]}", AppColors.primaryLight),
                         _pill(
                           task["status"],
-                          task["statusColor"].withOpacity(0.2),
-                          textColor: task["statusColor"],
+                          task["status"] == "Closed"
+                              ? task["statusColor"] // ✅ keep green filled
+                              : Colors.transparent, // ✅ transparent for others
+                          textColor: task["status"] == "Closed"
+                              ? Colors.white // better contrast on green
+                              : task["statusColor"],
+                          borderColor: task["status"] == "Closed"
+                              ? null // no border for filled
+                              : task["statusColor"], // border for open/in-progress
                         ),
                       ],
                     ),
@@ -1265,7 +1429,7 @@ class _HomePageState extends State<HomePage>
                         child: Text(
                           "Assigned: ${task["assignedTo"] ?? "-"}",
                           style:
-                          const TextStyle(color: Colors.green, fontSize: 14),
+                          const TextStyle(color: AppColors.secondary, fontSize: 14),
                         ),
                       ),
                     const SizedBox(height: 18),
@@ -1273,14 +1437,18 @@ class _HomePageState extends State<HomePage>
                       children: [
                         Text(
                           formatDateTime(createdAt),
-                          style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                          style: const TextStyle(
+                            color: AppColors.textPrimary, // 🔥 darker
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,  // optional for clarity
+                          ),
                         ),
                         const Spacer(),
                         if (task["status"] == "Open")
                           ElevatedButton(
                             onPressed: () => _acceptTask(task),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
+                              backgroundColor: AppColors.secondary,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 20, vertical: 8),
@@ -1303,14 +1471,29 @@ class _HomePageState extends State<HomePage>
     );
   }
 
-  Widget _pill(String text, Color bg, {Color textColor = Colors.black87}) {
+  Widget _pill(
+    String text,
+    Color bg, {
+    Color textColor = Colors.black87,
+    Color? borderColor,
+  }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration:
-      BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-      child: Text(text,
-          style: TextStyle(
-              color: textColor, fontWeight: FontWeight.w600, fontSize: 13)),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+        border: borderColor != null
+            ? Border.all(color: borderColor, width: 1)
+            : null,
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: textColor,
+          fontWeight: FontWeight.w600,
+          fontSize: 13,
+        ),
+      ),
     );
   }
 }

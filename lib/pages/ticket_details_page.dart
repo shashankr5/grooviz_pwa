@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/dialog_helpers.dart';
 import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/app_colors.dart';
 
 class TicketDetailPage extends StatefulWidget {
   final Map<String, dynamic> task;
@@ -96,13 +97,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xfffaf8f5),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         elevation: 0,
-        backgroundColor: Colors.white,
-        leading: BackButton(color: Colors.black),
-        title: const Text("Back to Tasks",
-            style: TextStyle(color: Colors.black, fontSize: 18)),
+        backgroundColor: AppColors.bgLight,
+        leading: const BackButton(color: AppColors.textPrimary),
+        title: const Text(
+          "Back to Tasks",
+          style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
+          ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -110,7 +113,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _pill("Room ${task["room"]}", Colors.amber.shade100),
+              _pill("Room ${task["room"]}", AppColors.primaryLight),
               _pill(
                 task["status"],
                 task["statusColor"].withOpacity(0.15),
@@ -128,7 +131,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
           Row(
             children: [
-              const Icon(Icons.access_time, color: Colors.grey, size: 18),
+              const Icon(Icons.access_time, color: AppColors.textSecondary, size: 18),
               const SizedBox(width: 6),
               Text(
                 formatTimeAgo(task["raw"]["created_at"] ?? task["created_at"] ?? ""),
@@ -191,7 +194,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.person_outlined, color: Colors.amber, size: 26),
+          const Icon(Icons.person_outlined, color: AppColors.accent, size: 26),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -218,7 +221,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Icon(Icons.assignment_ind_outlined,
-              color: Colors.amber, size: 26),
+              color: AppColors.accent, size: 26),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -246,14 +249,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.blue.withOpacity(0.07),
+        color: AppColors.primaryLight,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blue.withOpacity(0.25)),
+        border: Border.all(color: AppColors.primary.withOpacity(0.3)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.note_alt_outlined, color: Colors.blue, size: 18),
+          const Icon(Icons.note_alt_outlined, color: AppColors.primary, size: 18),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -264,7 +267,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Colors.blue,
+                    color: AppColors.primary,
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -296,7 +299,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         icon: const Icon(Icons.lock_outline),
         label: const Text("Ticket Closed"),
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.grey.shade400,
+          backgroundColor: AppColors.textSecondary,
           foregroundColor: Colors.white,
           minimumSize: const Size(double.infinity, 50),
           shape: RoundedRectangleBorder(
@@ -314,12 +317,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: ElevatedButton(
                 onPressed: isAssignedToMe ? () => _addNotes(context) : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
+                  backgroundColor: AppColors.primaryLight,
+                  foregroundColor: AppColors.primary,
                   minimumSize: const Size(double.infinity, 50),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
+                  elevation: 0,
                 ),
                 child: const Text("Add Notes"),
               ),
@@ -329,12 +333,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: ElevatedButton(
                 onPressed: isAssignedToMe ? () => _reassign(context) : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
+                  backgroundColor: AppColors.primaryLight,
+                  foregroundColor: AppColors.primary,
                   minimumSize: const Size(double.infinity, 50),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
+                  elevation: 0,
                 ),
                 child: const Text("Reassign"),
               ),
@@ -365,7 +370,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
               setState(() {
                 task["status"] = "Closed";
-                task["statusColor"] = Colors.green;
+                task["statusColor"] = AppColors.secondary;
               });
 
               showCustomSnackBar(context, "Ticket closed successfully!");
@@ -374,7 +379,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             icon: const Icon(Icons.check_circle_outline),
             label: const Text("Close Ticket"),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
+              backgroundColor: AppColors.secondary,
               foregroundColor: Colors.white,
               minimumSize: const Size(double.infinity, 50),
               shape: RoundedRectangleBorder(
@@ -389,7 +394,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             padding: const EdgeInsets.only(top: 8),
             child: Text(
               "This ticket is assigned to another user",
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           ),
       ],

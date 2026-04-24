@@ -70,6 +70,7 @@ class ProfileService {
       }
 
       final profile = Map<String, dynamic>.from(resultList[0]);
+      profile["user_id"] = userId;
 
       /// 🧠 Save enterprise & other profile fields if available
       try {
@@ -104,6 +105,8 @@ class ProfileService {
       } catch (e) {
         dev.log("⚠️ Failed to save departments from profile: $e");
       }
+
+      await UserSessionHelper.saveUserProfile(profile);
 
       return {"success": true, "message": message, "profile": profile};
 

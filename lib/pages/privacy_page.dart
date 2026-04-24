@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'password_security_page.dart';
+import '../utils/app_colors.dart';
 
 class PrivacyPage extends StatefulWidget {
   const PrivacyPage({super.key});
@@ -27,19 +29,19 @@ class _PrivacyPageState extends State<PrivacyPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xfffaf8f5),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         title: const Text(
           "Privacy",
           style: TextStyle(
-            color: Colors.black,
+            color: AppColors.textPrimary,
             fontWeight: FontWeight.w600,
             fontSize: 22,
           ),
         ),
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: const IconThemeData(color: AppColors.textPrimary),
       ),
 
       body: Column(
@@ -57,8 +59,8 @@ class _PrivacyPageState extends State<PrivacyPage> {
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
-                          blurRadius: 6,
+                          color: Colors.black.withOpacity(0.04),
+                          blurRadius: 8,
                           offset: const Offset(0, 3),
                         )
                       ],
@@ -71,6 +73,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 14),
@@ -79,27 +82,21 @@ class _PrivacyPageState extends State<PrivacyPage> {
                           icon: Icons.lock_outline,
                           title: "Password & Login",
                           subtitle: "Manage your login and security",
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const PasswordSecurityPage(),
+                              ),
+                            );
+                          },
                         ),
 
-                        const Divider(),
-                        _item(
-                          icon: Icons.visibility_off_outlined,
-                          title: "Hide Sensitive Info",
-                          subtitle: "Control visibility inside the app",
-                        ),
-
-                        const Divider(),
+                        const Divider(color: AppColors.border),
                         _item(
                           icon: Icons.security_outlined,
                           title: "App Permissions",
                           subtitle: "Control camera, storage & notifications access",
-                        ),
-
-                        const Divider(),
-                        _item(
-                          icon: Icons.delete_forever_outlined,
-                          title: "Delete Account",
-                          subtitle: "Remove your profile & all stored data",
                         ),
                       ],
                     ),
@@ -129,6 +126,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
     required IconData icon,
     required String title,
     required String subtitle,
+    VoidCallback? onTap,
   }) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
@@ -136,17 +134,27 @@ class _PrivacyPageState extends State<PrivacyPage> {
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.grey.shade200,
+          color: AppColors.primaryLight,
         ),
-        child: Icon(icon, color: Colors.grey.shade800, size: 22),
+        child: Icon(icon, color: AppColors.primary, size: 22),
       ),
       title: Text(
         title,
-        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+        style: const TextStyle(
+          fontWeight: FontWeight.w600,
+          fontSize: 16,
+          color: AppColors.textPrimary,
+        ),
       ),
-      subtitle: Text(subtitle),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: () {},
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(color: AppColors.textSecondary),
+      ),
+      trailing: const Icon(
+        Icons.chevron_right,
+        color: AppColors.textSecondary,
+      ),
+      onTap: onTap,
     );
   }
 }

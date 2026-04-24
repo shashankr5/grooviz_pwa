@@ -44,15 +44,18 @@ class LoginService {
     required String password,
   }) async {
     try {
-      final fcmToken = await FCMService.getFCMToken(
-        timeout: const Duration(seconds: 20),
-        preferFresh: true,
+      await UserSessionHelper.clearSession();
+
+      final fcmToken = await FCMService.ensureFCMToken(
+        timeout: const Duration(seconds: 60),
+        preferFresh: false,
       );
 
       if (fcmToken == null || fcmToken.isEmpty) {
         return {
           "success": false,
-          "message": "Push registration is still in progress. Please try again in a moment."
+          "message": 
+          "Unable to complete secure device registration right now. Please keep the app open for a moment and try again.",
         };
       }
       final deviceInfo = await DeviceInfo.getDeviceInfo();

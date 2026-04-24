@@ -6,11 +6,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:numberpicker/numberpicker.dart';
 import 'package:image/image.dart' as img;
 
-import 'my_contents_page.dart'; 
+import 'my_contents_page.dart';
 import '../services/rooms_service.dart';
 import '../services/upload_service.dart';
 import '../utils/user_session_helper.dart';
-import '../utils/app_colors.dart';
 
 class CameraContentPage extends StatefulWidget {
   final Map<String, dynamic>? existingContent;
@@ -36,14 +35,13 @@ class _CameraContentPageState extends State<CameraContentPage> {
   bool get _isEditMode => widget.existingContent != null;
   String? _existingImageUrl;
   int? _contentId;
-  bool _isPrefilled = false;
 
   final TextEditingController _titleController = TextEditingController();
   String _contentTitle = "";
 
   final TextEditingController _timerController =
       TextEditingController(text: "5");
-  
+
   final RoomsService _roomsService = RoomsService();
 
   List<Map<String, dynamic>> _rooms = [];
@@ -73,7 +71,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
     if (_isEditMode) {
       _prefillExistingData();
-      _isPrefilled = true;
     }
   }
 
@@ -92,9 +89,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
       if (_selectedRooms.length == _rooms.length) {
         _selectedRooms.clear();
       } else {
-        _selectedRooms =
-          _rooms.map((r) => "Room ${r["roomNumber"]}").toSet();
-            }
+        _selectedRooms = _rooms.map((r) => "Room ${r["roomNumber"]}").toSet();
+      }
     });
   }
 
@@ -118,31 +114,21 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
   bool _validateDateTimes() {
     final now = DateTime.now();
+    final startDateTime = _buildDateTime(_startDate, _startHour, _startMinute);
+    final endDateTime = _buildDateTime(_endDate, _endHour, _endMinute);
 
-    final startDateTime =
-        _buildDateTime(_startDate, _startHour, _startMinute);
-
-    final endDateTime =
-        _buildDateTime(_endDate, _endHour, _endMinute);
-
-    // ✅ allow past start in edit mode
-    if (!_isEditMode && startDateTime.isBefore(now)) {
+    if (startDateTime.isBefore(now)) {
       _showError("Start time is in the past.");
       return false;
     }
 
-    if (!_isEditMode && endDateTime.isBefore(now)) {
+    if (endDateTime.isBefore(now)) {
       _showError("End time is in the past.");
       return false;
     }
 
     if (!endDateTime.isAfter(startDateTime)) {
-      setState(() {
-        _endHour = _startHour;
-        _endMinute = _startMinute + 5;
-      });
-
-      _showError("End time adjusted to be after start time.");
+      _showError("End time must be after start time.");
       return false;
     }
 
@@ -161,7 +147,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
     if (result["success"]) {
       final rooms = result["rooms"] as List;
-
       setState(() {
         _rooms = List<Map<String, dynamic>>.from(rooms);
         _isLoadingRooms = false;
@@ -191,6 +176,51 @@ class _CameraContentPageState extends State<CameraContentPage> {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // HIGH-QUALITY IMAGE PROCESSING FOR 1920×1080 TV OUTPUT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Letterbox / pillarbox the source image onto a 1920×1080 black canvas.
+  /// This preserves 100 % of the image (no cropping) for both landscape and
+  /// portrait sources, while guaranteeing the exact resolution the TV needs.
+  img.Image _fitTo1920x1080(img.Image src) {
+    const int targetW = 1920;
+    const int targetH = 1080;
+
+    // Scale so the image fits entirely within 1920×1080 (no cropping)
+    final double scaleW = targetW / src.width;
+    final double scaleH = targetH / src.height;
+    final double scale = scaleW < scaleH ? scaleW : scaleH;
+
+    final int scaledW = (src.width * scale).round();
+    final int scaledH = (src.height * scale).round();
+
+    // High-quality cubic resize
+    final img.Image resized = img.copyResize(
+      src,
+      width: scaledW,
+      height: scaledH,
+      interpolation: img.Interpolation.cubic, // best quality for upscaling
+    );
+
+    // Black 1920×1080 canvas
+    final img.Image canvas = img.Image(
+      width: targetW,
+      height: targetH,
+      numChannels: 3,
+    );
+    img.fill(canvas, color: img.ColorRgb8(0, 0, 0));
+
+    // Center the resized image on the canvas
+    final int dx = ((targetW - scaledW) / 2).round();
+    final int dy = ((targetH - scaledH) / 2).round();
+    img.compositeImage(canvas, resized, dstX: dx, dstY: dy);
+
+    return canvas;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   Future<void> _uploadContent() async {
     if (_isUploading) return;
 
@@ -218,35 +248,37 @@ class _CameraContentPageState extends State<CameraContentPage> {
     try {
       String finalUrl = _existingImageUrl ?? "";
 
-      /// upload new image ONLY if user selected one
+      // Upload new image ONLY if user selected one
       if (_selectedImage != null) {
         final originalBytes = await _selectedImage!.readAsBytes();
 
+        // Decode image
         final img.Image? decoded = img.decodeImage(originalBytes);
-        if (decoded == null) {
-          throw Exception("Invalid image – could not decode");
-        }
+        if (decoded == null) throw Exception("Invalid image – could not decode");
 
-        // ✅ Fix orientation (critical)
+        // ── STEP 1: Fix EXIF / orientation (critical for phone portrait photos) ──
         final img.Image oriented = img.bakeOrientation(decoded);
 
-        // ✅ Fit into 1920x1080 without distortion
+        // ── STEP 2: Letterbox to exact 1920×1080 with cubic interpolation ────────
+        //    Works perfectly for BOTH landscape AND portrait source images.
         final img.Image tv = _fitTo1920x1080(oriented);
 
-        // ✅ Use PNG (best quality for TVs)
+        // ── STEP 3: Encode as PNG (lossless – zero compression artefacts on TV) ──
         final List<int> outputBytes = img.encodePng(tv);
 
+        // ── STEP 4: Build base64 payload ─────────────────────────────────────────
         final String base64Image =
             "data:image/png;base64,${base64Encode(outputBytes)}";
 
-        final enterpriseId =
+        final String enterpriseId =
             (await UserSessionHelper.getEnterpriseId())?.toString() ?? "";
 
-        final uploadService = UploadService();
+        final UploadService uploadService = UploadService();
 
-        final uploadResult = await uploadService.uploadBase64File(
+        final Map<String, dynamic> uploadResult =
+            await uploadService.uploadBase64File(
           base64: base64Image,
-          fileName: "camera_${DateTime.now().millisecondsSinceEpoch}.png",
+          fileName: "content_${DateTime.now().millisecondsSinceEpoch}.png",
           contentType: "IMAGE",
           enterpriseId: enterpriseId,
         );
@@ -258,19 +290,14 @@ class _CameraContentPageState extends State<CameraContentPage> {
         finalUrl = uploadResult["url"];
       }
 
-      final startDateTime =
+      final DateTime startDateTime =
           _buildDateTime(_startDate, _startHour, _startMinute);
-
-      final endDateTime =
+      final DateTime endDateTime =
           _buildDateTime(_endDate, _endHour, _endMinute);
-
-      final startISO = startDateTime.toIso8601String();
-      final endISO = endDateTime.toIso8601String();
 
       Map result;
 
       if (_isEditMode) {
-        /// 🔥 UPDATE CONTENT
         result = await _roomsService.updateContent(
           contentId: _contentId!,
           title: _contentTitle,
@@ -281,7 +308,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
           deviceIds: deviceIds,
         );
       } else {
-        /// ➕ NEW CONTENT
         result = await _roomsService.uploadImageContent(
           title: _contentTitle,
           filePath: finalUrl,
@@ -295,16 +321,23 @@ class _CameraContentPageState extends State<CameraContentPage> {
       if (!mounted) return;
 
       if (result["success"]) {
-        if (!mounted) return;
-
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result["message"]),
-            backgroundColor: AppColors.secondary,
+            backgroundColor: Colors.green,
           ),
         );
 
-        _resetForm();   // clear fields safely
+        _resetForm();
+
+        if (_isEditMode) {
+          Navigator.pop(context, true);
+        } else {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const MyContentsPage()),
+          );
+        }
       } else {
         throw Exception(result["message"]);
       }
@@ -334,12 +367,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _bottomSheetTile(Icons.photo_library, "Gallery", AppColors.primary,
-                  () {
+              _bottomSheetTile(
+                  Icons.photo_library, "Gallery", Colors.deepPurple, () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
               }),
-              _bottomSheetTile(Icons.camera_alt, "Camera", AppColors.textPrimary, () {
+              _bottomSheetTile(Icons.camera_alt, "Camera", Colors.black, () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.camera);
               }),
@@ -365,30 +398,22 @@ class _CameraContentPageState extends State<CameraContentPage> {
     final start = DateTime.tryParse(content["startTime"] ?? "");
     final end = DateTime.tryParse(content["endTime"] ?? "");
 
-    final now = DateTime.now();
-
     if (start != null) {
       _startDate = start;
       _startHour = start.hour;
       _startMinute = start.minute;
     }
 
-    if (end != null && end.year > 2000) {
-        _endDate = end;
-        _endHour = end.hour;
-        _endMinute = end.minute;
-      } else {
-        _endDate = now.add(const Duration(hours: 1)); // safe fallback
-        _endHour = _endDate!.hour;
-        _endMinute = _endDate!.minute;
-      }
+    if (end != null) {
+      _endDate = end;
+      _endHour = end.hour;
+      _endMinute = end.minute;
+    }
 
-    /// preselect rooms
     final rooms = content["rooms"] as List?;
     if (rooms != null) {
-      _selectedRooms = rooms
-          .map<String>((r) => "Room ${r["room_number"]}")
-          .toSet();
+      _selectedRooms =
+          rooms.map<String>((r) => "Room ${r["room_number"]}").toSet();
     }
   }
 
@@ -398,7 +423,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
       ..showSnackBar(
         SnackBar(
           content: Text(message),
-          backgroundColor: AppColors.error,
+          backgroundColor: Colors.red,
         ),
       );
   }
@@ -407,68 +432,33 @@ class _CameraContentPageState extends State<CameraContentPage> {
       IconData icon, String title, Color color, VoidCallback onTap) {
     return ListTile(
       leading: Icon(icon, color: color),
-      title: Text(title,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
+      title:
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
       onTap: onTap,
     );
   }
 
   Future<void> _selectStartDate() async {
-    final now = DateTime.now();
-
-    final firstDate = _isEditMode ? DateTime(2000) : now;
-    final lastDate = now.add(const Duration(days: 365 * 5));
-
-    DateTime initial = _startDate ?? now;
-
-    if (initial.isBefore(firstDate)) {
-      initial = firstDate;
-    } else if (initial.isAfter(lastDate)) {
-      initial = lastDate;
-    }
-
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: initial,
-      firstDate: firstDate,
-      lastDate: lastDate,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
     );
-
     if (picked != null && mounted) {
-      setState(() {
-        _startDate = picked;
-      });
+      setState(() => _startDate = picked);
     }
   }
 
   Future<void> _selectEndDate() async {
-    final now = DateTime.now();
-
-    final firstDate = _isEditMode ? DateTime(2000) : now;
-    final lastDate = now.add(const Duration(days: 365 * 5)); // extend range
-
-    // ✅ Ensure initialDate is always within range
-    DateTime initial = _endDate ?? now;
-
-    if (initial.isBefore(firstDate)) {
-      initial = firstDate;
-    } else if (initial.isAfter(lastDate)) {
-      initial = lastDate;
-    }
-
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: initial,
-      firstDate: firstDate,
-      lastDate: lastDate,
+      initialDate: _endDate ?? DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
     );
-
     if (picked != null && mounted) {
-      setState(() {
-        _endDate = picked;
-        _endHour = 0;
-        _endMinute = 0;
-      });
+      setState(() => _endDate = picked);
     }
   }
 
@@ -483,37 +473,29 @@ class _CameraContentPageState extends State<CameraContentPage> {
   Widget build(BuildContext context) {
     final bool isAddContentEnabled =
         (_selectedImage != null || _existingImageUrl != null) &&
-        _selectedRooms.isNotEmpty;
+            _selectedRooms.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: AppColors.bgLight,
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
         title: const Text(
           'Camera Content',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
         ),
         elevation: 1,
         backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
-
+        iconTheme: const IconThemeData(color: Colors.black),
         actions: _isEditMode
             ? []
             : [
                 IconButton(
-                  icon: const Icon(
-                    Icons.history_outlined,
-                    color: AppColors.textPrimary,
-                  ),
+                  icon: const Icon(Icons.history_outlined, color: Colors.black87),
                   tooltip: 'My Contents',
                   onPressed: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => const MyContentsPage(),
-                      ),
+                          builder: (context) => const MyContentsPage()),
                     );
                   },
                 ),
@@ -531,8 +513,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
               const SizedBox(height: 20),
               _buildRoomSection(),
               const SizedBox(height: 20),
-              _buildDateSection("Start Date & Time", _startDate,
-                  _selectStartDate, true),
+              _buildDateSection(
+                  "Start Date & Time", _startDate, _selectStartDate, true),
               const SizedBox(height: 20),
               _buildDateSection(
                   "End Date & Time", _endDate, _selectEndDate, false),
@@ -561,31 +543,32 @@ class _CameraContentPageState extends State<CameraContentPage> {
                 child: Container(
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
-                    color: AppColors.bgLight,
+                    color: Colors.grey[200],
                   ),
                   child: _selectedImage != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: Image.file(_selectedImage!, fit: BoxFit.cover),
-                      )
-                    : _existingImageUrl != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(16),
-                            child: Image.network(_existingImageUrl!, fit: BoxFit.cover),
-                          )
-                        : Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(Icons.camera_alt,
-                                size: 48, color: AppColors.textSecondary),
-                            SizedBox(height: 12),
-                            Text(
-                              'Tap to add content image',
-                              style: TextStyle(
-                                  fontSize: 14, color: AppColors.textSecondary),
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: Image.file(_selectedImage!, fit: BoxFit.cover),
+                        )
+                      : _existingImageUrl != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(16),
+                              child: Image.network(_existingImageUrl!,
+                                  fit: BoxFit.cover),
+                            )
+                          : Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: const [
+                                Icon(Icons.camera_alt,
+                                    size: 48, color: Colors.grey),
+                                SizedBox(height: 12),
+                                Text(
+                                  'Tap to add content image',
+                                  style: TextStyle(
+                                      fontSize: 14, color: Colors.grey),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
                 ),
               ),
             ),
@@ -598,14 +581,13 @@ class _CameraContentPageState extends State<CameraContentPage> {
                   child: Container(
                     padding: const EdgeInsets.all(8),
                     decoration: const BoxDecoration(
-                      color: AppColors.textPrimary,
+                      color: Colors.black,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.close,
-                        color: Colors.white, size: 18),
+                    child: const Icon(Icons.close, color: Colors.white, size: 18),
                   ),
                 ),
-              )
+              ),
           ],
         ),
       ),
@@ -613,44 +595,38 @@ class _CameraContentPageState extends State<CameraContentPage> {
   }
 
   Widget _buildTitleSection() {
-  return Container(
-    decoration: _cardDecoration(),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Content Title",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: AppColors.textPrimary,
+    return Container(
+      decoration: _cardDecoration(),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Content Title",
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _titleController,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              hintText: "Enter content title",
-              filled: true,
-              fillColor: AppColors.bgLight,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _titleController,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: InputDecoration(
+                hintText: "Enter content title",
+                filled: true,
+                fillColor: Colors.grey[100],
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
+              onChanged: (value) {
+                setState(() => _contentTitle = value.trim());
+              },
             ),
-            onChanged: (value) {
-              setState(() {
-                _contentTitle = value.trim();
-              });
-            },
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildRoomSection() {
     if (_isLoadingRooms) {
@@ -667,15 +643,10 @@ class _CameraContentPageState extends State<CameraContentPage> {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            Text(
-              _roomsError!,
-              style: const TextStyle(color: AppColors.error),
-            ),
+            Text(_roomsError!, style: const TextStyle(color: Colors.red)),
             const SizedBox(height: 10),
             ElevatedButton(
-              onPressed: _fetchRooms,
-              child: const Text("Retry"),
-            )
+                onPressed: _fetchRooms, child: const Text("Retry")),
           ],
         ),
       );
@@ -685,7 +656,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
       return Container(
         decoration: _cardDecoration(),
         padding: const EdgeInsets.all(24),
-        child: const Text("No rooms available", style: TextStyle(color: AppColors.textSecondary)),
+        child: const Text("No rooms available"),
       );
     }
 
@@ -700,10 +671,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
               children: [
                 const Text(
                   "Select Rooms",
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary),
+                  style:
+                      TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 TextButton(
                   onPressed: _toggleSelectAll,
@@ -712,14 +681,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
                         ? "Deselect All"
                         : "Select All",
                     style: const TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w600),
+                        color: Colors.black, fontWeight: FontWeight.w600),
                   ),
-                )
+                ),
               ],
             ),
             const SizedBox(height: 16),
-
             GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -750,8 +717,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: selected
-                          ? AppColors.primary
-                          : AppColors.bgLight,
+                          ? Colors.amber[700]
+                          : Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
@@ -759,7 +726,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color:
-                            selected ? Colors.white : AppColors.textPrimary,
+                            selected ? Colors.white : Colors.black87,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -773,8 +740,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
-  Widget _buildDateSection(String title, DateTime? date,
-      VoidCallback onTap, bool isStart) {
+  Widget _buildDateSection(
+      String title, DateTime? date, VoidCallback onTap, bool isStart) {
     return Container(
       decoration: _cardDecoration(),
       child: Padding(
@@ -784,33 +751,29 @@ class _CameraContentPageState extends State<CameraContentPage> {
           children: [
             Text(title,
                 style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
+                    fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             GestureDetector(
               onTap: onTap,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 14),
                 decoration: BoxDecoration(
-                  color: AppColors.bgLight,
+                  color: Colors.grey[100],
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
                   children: [
                     const Icon(Icons.calendar_today,
-                        size: 18, color: AppColors.textSecondary),
+                        size: 18, color: Colors.grey),
                     const SizedBox(width: 12),
                     Text(
-                      (date != null && date.year > 0)
+                      date != null
                           ? "${date.day}/${date.month}/${date.year}"
                           : "Select Date",
                       style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: AppColors.textPrimary),
-                    )
+                          fontSize: 14, fontWeight: FontWeight.w500),
+                    ),
                   ],
                 ),
               ),
@@ -819,11 +782,11 @@ class _CameraContentPageState extends State<CameraContentPage> {
             _buildMinimalTimeSelector(
               hour: isStart ? _startHour : _endHour,
               minute: isStart ? _startMinute : _endMinute,
-              onHourChanged: (v) =>
-                  setState(() => isStart ? _startHour = v : _endHour = v),
-              onMinuteChanged: (v) =>
-                  setState(() => isStart ? _startMinute = v : _endMinute = v),
-            )
+              onHourChanged: (v) => setState(
+                  () => isStart ? _startHour = v : _endHour = v),
+              onMinuteChanged: (v) => setState(
+                  () => isStart ? _startMinute = v : _endMinute = v),
+            ),
           ],
         ),
       ),
@@ -840,26 +803,23 @@ class _CameraContentPageState extends State<CameraContentPage> {
           children: [
             const Text(
               "Display Timer",
-              style: TextStyle(
-                  fontSize: 18, fontWeight: FontWeight.bold),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             const Text(
               "Enter how many seconds the content should be displayed",
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+              style: TextStyle(fontSize: 13, color: Colors.grey),
             ),
             const SizedBox(height: 16),
             TextFormField(
               controller: _timerController,
               keyboardType: TextInputType.number,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-              ],
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: InputDecoration(
                 hintText: "Enter seconds",
                 suffixText: "sec",
                 filled: true,
-                fillColor: AppColors.bgLight,
+                fillColor: Colors.grey[100],
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
@@ -867,12 +827,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
               onChanged: (value) {
                 if (value.isNotEmpty) {
                   final int? parsed = int.tryParse(value);
-                  if (parsed != null &&
-                      parsed >= 1 &&
-                      parsed <= 60) {
-                    setState(() {
-                      _timerSeconds = parsed;
-                    });
+                  if (parsed != null && parsed >= 1 && parsed <= 60) {
+                    setState(() => _timerSeconds = parsed);
                   }
                 }
               },
@@ -880,7 +836,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
             const SizedBox(height: 8),
             const Text(
               "Allowed range: 1–60 seconds",
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),
@@ -888,77 +844,68 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
- Widget _buildActionButtons(bool enabled) {
-  return Row(
-    children: [
-      // PRIMARY BUTTON
-      Expanded(
-        child: ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor:
-                enabled ? AppColors.primary : Colors.grey.shade400,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-          ),
-          onPressed: (enabled && !_isUploading) ? _uploadContent : null,
-
-          child: _isUploading
-            ? const SizedBox(
-                height: 22,
-                width: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : Text(
-                _isEditMode ? "Update Content" : "Add Content",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+  Widget _buildActionButtons(bool enabled) {
+    return Row(
+      children: [
+        Expanded(
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor:
+                  enabled ? Colors.black : Colors.grey.shade400,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 18),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
               ),
-        ),
-      ),
-
-      const SizedBox(width: 16),
-
-      // SECONDARY BUTTON
-      Expanded(
-        child: OutlinedButton(
-          style: OutlinedButton.styleFrom(
-            side: const BorderSide(color: AppColors.primary, width: 1.2),
-            foregroundColor: AppColors.primary,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
             ),
-          ),
-          onPressed: () {
-            setState(() {
-              _selectedImage = null;
-              _selectedRooms.clear();
-              _timerSeconds = 5;
-              _timerController.text = "5";
-              _initializeDates();
-            });
-          },
-          child: const Text(
-            "Cancel",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
+            onPressed: (enabled && !_isUploading) ? _uploadContent : null,
+            child: _isUploading
+                ? const SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : Text(
+                    _isEditMode ? "Update Content" : "Add Content",
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
           ),
         ),
-      ),
-    ],
-  );
-}
+        const SizedBox(width: 16),
+        Expanded(
+          child: OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.black, width: 1.2),
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(vertical: 18),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ),
+            onPressed: () {
+              setState(() {
+                _selectedImage = null;
+                _selectedRooms.clear();
+                _timerSeconds = 5;
+                _timerController.text = "5";
+                _initializeDates();
+              });
+            },
+            child: const Text(
+              "Cancel",
+              style:
+                  TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   BoxDecoration _cardDecoration() {
     return BoxDecoration(
@@ -988,8 +935,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
           minValue: 0,
           maxValue: 23,
           itemHeight: 40,
-          selectedTextStyle: const TextStyle(
-              fontSize: 24, fontWeight: FontWeight.bold),
+          selectedTextStyle:
+              const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           onChanged: onHourChanged,
         ),
         const Text(":",
@@ -1000,8 +947,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
           minValue: 0,
           maxValue: 59,
           itemHeight: 40,
-          selectedTextStyle: const TextStyle(
-              fontSize: 24, fontWeight: FontWeight.bold),
+          selectedTextStyle:
+              const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           onChanged: onMinuteChanged,
         ),
       ],

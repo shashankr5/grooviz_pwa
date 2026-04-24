@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/login_service.dart';
+import '../utils/app_colors.dart';
 import 'otp_verify_page.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
@@ -31,7 +32,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(response["message"] ?? "Failed to send OTP"),
-          backgroundColor: Colors.red,
+          backgroundColor: AppColors.error,
         ),
       );
       return;
@@ -40,7 +41,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text("OTP sent successfully"),
-        backgroundColor: Colors.green,
+        backgroundColor: AppColors.secondary,
       ),
     );
 
@@ -61,10 +62,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: const IconThemeData(color: AppColors.textPrimary),
         title: const Text(
           "Forgot Password",
-          style: TextStyle(color: Colors.black),
+          style: TextStyle(color: AppColors.textPrimary),
         ),
       ),
       body: Padding(
@@ -91,15 +92,15 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                   hintText: "Mobile Number",
                   prefixIcon: const Icon(Icons.phone),
                   filled: true,
-                  fillColor: Colors.grey.shade100,
+                  fillColor: AppColors.bgLight,
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
+                    borderSide: const BorderSide(color: AppColors.border),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(14),
                     borderSide: const BorderSide(
-                      color: Color(0xFFFFC107),
+                      color: AppColors.primary,
                       width: 1.5,
                     ),
                   ),
@@ -118,19 +119,19 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _sendOtp,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFC107),
+                    backgroundColor: AppColors.primary,
                     disabledBackgroundColor: Colors.grey.shade400,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
                   child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.black)
+                      ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
                           "Send OTP",
                           style: TextStyle(
                             fontSize: 18,
-                            color: Colors.black87,
+                            color: Colors.white,
                             fontWeight: FontWeight.w600,
                           ),
                         ),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/login_service.dart';
+import '../utils/app_colors.dart';
 import 'reset_password_page.dart';
 
 class OtpVerifyPage extends StatefulWidget {
@@ -123,7 +124,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.black87,
+        backgroundColor: AppColors.textPrimary,
       ),
     );
   }
@@ -141,7 +142,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
         decoration: InputDecoration(
           counterText: "",
           filled: true,
-          fillColor: Colors.grey.shade100,
+          fillColor: AppColors.bgLight,
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         ),
         onChanged: (val) {
@@ -185,7 +186,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
               if (_generatedOtp.isNotEmpty)
                 Text(
                   "Generated OTP: $_generatedOtp",
-                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                  style: const TextStyle(color: AppColors.error, fontSize: 16),
                 ),
 
               const SizedBox(height: 30),
@@ -201,18 +202,18 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _verifyOtp,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFC107),
+                    backgroundColor: AppColors.primary,
                     disabledBackgroundColor: Colors.grey.shade400,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                   child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.black)
+                      ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
                           "Verify OTP",
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
                             fontSize: 18,
-                            color: Colors.black87,
+                            color: Colors.white,
                           ),
                         ),
                 ),

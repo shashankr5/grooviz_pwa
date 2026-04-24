@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/task_service.dart';
+import '../utils/app_colors.dart';
 
 class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
@@ -50,7 +51,7 @@ class _TasksPageState extends State<TasksPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.bgLight,
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -64,12 +65,19 @@ class _TasksPageState extends State<TasksPage> {
               children: [
                 const Text(
                   "My Tasks",
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 const Text(
                   "Your performance overview",
-                  style: TextStyle(fontSize: 15, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: AppColors.textSecondary,
+                  ),
                 ),
                 const SizedBox(height: 20),
 
@@ -80,19 +88,19 @@ class _TasksPageState extends State<TasksPage> {
                       icon: Icons.access_time,
                       count: "$totalTasks",
                       label: "Total Tasks",
-                      iconColor: Colors.amber.shade600,
+                      iconColor: AppColors.accent,
                     ),
                     _buildStatBox(
                       icon: Icons.check_circle,
                       count: "$completedTasks",
                       label: "Completed Today",
-                      iconColor: Colors.green.shade600,
+                      iconColor: AppColors.secondary,
                     ),
                     _buildStatBox(
                       icon: Icons.timelapse_outlined,
                       count: "$inProgressTasks",
                       label: "In Progress",
-                      iconColor: Colors.orange.shade600,
+                      iconColor: AppColors.primary,
                     ),
                   ],
                 ),
@@ -101,13 +109,17 @@ class _TasksPageState extends State<TasksPage> {
 
                 const Text(
                   "Recent Activity",
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
                 const SizedBox(height: 16),
 
                 if (_recentTasks.isEmpty)
                   const Text("No recent tasks found",
-                      style: TextStyle(color: Colors.grey))
+                      style: TextStyle(color: AppColors.textSecondary))
                 else
                   ..._recentTasks.map((task) {
                     String status = task["status"] ?? "";
@@ -115,13 +127,13 @@ class _TasksPageState extends State<TasksPage> {
                     Color statusColor;
                     switch (status) {
                       case "Closed":
-                        statusColor = Colors.green;
+                        statusColor = AppColors.secondary;
                         break;
                       case "In Progress":
-                        statusColor = Colors.orange;
+                        statusColor = AppColors.accent;
                         break;
                       default:
-                        statusColor = Colors.blue; // Open
+                        statusColor = AppColors.primary; // Open
                     }
 
                     return Padding(
@@ -168,12 +180,18 @@ class _TasksPageState extends State<TasksPage> {
           Icon(icon, size: 28, color: iconColor),
           const SizedBox(height: 8),
           Text(count,
-              style:
-              const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary,
+              )),
           const SizedBox(height: 4),
           Text(label,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade800)),
+              style: const TextStyle(
+                fontSize: 12.5,
+                color: AppColors.textSecondary,
+              )),
         ],
       ),
     );
@@ -210,13 +228,13 @@ class _TasksPageState extends State<TasksPage> {
                 padding:
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.amber.shade100,
+                  color: AppColors.primaryLight,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(room,
-                    style: TextStyle(
+                    style: const TextStyle(
                         fontWeight: FontWeight.w600,
-                        color: Colors.orange.shade800)),
+                        color: AppColors.textPrimary)),
               ),
               Container(
                 padding:
@@ -234,10 +252,15 @@ class _TasksPageState extends State<TasksPage> {
           const SizedBox(height: 12),
           Text(title,
               style: const TextStyle(
-                  fontSize: 17, fontWeight: FontWeight.w600)),
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary)),
           const SizedBox(height: 6),
           Text(time,
-              style: const TextStyle(fontSize: 13, color: Colors.grey)),
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+              )),
         ],
       ),
     );

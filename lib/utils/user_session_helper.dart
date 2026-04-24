@@ -1,3 +1,5 @@
+// user_session_helper.dart
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class UserSessionHelper {
@@ -71,6 +73,56 @@ class UserSessionHelper {
     return prefs.getStringList("departments") ?? [];
   }
 
+  // ---------- FULL PROFILE ----------
+  static Future<void> saveUserProfile(Map<String, dynamic> profile) async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentUserId = prefs.getInt("user_id");
+    final profileCopy = Map<String, dynamic>.from(profile);
+
+    final profileUserId = _readInt(profileCopy["user_id"]) ?? currentUserId;
+    if (profileUserId != null && profileUserId != 0) {
+      profileCopy["user_id"] = profileUserId;
+      await prefs.setInt("user_profile_user_id", profileUserId);
+    } else {
+      await prefs.remove("user_profile_user_id");
+    }
+
+    await prefs.setString("user_profile", jsonEncode(profileCopy));
+  }
+
+  static Future<Map<String, dynamic>?> getUserProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final data = prefs.getString("user_profile");
+    if (data == null) return null;
+
+    final decoded = jsonDecode(data);
+    if (decoded is! Map) {
+      await clearCachedProfile();
+      return null;
+    }
+
+    final profile = Map<String, dynamic>.from(decoded);
+    final currentUserId = prefs.getInt("user_id");
+    final cachedUserId =
+        prefs.getInt("user_profile_user_id") ?? _readInt(profile["user_id"]);
+
+    if (currentUserId == null ||
+        currentUserId == 0 ||
+        cachedUserId == null ||
+        cachedUserId != currentUserId) {
+      await clearCachedProfile();
+      return null;
+    }
+
+    return profile;
+  }
+
+  static Future<void> clearCachedProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove("user_profile");
+    await prefs.remove("user_profile_user_id");
+  }
+
   // ---------- LOGIN STATE ----------
   static Future<void> saveIsLoggedIn(bool value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -95,8 +147,14 @@ class UserSessionHelper {
     await prefs.remove("user_name");
     await prefs.remove("email");
     await prefs.remove("phone");
+    await prefs.remove("enterprise_id");
     await prefs.remove("departments");
+    await prefs.remove("user_profile");
+    await prefs.remove("user_profile_user_id");
     await prefs.remove("is_logged_in");
+
+    await prefs.remove("user_profile");
+    await prefs.remove("enterprise_id");
 
     // Restore installation ID and device identifier
     if (installationId != null) {
@@ -109,4 +167,26 @@ class UserSessionHelper {
 
   static Future<dynamic> getUserData() async {}
 
+  static int? _readInt(dynamic value) {
+    if (value is int) return value;
+    if (value == null) return null;
+    return int.tryParse(value.toString());
+  }
+
+  static Future<Map<String, dynamic>?> getSafeUserProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final data = prefs.getString("user_profile");
+    if (data == null) return null;
+
+    final profile = jsonDecode(data);
+    final currentUserId = prefs.getInt("user_id");
+
+    // 🚨 If mismatch → clear corrupted cache
+    if (profile["user_id"] != currentUserId) {
+      await prefs.remove("user_profile");
+      return null;
+    }
+    return profile;
+  }
 }

@@ -1,3 +1,4 @@
+// upload_service.dart
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import '../utils/user_session_helper.dart';
@@ -6,24 +7,32 @@ import '../constants/api_constants.dart';
 class UploadService {
   final Dio _dio = Dio();
 
-  /// Convert S3 URL → CDN URL
+  /// Convert S3 URL → CDN URL for fast, cached delivery to TV devices.
   String _convertS3ToCdnUrl(String url) {
     final regex = RegExp(
       r'https:\/\/digisignage-uploads\.s3\.[a-z0-9-]+\.amazonaws\.com',
     );
-
     return url.replaceAll(regex, "https://cdn.tekchant.com");
   }
 
+  /// Uploads a base64-encoded file (IMAGE or VIDEO) to S3 via the proxy API
+  /// and returns the CDN URL so TV devices load it with maximum speed.
+  ///
+  /// [base64]       – full data-URI string, e.g. "data:image/png;base64,..."
+  /// [fileName]     – suggested file name, e.g. "content_1234567890.png"
+  /// [contentType]  – "IMAGE" or "VIDEO"
+  /// [enterpriseId] – tenant identifier from [UserSessionHelper]
+  /// [isContentFile]– 1 = content file (default), 0 = other asset
+  
   Future<Map<String, dynamic>> uploadBase64File({
     required String base64,
     required String fileName,
-    required String contentType, // IMAGE / VIDEO
+    required String contentType,
     required String enterpriseId,
     int isContentFile = 1,
   }) async {
     try {
-      final payload = {
+      final Map<String, dynamic> payload = {
         "stage": "dev",
         "ENTERPRISE_ID": enterpriseId,
         "CONTENT_TYPE": contentType,
@@ -32,34 +41,50 @@ class UploadService {
         "IS_CONTENT_FILE": isContentFile,
       };
 
-      final response = await _dio.post(
-        "https://api.mobiezy.in/php/s3_upload/index.php",
+      final Response response = await _dio.post(
+        "https://internal.winpuducherry.com/php/s3_upload/index1.php",
         data: jsonEncode(payload),
         options: Options(
-            headers: {
+          headers: {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            },
+          },
+          // Give large PNG uploads enough time to complete
+          sendTimeout: const Duration(seconds: 120),
+          receiveTimeout: const Duration(seconds: 60),
         ),
-    );
+      );
 
-      String? url;
+      // ── Parse URL from response ───────────────────────────────────────────
+      // The API can return the URL either at the top level or nested in "body".
+      String? rawUrl;
 
-      if (response.data["url"] != null) {
-        url = response.data["url"];
-      } else if (response.data["body"] != null) {
-        final body = jsonDecode(response.data["body"]);
-        url = body["url"] ?? body["filePath"];
-      }
-      if (url == null) {
-        return {"success": false, "message": "No file URL returned"};
+      if (response.data is Map) {
+        rawUrl = response.data["url"] as String?;
+
+        if (rawUrl == null && response.data["body"] != null) {
+          final dynamic bodyRaw = response.data["body"];
+          final Map<String, dynamic> body = bodyRaw is String
+              ? jsonDecode(bodyRaw) as Map<String, dynamic>
+              : bodyRaw as Map<String, dynamic>;
+          rawUrl = (body["url"] ?? body["filePath"]) as String?;
         }
+      }
 
-        return {
+      if (rawUrl == null || rawUrl.isEmpty) {
+        return {"success": false, "message": "No file URL returned from server"};
+      }
+
+      // ── Convert S3 → CDN URL before returning ────────────────────────────
+      final String cdnUrl = _convertS3ToCdnUrl(rawUrl);
+
+      return {
         "success": true,
-        "url": url, // original S3 URL
-        };
-
+        "url": cdnUrl, // CDN URL ready for TV playback
+      };
+    } on DioException catch (e) {
+      final String message = e.response?.data?.toString() ?? e.message ?? e.toString();
+      return {"success": false, "message": "Network error: $message"};
     } catch (e) {
       return {"success": false, "message": e.toString()};
     }

@@ -16,16 +16,8 @@ Future<void> setupFirebaseNotifications() async {
   final messaging = FirebaseMessaging.instance;
 
   // Token already saved by FCMService – this just logs
-  String? token;
-  try {
-    token = await messaging.getToken();
-    print('📱 FCM Token: $token');
-  } catch (e) {
-    print('⚠️ FCM token fetch failed (will retry automatically): $e');
-  }
-
-  //final token = await FCMService.getCachedFCMToken();
-  //print('FCM token (cached): $token');
+  final token = await FCMService.getCachedFCMToken();
+  print('FCM token (cached): $token');
 
   // FOREGROUND
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {

@@ -3,6 +3,7 @@ import 'main_navigation.dart';
 import '../services/login_service.dart';
 import '../utils/user_session_helper.dart';
 import '../services/profile_service.dart';
+import '../utils/app_colors.dart';
 import 'forgot_password_page.dart'; 
 
 class LoginPage extends StatefulWidget {
@@ -37,16 +38,15 @@ class _LoginPageState extends State<LoginPage> {
       password: _passwordController.text.trim(),
     );
 
-    setState(() => _isLoading = false);
-
     if (!mounted) return;
+    setState(() => _isLoading = false);
 
     /// ❌ Login Failed
     if (!response['success']) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(response['message'] ?? "Login failed"),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: AppColors.error,
         ),
       );
       return;
@@ -64,11 +64,12 @@ class _LoginPageState extends State<LoginPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Profile loading failed: ${profileRes["message"]}"),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: AppColors.error,
         ),
       );
       return;
     }
+    //await UserSessionHelper.saveUserProfile(profileRes["data"]);
 
     /// 🌟 SUCCESS → Navigate only after enterprise_id stored
     Navigator.pushReplacement(
@@ -96,18 +97,18 @@ class _LoginPageState extends State<LoginPage> {
                 /// Logo
                 Center(
                   child: Container(
-                    height: 100,
-                    width: 100,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFC107).withOpacity(0.2),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 55,
-                      color: Color(0xFFFFC107),
-                    ),
+                  height: 100,
+                  width: 100,
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryLight,
+                    shape: BoxShape.circle,
                   ),
+                  child: const Icon(
+                    Icons.person,
+                    size: 50,
+                    color: AppColors.primary,
+                  ),
+                ),
                 ),
 
                 const SizedBox(height: 25),
@@ -115,7 +116,7 @@ class _LoginPageState extends State<LoginPage> {
                 /// Title
                 const Center(
                   child: Text(
-                    "Welcome Back",
+                    "Welcome",
                     style: TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.bold,
@@ -153,17 +154,17 @@ class _LoginPageState extends State<LoginPage> {
                     hintText: "Enter username",
                     prefixIcon: const Icon(Icons.person_outline),
                     filled: true,
-                    fillColor: Colors.grey.shade100,
+                    fillColor: AppColors.bgLight,
                     contentPadding: const EdgeInsets.symmetric(
                         vertical: 16, horizontal: 12),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
+                      borderSide: const BorderSide(color: AppColors.border),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
                       borderSide: const BorderSide(
-                        color: Color(0xFFFFC107),
+                        color: AppColors.primary,
                         width: 1.5,
                       ),
                     ),
@@ -200,17 +201,17 @@ class _LoginPageState extends State<LoginPage> {
                       },
                     ),
                     filled: true,
-                    fillColor: Colors.grey.shade100,
+                    fillColor: AppColors.bgLight,
                     contentPadding: const EdgeInsets.symmetric(
                         vertical: 16, horizontal: 12),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
+                      borderSide: const BorderSide(color: AppColors.border),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
                       borderSide: const BorderSide(
-                        color: Color(0xFFFFC107),
+                        color: AppColors.primary,
                         width: 1.5,
                       ),
                     ),
@@ -237,7 +238,7 @@ class _LoginPageState extends State<LoginPage> {
                       child: const Text(
                         "Forgot Password?",
                         style: TextStyle(
-                          color: Color(0xFFFFC107),
+                          color: AppColors.primary,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -253,7 +254,7 @@ class _LoginPageState extends State<LoginPage> {
                   child: ElevatedButton(
                     onPressed: _isFormValid && !_isLoading ? _login : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFC107),
+                      backgroundColor: AppColors.primary,
                       disabledBackgroundColor: Colors.grey.shade400,
                       elevation: 0,
                       shape: RoundedRectangleBorder(
@@ -262,14 +263,14 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     child: _isLoading
                         ? const CircularProgressIndicator(
-                            color: Colors.black,
+                            color: Colors.white,
                             strokeWidth: 2,
                           )
                         : const Text(
                             "Login",
                             style: TextStyle(
                               fontSize: 18,
-                              color: Colors.black87,
+                              color: Colors.white,
                               fontWeight: FontWeight.w600,
                             ),
                           ),

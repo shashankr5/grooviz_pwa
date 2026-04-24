@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'camera_content_page.dart';
 import '../services/rooms_service.dart';
+import '../utils/app_colors.dart';
 
 enum ContentFilter { all, live, scheduled, expired }
 
@@ -120,7 +121,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result["message"]),
-          backgroundColor: Colors.green,
+          backgroundColor: AppColors.secondary,
         ),
       );
       return true;
@@ -128,7 +129,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result["message"]),
-          backgroundColor: Colors.red,
+          backgroundColor: AppColors.error,
         ),
       );
       return false;
@@ -138,12 +139,12 @@ class _MyContentsPageState extends State<MyContentsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         title: const Text("My Contents",
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: const IconThemeData(color: AppColors.textPrimary),
         elevation: 1,
         actions: [
           IconButton(
@@ -178,9 +179,9 @@ class _MyContentsPageState extends State<MyContentsPage> {
         onChanged: (v) => setState(() => _searchQuery = v),
         decoration: InputDecoration(
           hintText: "Search contents...",
-          prefixIcon: const Icon(Icons.search),
+          prefixIcon: const Icon(Icons.search, color: AppColors.textSecondary),
           filled: true,
-          fillColor: Colors.grey[100],
+          fillColor: AppColors.bgLight,
           border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: BorderSide.none),
@@ -203,13 +204,13 @@ class _MyContentsPageState extends State<MyContentsPage> {
               padding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
-                color: selected ? Colors.black : Colors.grey.shade200,
+                color: selected ? AppColors.primary : AppColors.border,
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(
                 f.name[0].toUpperCase() + f.name.substring(1),
                 style: TextStyle(
-                    color: selected ? Colors.white : Colors.black,
+                    color: selected ? Colors.white : AppColors.textPrimary,
                     fontWeight: FontWeight.w600),
               ),
             ),
@@ -225,11 +226,11 @@ class _MyContentsPageState extends State<MyContentsPage> {
     }
 
     if (_error != null) {
-      return Center(child: Text(_error!, style: const TextStyle(color: Colors.red)));
+      return Center(child: Text(_error!, style: const TextStyle(color: AppColors.error)));
     }
 
     if (_filtered.isEmpty) {
-      return const Center(child: Text("No contents found"));
+      return const Center(child: Text("No contents found", style: TextStyle(color: AppColors.textSecondary)));
     }
 
     return RefreshIndicator(
@@ -246,7 +247,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
             background: Container(
               alignment: Alignment.centerRight,
               padding: const EdgeInsets.only(right: 20),
-              color: Colors.red,
+              color: AppColors.error,
               child: const Icon(Icons.delete, color: Colors.white),
             ),
             confirmDismiss: (_) => _confirmDelete(item),
@@ -298,7 +299,7 @@ class ContentCard extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
-                            color: Colors.amber[700],
+                            color: AppColors.primary,
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
@@ -330,7 +331,7 @@ class ContentCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -362,6 +363,7 @@ class ContentCard extends StatelessWidget {
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -370,7 +372,7 @@ class ContentCard extends StatelessWidget {
                 /// DELETE
                 IconButton(
                   icon: const Icon(Icons.delete_outline),
-                  color: Colors.red,
+                  color: AppColors.error,
                   onPressed: () async {
                     final state =
                         context.findAncestorStateOfType<_MyContentsPageState>();
@@ -410,18 +412,18 @@ class ContentCard extends StatelessWidget {
     final end = DateTime.tryParse(content["endTime"] ?? "");
 
     String label = "Unknown";
-    Color color = Colors.grey;
+    Color color = AppColors.textSecondary;
 
     if (start != null && end != null) {
       if (now.isBefore(start)) {
         label = "Scheduled";
-        color = Colors.blue;
+        color = AppColors.accent;
       } else if (now.isAfter(end)) {
         label = "Expired";
-        color = Colors.grey;
+        color = AppColors.textSecondary;
       } else {
         label = "Live";
-        color = Colors.green;
+        color = AppColors.secondary;
       }
     }
 

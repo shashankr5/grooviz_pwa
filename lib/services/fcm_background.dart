@@ -8,7 +8,6 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
 
-  // Initialize foreground task (required for stop() to work in background)
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
       channelId: 'order_alert_service',
@@ -27,43 +26,36 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     ),
   );
 
-  final type = message.data['type'];
-  final stopAlert = message.data['stop_alert'];
+  final type      = (message.data['type'] ?? '').toString();
+  final stopAlert = (message.data['stop_alert'] ?? '').toString().toLowerCase();
 
-  print('📩 Background message received');
-  print('Type: $type');
-  print('stopAlert: $stopAlert');
+  print('Background FCM | type=$type | stop_alert=$stopAlert');
 
+  // ── New order → increment count and start alert ──────────────────────────
+  // Each order increments independently so multiple orders each ring.
   if (type == 'NEW_FOOD_ORDER') {
-    await OrderAlertService.start();
+    await OrderAlertService.start(); // increments count inside
     return;
   }
 
+  // ── Order accepted ───────────────────────────────────────────────────────
+  // Lambda sends stop_alert:'true' for all users (acceptor + others).
+  // We decrement by 1 — if more orders still pending, alert keeps ringing.
   if (type == 'ORDER_ACCEPTED') {
     if (stopAlert == 'true') {
-      print('Background: stopping alert for acceptor');
-      await OrderAlertService.stop();
-    } else {
-      print('Background: other user, alert continues');
+      await OrderAlertService.stopOne(); // decrements; stops only if count == 0
     }
     return;
   }
 
+  // ── Order delivered → force stop (no pending concept at this stage) ──────
   if (type == 'ORDER_DELIVERED') {
-    print('Background: order delivered, stopping alert');
     await OrderAlertService.stop();
     return;
   }
 
+  // ── Status changed (READY, PREPARING) → no alert change ─────────────────
   if (type == 'ORDER_STATUS_CHANGED') {
-    // READY, PREPARING, etc.
-    final hasPending = (message.data['has_pending_orders'] ?? '').toString().toLowerCase() == 'true';
-    if (!hasPending) {
-      print('Background: no pending orders, stopping alert');
-      await OrderAlertService.stop();
-    }
     return;
   }
-
-  print('Background: unhandled message type $type');
 }

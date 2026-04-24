@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/checkout_service.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/app_colors.dart';
 
 class GuestCheckoutPage extends StatefulWidget {
   const GuestCheckoutPage({super.key});
@@ -15,7 +16,7 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
     DateTime? _parseDate(String? dateStr) {
     if (dateStr == null || dateStr.isEmpty) return null;
     try {
-        return DateTime.parse(dateStr).toLocal(); 
+        return DateTime.parse(dateStr); 
     } catch (_) {
         return null;
     }
@@ -40,14 +41,15 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        backgroundColor: const Color(0xffF5F6FA),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         title: const Text(
-            'Checkout Reports',
-            style: TextStyle(
-                fontWeight: FontWeight.w600,
-            ),
-            ),
+          'Checkout Reports',
+          style: TextStyle(
+          fontWeight: FontWeight.w600,
+          color: AppColors.textPrimary,
+        ),
+        ),
         backgroundColor: Colors.white,
         elevation: 1,
       ),
@@ -74,6 +76,10 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                         _futureGuests = _loadGuests();
                         });
                     },
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                    ),
                     child: const Text("Retry"),
                     ),
                 ],
@@ -86,7 +92,10 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
             /// 📭 EMPTY
             if (guests.isEmpty) {
             return const Center(
-                child: Text('No guests checking out soon.'),
+                child: Text(
+                    'No guests checking out soon.',
+                    style: TextStyle(color: AppColors.textSecondary),
+                ),
             );
             }
 
@@ -159,7 +168,7 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                     /// Phone
                     Row(
                         children: [
-                        const Icon(Icons.phone, size: 14, color: Colors.grey),
+                        const Icon(Icons.phone, size: 14, color: AppColors.textSecondary),
                         const SizedBox(width: 6),
                         Text(
                             (guest['contact'] == null || guest['contact'].toString().isEmpty)
@@ -167,7 +176,7 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                                 : guest['contact'],
                             style: const TextStyle(
                             fontSize: 13,
-                            color: Colors.grey,
+                            color: AppColors.textSecondary,
                             ),
                         ),
                         ],
@@ -180,12 +189,14 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                 Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                    color: Colors.amber.shade100,
+                    color: AppColors.primaryLight,
                     borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
                     "Room ${guest['roomNumber']}",
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600),
                 ),
                 ),
             ],
@@ -196,21 +207,21 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-                color: isToday
-                    ? Colors.red.withOpacity(0.08)
-                    : Colors.blue.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                color: isToday
-                    ? Colors.red.withOpacity(0.3)
-                    : Colors.blue.withOpacity(0.2),
-                ),
+            color: isToday
+                ? AppColors.error.withOpacity(0.08)
+                : AppColors.primaryLight,
+
+            border: Border.all(
+            color: isToday
+                ? AppColors.error.withOpacity(0.3)
+                : AppColors.primary.withOpacity(0.2),
+            ),
             ),
             child: Row(
                 children: [
                 Icon(
                     Icons.logout,
-                    color: isToday ? Colors.red : Colors.blue,
+                    color: isToday ? AppColors.error : AppColors.primary,
                     size: 18,
                 ),
                 const SizedBox(width: 10),
@@ -224,7 +235,7 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                         style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: isToday ? Colors.red : Colors.blue,
+                            color: isToday ? AppColors.error : AppColors.primary,
                         ),
                         ),
                         const SizedBox(height: 3),

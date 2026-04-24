@@ -10,6 +10,7 @@ import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/order_alert_sound.dart';
+import '../utils/app_colors.dart';
 import '../services/order_alert_service.dart';
 import '../services/websocket_service.dart';
 
@@ -56,10 +57,16 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   bool _hasError = false;
   String? _errorMessage;
 
+  Timer? _reloadDebounce;
+  bool _isReloading = false;
+  bool _reloadPending = false;
+  DateTime? _lastReloadTime;
+
   StreamSubscription? _wsSubscription;
 
   StreamSubscription? _orderSubscription;
 
+  // WEBSOCKET 
   Future<void> _initializeWebSocket() async {
     final ws = WebSocketService();
 
@@ -73,28 +80,45 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     await _wsSubscription?.cancel();
 
-    _wsSubscription = ws.stream.listen((event) {
-      if (!mounted) return;
+    _wsSubscription = ws.stream.listen(
+      (event) {
+        if (!mounted) return;
 
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final type = (event['type'] ?? '').toString().toUpperCase();
 
-        final type = (event['type'] ?? '').toString().toUpperCase();
+          switch (type) {
+            case 'NEW_FOOD_ORDER':
+              _handleSocketNewOrder(event['data'] ?? event);
+              break;
 
-        switch (type) {
-          case 'NEW_FOOD_ORDER':
-            _handleSocketNewOrder(event['data'] ?? event);
-            break;
+            case 'ORDER_ACCEPTED':
+            case 'ORDER_DELIVERED':
+            case 'ORDER_STATUS_CHANGED':
+            case 'ORDER_STATUS_UPDATED':
+            case 'ORDER_CANCELLED':
+              _handleSocketUpdate(event['data'] ?? event);
+              break;
+          }
+        });
+      },
 
-          case 'ORDER_ACCEPTED':
-          case 'ORDER_DELIVERED':
-          case 'ORDER_STATUS_CHANGED':
-          case 'ORDER_STATUS_UPDATED':
-          case 'ORDER_CANCELLED':
-            _handleSocketUpdate(event['data'] ?? event);
-            break;
-        }
-      });
-    });
+      // ✅ NEW: handle socket errors
+      onError: (error) {
+        print('WebSocket error: $error');
+        _scheduleReload(); // fallback sync
+      },
+
+      // ✅ NEW: auto reconnect when socket closes
+      onDone: () {
+        print('WebSocket closed. Reconnecting...');
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) {
+            _initializeWebSocket();
+          }
+        });
+      },
+    );
   }
 
   void _handleSocketNewOrder(dynamic data) {
@@ -111,16 +135,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
       _addNewOrder(newOrder);
 
-      // start alert sound
+      // 🔥 NEW: each order increments alert count
       OrderAlertService.start();
 
-      // LIMIT CACHE SIZE
-      if (_processedOrders.length > 100) {
-        _processedOrders.clear();
-      }
     } catch (e) {
       print('WS new order error: $e');
-      _loadFoodOrders();
+      _scheduleReload(); // fallback
     }
   }
 
@@ -128,56 +148,115 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     final orderNo =
         data['order_number']?.toString() ?? data['orderNo']?.toString();
 
-    if (orderNo == null) return;
+    if (orderNo == null || orderNo.isEmpty) return;
 
     final newStatus =
         (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
 
-    // stop alert if accepted
-    if (newStatus == 'ACCEPTED') {
+    // ===== DELIVERED (terminal state) =====
+    if (newStatus == 'DELIVERED') {
       OrderAlertService.stop();
+
+      final index =
+          foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
+
+      if (index != -1) {
+        setState(() {
+          final order = foodOrders.removeAt(index);
+          order['status'] = FoodOrderStatus.delivered.label;
+          order['raw']['order_status'] = 'DELIVERED';
+          deliveredOrders.insert(0, order);
+        });
+      } else {
+        _scheduleReload(); // fallback
+      }
+      return;
     }
 
     final index =
         foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
 
-    // if not found → fallback once
     if (index == -1) {
-      _loadFoodOrders(); // fallback safety
+      _scheduleReload(); // fallback sync
       return;
     }
 
-    setState(() {
-      if (newStatus == 'DELIVERED') {
-        final order = foodOrders.removeAt(index);
-        order['status'] = FoodOrderStatus.delivered.label;
-        order['raw']['order_status'] = 'DELIVERED';
-        deliveredOrders.insert(0, order);
-        return;
-      }
+    // ===== ACCEPTED =====
+    if (newStatus == 'ACCEPTED') {
+      setState(() {
+        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
+        foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
+        foodOrders[index]['acceptedAt'] = DateTime.now();
+      });
 
-      if (newStatus == 'CANCELLED') {
+      // 🔥 decrement alert count (important fix)
+      OrderAlertService.stopOne();
+      return;
+    }
+
+    // ===== CANCELLED =====
+    if (newStatus == 'CANCELLED') {
+      setState(() {
         final order = foodOrders.removeAt(index);
         order['status'] = FoodOrderStatus.cancelled.label;
         order['cancelReason'] = data['cancel_reason'];
         order['raw']['order_status'] = 'CANCELLED';
         cancelledOrders.insert(0, order);
-        return;
-      }
+      });
 
-      if (newStatus == 'ACCEPTED') {
-        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
-        foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
-        foodOrders[index]['acceptedAt'] = DateTime.now();
-        return;
-      }
+      OrderAlertService.stopOne();
+      return;
+    }
 
+    // ===== READY / PREPARING =====
+    setState(() {
       if (newStatus == 'READY') {
         foodOrders[index]['status'] = FoodOrderStatus.ready.label;
         foodOrders[index]['raw']['order_status'] = 'READY';
-        return;
+      } else if (newStatus == 'PREPARING') {
+        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
+        foodOrders[index]['raw']['order_status'] = 'PREPARING';
       }
     });
+  }
+
+  void _scheduleReload() {
+    _reloadPending = true;
+
+    final now = DateTime.now();
+
+    // ⛑ Force reload if too long since last one
+    if (_lastReloadTime == null ||
+        now.difference(_lastReloadTime!) > const Duration(seconds: 3)) {
+      _reloadNow();
+      return;
+    }
+
+    _reloadDebounce?.cancel();
+
+    _reloadDebounce = Timer(const Duration(milliseconds: 800), () {
+      _reloadNow();
+    });
+  }
+
+  void _reloadNow() async {
+    if (_isReloading) {
+      _reloadPending = true;
+      return;
+    }
+
+    _isReloading = true;
+    _reloadPending = false;
+
+    await _loadFoodOrders();
+
+    _lastReloadTime = DateTime.now();
+
+    _isReloading = false;
+
+    if (_reloadPending) {
+      _scheduleReload();
+    }
   }
 
   bool _isValidTransition(String from, String to) {
@@ -287,7 +366,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         cancelled.add(o);
         continue;
       }
-
       // Otherwise active
       activeOrders.add(o);
     }
@@ -352,16 +430,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     for (final o in apiOrders) {
       final orderNo = o["orderNumber"];
-
       // extract raw once
       final raw = o["raw"];
-
       // works for normal + delivered
       final createdTime =
           raw?["order_time"] ??
               raw?["delivered_time"] ??
               "";
-
       if (!grouped.containsKey(orderNo)) {
         grouped[orderNo] = {
           "orderNo": orderNo,
@@ -370,15 +445,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
           "status": o["status"],
           "items": [],
           "raw": raw,
-
           // ✅ FIXED timestamp
           "createdAt": _safeParseDate(createdTime),
-
           // acceptedAt only for preparing
           "acceptedAt": o["status"] == FoodOrderStatus.preparing.label
               ? _safeParseDate(createdTime)
               : null,
-
           "etaMinutes": 15,
           "extraEta": 0,
           "cancelReason": o["cancelReason"],
@@ -391,7 +463,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         "instructions": o["cookingInstructions"],
       });
     }
-
     return grouped.values.toList();
   }
 
@@ -403,7 +474,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (filter == FoodOrderStatus.delivered.label) {
       await _loadDeliveredOrders();
     } else if (filter == FoodOrderStatus.cancelled.label) {
-      await _loadFoodOrders();
+      _scheduleReload();
     }
   }
 
@@ -489,7 +560,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
       if (!mounted) return;
-      _loadFoodOrders();
+      _scheduleReload();
     });  
   }
 
@@ -570,7 +641,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         order["raw"]["order_status"] = backendStatus;
       }
       // Optional: auto move READY orders out of Preparing list
-      await _loadFoodOrders();
+      _scheduleReload();
       AppSnackBar.show(context, "Order marked Ready");
     }
   }
@@ -580,7 +651,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     if (rawStatus == "DELIVERED" || rawStatus == "CANCELLED") {
       _showError("This order cannot be updated");
-      await _loadFoodOrders();
+      _scheduleReload();
       return;
     }
 
@@ -668,7 +739,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   DateTime _safeParseDate(String s) {
     try {
-      return DateTime.parse(s.replaceFirst(' ', 'T')).toLocal();
+      return DateTime.parse(s.replaceFirst(' ', 'T'));
     } catch (_) {
       return DateTime.now();
     }
@@ -699,7 +770,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   Color _etaColor(Map<String, dynamic> order) {
     if (order['status'] == FoodOrderStatus.ready.label) return Colors.green;
     final sec = _remainingSeconds(order);
-    return sec >= 0 ? Colors.blue : Colors.red;
+    return sec >= 0 ? AppColors.accent : AppColors.error;
   }
 
   String _rushTimeLeftText() {
@@ -781,6 +852,69 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     );
   }
 
+  Widget _buildRushHourBanner() {
+  return Container(
+    width: double.infinity,
+    margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    decoration: BoxDecoration(
+      color: rushHourActive
+          ? AppColors.error.withOpacity(0.08)
+          : AppColors.primaryLight,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(
+        color: rushHourActive
+            ? AppColors.error.withOpacity(0.3)
+            : AppColors.border,
+      ),
+    ),
+    child: Row(
+      children: [
+        Icon(
+          Icons.local_fire_department,
+          size: 18,
+          color: rushHourActive
+              ? AppColors.error
+              : AppColors.textSecondary,
+        ),
+        const SizedBox(width: 8),
+
+        Expanded(
+          child: Text(
+            rushHourActive
+                ? 'Rush Hour ON • ${_rushTimeLeftText()} left'
+                : 'Rush Hour OFF',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: rushHourActive
+                  ? AppColors.error
+                  : AppColors.textSecondary,
+            ),
+          ),
+        ),
+
+        if (rushHourActive)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.error,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Text(
+              "ACTIVE",
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
   void _deactivateRushHour() {
     setState(() {
       rushHourActive = false;
@@ -798,24 +932,33 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _loadFoodOrders();
+      _scheduleReload();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xffF5F6FA),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 1,
+        automaticallyImplyLeading: true,
+        title: const Text(
+          'Food Orders',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
+          ),
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.bar_chart),
+            icon: const Icon(Icons.bar_chart, color: AppColors.textPrimary),
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => OrderHistoryPage(),
-                ),
+                MaterialPageRoute(builder: (_) => OrderHistoryPage()),
               );
             },
           ),
@@ -833,29 +976,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             },
           ),
         ],
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Accepting orders',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              rushHourActive
-                  ? 'Rush Hour • ON (${_rushTimeLeftText()} left)'
-                  : 'Rush Hour • OFF',
-              style: TextStyle(
-                fontSize: 12,
-                color: rushHourActive ? Colors.red : Colors.grey,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-      ),
+      ),      
       body: Column(
         children: [
+          _buildRushHourBanner(),
+
+          const SizedBox(height: 8),
+          
           SizedBox(
             height: 56,
             child: ListView.separated(
@@ -874,16 +1001,14 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     padding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
-                      color: isActive ? Colors.black : Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isActive ? Colors.black : Colors.grey.shade300,
-                      ),
+                      color: isActive ? AppColors.primary : Colors.white,
+                      borderRadius: BorderRadius.circular(25),
+                      border: Border.all(color: AppColors.border),
                     ),
                     child: Text(
                       f,
                       style: TextStyle(
-                        color: isActive ? Colors.white : Colors.black,
+                        color: isActive ? Colors.white : AppColors.textPrimary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -953,24 +1078,40 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             margin: const EdgeInsets.only(bottom: 16),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(22),
+              borderRadius: BorderRadius.circular(14),
+              border: isDelayed
+                ? Border(
+                    left: BorderSide(
+                      color: AppColors.error,
+                      width: 4,
+                    ),
+                  )
+                : null,
+
               boxShadow: [
                 if (isDelayed)
                   BoxShadow(
-                    color: Colors.red.withOpacity(0.5 + 0.1 * glowStrength),
-                    blurRadius: 12,
-                    spreadRadius: 2,
+                    color: AppColors.error.withOpacity(0.20 + 0.05 * glowStrength),
+                    blurRadius: 10,
+                    spreadRadius: 1,
                   ),
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 12,
-                  offset: const Offset(0, 3),
-                ),
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
               ],
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(22),
-              child: child,
+            child: AnimatedScale(
+              scale: isDelayed
+                  ? 1.0 + (_delayBlinkController.value * 0.02) // subtle pulse
+                  : 1.0,
+              duration: const Duration(milliseconds: 300),
+
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: child,
+              ),
             ),
           ),
         );
@@ -1000,7 +1141,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       Text(
                         order['guest'],
                         style: const TextStyle(
-                          color: Colors.grey,
+                          color: AppColors.textSecondary,
                           fontSize: 14,
                         ),
                       ),
@@ -1012,13 +1153,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      'Order #${order["orderNo"]}',
+                      '#${order["orderNo"]}',
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 3),
                     Text(
                       _formattedDateTime(order['createdAt']),
-                      style: const TextStyle(color: Colors.grey, fontSize: 13),
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
                     ),
                   ],
                 ),
@@ -1057,7 +1198,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w500,
-                            color: Colors.black87,
+                            color: AppColors.textPrimary,
                           ),
                         ),
                       ],
@@ -1109,7 +1250,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: Colors.blue, // ✅ blue title
+                              color: AppColors.accent,
                             ),
                           ),
                           const SizedBox(height: 4),
@@ -1151,7 +1292,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.cancel, color: Colors.red, size: 18),
+                    const Icon(Icons.cancel, color: AppColors.error, size: 18),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -1187,7 +1328,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   Expanded(
                     child: _actionBar(
                       text: 'ACCEPT',
-                      color: Colors.black,
+                      color: AppColors.secondary,
                       onTap: () async {
                         if (_acceptingIndex != null) return;
 
@@ -1195,7 +1336,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
                         if (rawStatus == "DELIVERED" || rawStatus == "CANCELLED") {
                           _showError("This order cannot be accepted");
-                          await _loadFoodOrders(); // sync with backend
+                          _scheduleReload();// sync with backend
                           return;
                         }
 
@@ -1296,7 +1437,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       child: Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: Colors.black87,
+                          color: AppColors.textPrimary,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: const Icon(Icons.add, color: Colors.white, size: 20),

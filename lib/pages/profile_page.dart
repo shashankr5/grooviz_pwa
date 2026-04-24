@@ -5,6 +5,7 @@ import '../services/profile_service.dart';
 import '../services/logout_service.dart';
 import '../services/order_alert_service.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/app_colors.dart';
 
 import 'login_page.dart';
 import 'privacy_page.dart';
@@ -34,23 +35,52 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _loadProfile() async {
-    final service = ProfileService();
-    final result = await service.getProfile();
+    // ✅ STEP 1: Try safe cache
+    final local = await UserSessionHelper.getSafeUserProfile();
+
+    if (local != null) {
+      _setProfileData(local);
+
+      setState(() {
+        _isLoading = false;
+      });
+
+      print("✅ Loaded profile from SAFE cache");
+    }
+
+    // ✅ STEP 2: ALWAYS refresh from API
+    print("🌐 Refreshing profile from API");
+
+    final result = await ProfileService().getProfile();
 
     if (!mounted) return;
 
     if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-      setState(() => _isLoading = false);
+      // ❗ Only show error if no cache
+      if (local == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result["message"]),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
       return;
     }
 
     final profile = result["profile"];
+
+    // ✅ Save fresh profile
+    await UserSessionHelper.saveUserProfile(profile);
+
+    _setProfileData(profile);
+
+    setState(() {
+      _isLoading = false;
+    });
+  }
+
+  void _setProfileData(Map<String, dynamic> profile) {
     List<String> deptList = [];
 
     try {
@@ -69,8 +99,31 @@ class _ProfilePageState extends State<ProfilePage> {
       email = profile["email"] ?? "";
       phone = profile["phone_number"] ?? "";
       departments = deptList;
-      _isLoading = false;
     });
+  }
+
+  Future<void> _fetchFromApi() async {
+    final result = await ProfileService().getProfile();
+
+    if (!mounted) return;
+
+    if (!result["success"]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result["message"]),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    final profile = result["profile"];
+
+    _setProfileData(profile);
+
+    setState(() => _isLoading = false);
   }
 
   Future<void> _handleLogout(BuildContext context) async {
@@ -133,14 +186,14 @@ class _ProfilePageState extends State<ProfilePage> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xfffaf8f5),
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         title: const Text(
           "Profile",
           style: TextStyle(
-            color: Colors.black,
+            color: AppColors.textPrimary,
             fontWeight: FontWeight.w600,
             fontSize: 22,
           ),
@@ -171,7 +224,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     children: [
                       CircleAvatar(
                         radius: 30,
-                        backgroundColor: Colors.amber.shade600,
+                        backgroundColor: AppColors.primary,
                         child: Text(
                           name.isNotEmpty
                               ? name.substring(0, 1).toUpperCase()
@@ -200,7 +253,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             Text(
                               designation,
                               style: const TextStyle(
-                                color: Colors.grey,
+                                color: AppColors.textSecondary,
                                 fontSize: 14,
                               ),
                               overflow: TextOverflow.ellipsis,
@@ -211,7 +264,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     ],
                   ),
                   const SizedBox(height: 18),
-                  Divider(color: Colors.grey.shade300),
+                  Divider(color: AppColors.textSecondary),
                   const SizedBox(height: 18),
 
                   Row(
@@ -223,7 +276,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           children: [
                             Text("Email",
                                 style: TextStyle(
-                                    color: Colors.grey.shade600)),
+                                    color: AppColors.textSecondary)),
                             const SizedBox(height: 4),
                             Text(
                               email,
@@ -235,7 +288,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             const SizedBox(height: 10),
                             Text("Phone",
                                 style: TextStyle(
-                                    color: Colors.grey.shade600)),
+                                  color: AppColors.textSecondary)),
                             const SizedBox(height: 4),
                             Text(
                               phone,
@@ -253,7 +306,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           children: [
                             Text("Departments",
                                 style: TextStyle(
-                                    color: Colors.grey.shade600)),
+                                    color: AppColors.textSecondary)),
                             const SizedBox(height: 4),
                             ...departments.map(
                                   (d) => Padding(
@@ -295,8 +348,8 @@ class _ProfilePageState extends State<ProfilePage> {
                   ListTile(
                     leading: _circleIcon(
                       Icons.security,
-                      Colors.grey.shade800,
-                      Colors.grey.shade200,
+                      AppColors.textSecondary,
+                      AppColors.textSecondary,
                     ),
                     title: const Text(
                       "Privacy",
@@ -331,26 +384,31 @@ class _ProfilePageState extends State<ProfilePage> {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color:
-                  _isPressed ? Colors.red.shade700 : Colors.white,
+                  color: Colors.white, // ✅ ALWAYS WHITE
                   border: Border.all(
-                      color: Colors.red.shade300, width: 1.5),
+                    color: _isPressed
+                        ? AppColors.primaryDark
+                        : AppColors.primary,
+                    width: 1.5,
+                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.logout,
-                        color: _isPressed
-                            ? Colors.white
-                            : Colors.red),
+                    Icon(
+                      Icons.logout,
+                      color: _isPressed
+                          ? AppColors.primaryDark
+                          : AppColors.primary,
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       "Log Out",
                       style: TextStyle(
                         fontSize: 16,
                         color: _isPressed
-                            ? Colors.white
-                            : Colors.red,
+                            ? AppColors.primaryDark
+                            : AppColors.primary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

@@ -5,6 +5,7 @@ import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
 import '../utils/notification_permission_manager.dart';
+import '../utils/app_colors.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -48,16 +49,16 @@ class _MainNavigationState extends State<MainNavigation> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.bgLight,
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(24),
             topRight: Radius.circular(24),
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 12,
+              offset: const Offset(0, -3),
             ),
           ],
         ),
@@ -68,8 +69,12 @@ class _MainNavigationState extends State<MainNavigation> {
           type: BottomNavigationBarType.fixed, // Required for 5 items
           selectedFontSize: 12,
           unselectedFontSize: 12,
-          selectedItemColor: const Color(0xFFFFC107),
-          unselectedItemColor: Colors.grey.shade600,
+          selectedItemColor: AppColors.primary,
+          unselectedItemColor: AppColors.textSecondary,
+
+          selectedIconTheme: const IconThemeData(size: 28),
+          unselectedIconTheme: const IconThemeData(size: 24),
+
           showSelectedLabels: true,
           showUnselectedLabels: true,
           onTap: (index) {

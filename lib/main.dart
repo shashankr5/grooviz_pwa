@@ -1,18 +1,19 @@
 //main.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'dart:async';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'pages/login_page.dart';
 import 'pages/main_navigation.dart';
 
 import 'services/fcm_service.dart';
-import 'utils/user_session_helper.dart';
 import 'services/notification_handler.dart';
 import 'services/fcm_background.dart';
+import 'utils/user_session_helper.dart';
 import 'utils/notification_permission_manager.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'utils/app_colors.dart';
 
 
 void main() async {
@@ -81,14 +82,45 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Login UI',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
-          snackBarTheme: SnackBarThemeData(
-            behavior: SnackBarBehavior.floating,
+
+        scaffoldBackgroundColor: AppColors.bgLight,
+
+        colorScheme: const ColorScheme.light(
+          primary: AppColors.primary,
+          secondary: AppColors.secondary,
+          error: AppColors.error,
+        ),
+
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: AppColors.textPrimary,
+          elevation: 1,
+        ),
+
+        textTheme: const TextTheme(
+          bodyMedium: TextStyle(color: AppColors.textPrimary),
+          bodySmall: TextStyle(color: AppColors.textSecondary),
+        ),
+
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            foregroundColor: Colors.white,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(20),
             ),
           ),
+        ),
+
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.primaryDark,
+          contentTextStyle: const TextStyle(color: Colors.white),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
       ),
       // This decides startup screen
       home: isLoggedIn ? const MainNavigation() : const LoginPage(),

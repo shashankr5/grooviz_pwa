@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/login_service.dart';
+import '../utils/app_colors.dart';
 import 'login_page.dart';
 
 class ResetPasswordPage extends StatefulWidget {
@@ -52,7 +53,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
-        backgroundColor: success ? Colors.green : Colors.red,
+        backgroundColor: success ? AppColors.secondary : AppColors.error,
       ),
     );
   }
@@ -63,9 +64,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: const IconThemeData(color: AppColors.textPrimary),
         title: const Text("Reset Password",
-            style: TextStyle(color: Colors.black)),
+            style: TextStyle(color: AppColors.textPrimary)),
       ),
       backgroundColor: Colors.white,
       body: Padding(
@@ -103,19 +104,19 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _resetPassword,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFFC107),
+                  backgroundColor: AppColors.primary,
                   disabledBackgroundColor: Colors.grey.shade400,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14)),
                 ),
                 child: _isLoading
-                    ? const CircularProgressIndicator(color: Colors.black)
+                    ? const CircularProgressIndicator(color: Colors.white)
                     : const Text(
                         "Reset Password",
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 18,
-                          color: Colors.black87,
+                          color: Colors.white,
                         ),
                       ),
               ),
@@ -145,15 +146,15 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
           onPressed: toggle,
         ),
         filled: true,
-        fillColor: Colors.grey.shade100,
+        fillColor: AppColors.bgLight,
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: Colors.grey.shade300),
+          borderSide: const BorderSide(color: AppColors.border),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide:
-              const BorderSide(color: Color(0xFFFFC107), width: 1.5),
+              const BorderSide(color: AppColors.primary, width: 1.5),
         ),
       ),
     );

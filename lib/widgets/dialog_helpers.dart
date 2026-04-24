@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../utils/app_snackbar.dart';
-
+import '../utils/app_colors.dart';
 /// ---------------- ADD NOTES POPUP ----------------
 
 Future<String?> showAddNotesPopup(BuildContext context) {
@@ -22,7 +22,7 @@ Future<String?> showAddNotesPopup(BuildContext context) {
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
-                color: Colors.black,
+                color: AppColors.textPrimary,
               ),
             ),
             const SizedBox(height: 16),
@@ -33,7 +33,15 @@ Future<String?> showAddNotesPopup(BuildContext context) {
               decoration: InputDecoration(
                 hintText: "Enter note",
                 border: OutlineInputBorder(
-                  borderSide: const BorderSide(color: Colors.black54),
+                  borderSide: BorderSide(color: AppColors.border),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.border),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.primary),
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -47,11 +55,11 @@ Future<String?> showAddNotesPopup(BuildContext context) {
                   child: OutlinedButton(
                     onPressed: () => Navigator.pop(context),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.black),
+                      side: BorderSide(color: AppColors.primary),
                     ),
                     child: const Text(
                       "Cancel",
-                      style: TextStyle(color: Colors.black),
+                      style: TextStyle(color: AppColors.primary),
                     ),
                   ),
                 ),
@@ -61,7 +69,7 @@ Future<String?> showAddNotesPopup(BuildContext context) {
                     onPressed: () =>
                         Navigator.pop(context, controller.text.trim()),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
+                      backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
                     ),
                     child: const Text("Add"),
@@ -103,7 +111,7 @@ Future<void> showReassignPopup(
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
-                  color: Colors.black,
+                  color: AppColors.textPrimary,
                 ),
               ),
               const SizedBox(height: 14),
@@ -127,7 +135,7 @@ Future<void> showReassignPopup(
                           children: [
                             const Icon(
                               Icons.person_outline,
-                              color: Colors.black,
+                              color: AppColors.primary,
                             ),
                             const SizedBox(width: 12),
 
@@ -140,7 +148,7 @@ Future<void> showReassignPopup(
                                     style: const TextStyle(
                                       fontSize: 15,
                                       fontWeight: FontWeight.w600,
-                                      color: Colors.black,
+                                      color: AppColors.textPrimary,
                                     ),
                                   ),
                                   const SizedBox(height: 2),
@@ -148,7 +156,7 @@ Future<void> showReassignPopup(
                                     staff["department"] ?? "No department",
                                     style: TextStyle(
                                       fontSize: 13,
-                                      color: Colors.grey.shade700,
+                                      color: AppColors.textSecondary,
                                     ),
                                   ),
                                 ],
