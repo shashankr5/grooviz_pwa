@@ -943,7 +943,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 1,
-        automaticallyImplyLeading: true,
+        automaticallyImplyLeading: false,
         title: const Text(
           'Food Orders',
           style: TextStyle(

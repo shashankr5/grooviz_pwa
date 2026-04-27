@@ -36,6 +36,8 @@ class DeviceInfo {
   /// Guaranteed non-null device identifier
   static Future<String> _getDeviceIdentifier() async {
     final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString("device_identifier");
+    if (cached != null && cached.isNotEmpty) return cached;
     try {
       if (Platform.isAndroid) {
         final android = await _deviceInfo.androidInfo;

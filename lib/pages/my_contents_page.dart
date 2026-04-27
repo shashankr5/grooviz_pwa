@@ -3,8 +3,6 @@ import 'camera_content_page.dart';
 import '../services/rooms_service.dart';
 import '../utils/app_colors.dart';
 
-enum ContentFilter { all, live, scheduled, expired }
-
 class MyContentsPage extends StatefulWidget {
   const MyContentsPage({super.key});
 
@@ -19,8 +17,6 @@ class _MyContentsPageState extends State<MyContentsPage> {
   List<Map<String, dynamic>> _contents = [];
   bool _isLoading = true;
   String? _error;
-
-  ContentFilter _filter = ContentFilter.all;
   String _searchQuery = "";
 
   @override
@@ -53,36 +49,13 @@ class _MyContentsPageState extends State<MyContentsPage> {
   }
 
   List<Map<String, dynamic>> get _filtered {
-    final now = DateTime.now();
-
     return _contents.where((item) {
-      final start = DateTime.tryParse(item["startTime"] ?? "");
-      final end = DateTime.tryParse(item["endTime"] ?? "");
-
-      bool filterMatch = true;
-
-      if (_filter != ContentFilter.all && start != null && end != null) {
-        switch (_filter) {
-          case ContentFilter.live:
-            filterMatch = now.isAfter(start) && now.isBefore(end);
-            break;
-          case ContentFilter.scheduled:
-            filterMatch = now.isBefore(start);
-            break;
-          case ContentFilter.expired:
-            filterMatch = now.isAfter(end);
-            break;
-          default:
-            break;
-        }
-      }
-
       final searchMatch = _searchQuery.isEmpty ||
-          (item["title"] ?? "")
+          (item["fullName"] ?? "")
               .toLowerCase()
               .contains(_searchQuery.toLowerCase());
 
-      return filterMatch && searchMatch;
+      return searchMatch;
     }).toList();
   }
 
@@ -146,24 +119,10 @@ class _MyContentsPageState extends State<MyContentsPage> {
         backgroundColor: Colors.white,
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
         elevation: 1,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => const CameraContentPage()),
-              );
-              _loadContents();
-            },
-          )
-        ],
       ),
       body: Column(
         children: [
           _searchBar(),
-          _filterTabs(),
           Expanded(child: _buildBody()),
         ],
       ),
@@ -190,36 +149,6 @@ class _MyContentsPageState extends State<MyContentsPage> {
     );
   }
 
-  Widget _filterTabs() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: ContentFilter.values.map((f) {
-          final selected = _filter == f;
-          return GestureDetector(
-            onTap: () => setState(() => _filter = f),
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: selected ? AppColors.primary : AppColors.border,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                f.name[0].toUpperCase() + f.name.substring(1),
-                style: TextStyle(
-                    color: selected ? Colors.white : AppColors.textPrimary,
-                    fontWeight: FontWeight.w600),
-              ),
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
   Widget _buildBody() {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
@@ -230,7 +159,23 @@ class _MyContentsPageState extends State<MyContentsPage> {
     }
 
     if (_filtered.isEmpty) {
-      return const Center(child: Text("No contents found", style: TextStyle(color: AppColors.textSecondary)));
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.image_not_supported_outlined,
+              size: 56,
+              color: Colors.grey.shade300,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              "No content available",
+              style: TextStyle(color: Colors.grey, fontSize: 15),
+            ),
+          ],
+        ),
+      );
     }
 
     return RefreshIndicator(
@@ -241,18 +186,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
         itemBuilder: (_, i) {
           final item = _filtered[i];
 
-          return Dismissible(
-            key: Key(item["id"]),
-            direction: DismissDirection.endToStart,
-            background: Container(
-              alignment: Alignment.centerRight,
-              padding: const EdgeInsets.only(right: 20),
-              color: AppColors.error,
-              child: const Icon(Icons.delete, color: Colors.white),
-            ),
-            confirmDismiss: (_) => _confirmDelete(item),
-            child: ContentCard(content: item),
-          );
+          return ContentCard(content: item);
         },
       ),
     );
@@ -285,9 +219,18 @@ class ContentCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  /// STATUS
-                  _statusBadge(content),
-                  const SizedBox(height: 12),
+
+                  /// ✅ Guest Name (moved inside Column)
+                  Text(
+                    content["fullName"] ?? "",
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+
+                  const SizedBox(height: 10),
 
                   /// ROOMS
                   if (rooms.isNotEmpty)
@@ -314,30 +257,54 @@ class ContentCard extends StatelessWidget {
                     ),
                 ],
               ),
-            ),
+            )
           ],
         ),
       ),
     );
   }
 
+  Widget _iconButton({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: color, size: 18),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final url = content["filePath"] ?? "";
-    final title = content["title"] ?? "Untitled";
+    final url = content["guestPhoto"] ?? "";
+    final rooms = content["rooms"] as List? ?? [];
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
 
-          /// IMAGE (clickable)
+          /// IMAGE
           if (url.isNotEmpty)
             GestureDetector(
               onTap: () => _previewImage(context, url, content),
@@ -352,93 +319,79 @@ class ContentCard extends StatelessWidget {
             ),
 
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
 
-                /// TITLE
-                Expanded(
-                  child: Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
+                /// ACTIONS
+                Row(
+                  children: [
+                    const Spacer(),
+
+                    /// DELETE
+                    _iconButton(
+                      icon: Icons.delete_outline,
+                      color: Colors.red,
+                      onTap: () async {
+                        final state = context
+                            .findAncestorStateOfType<_MyContentsPageState>();
+                        if (state != null) {
+                          await state._confirmDelete(content);
+                        }
+                      },
                     ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+
+                    const SizedBox(width: 6),
+
+                    /// EDIT
+                    _iconButton(
+                      icon: Icons.edit_outlined,
+                      color: AppColors.primary,
+                      onTap: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => CameraContentPage(
+                              existingContent: content,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
 
-                /// DELETE
-                IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  color: AppColors.error,
-                  onPressed: () async {
-                    final state =
-                        context.findAncestorStateOfType<_MyContentsPageState>();
-
-                    if (state != null) {
-                      await state._confirmDelete(content);
-                    }
-                  },
-                ),
-
-                /// EDIT
-                TextButton.icon(
-                  onPressed: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => CameraContentPage(
-                          existingContent: content,
+                /// ROOMS
+                if (rooms.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: rooms.map<Widget>((room) {
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(6),
                         ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text("Edit"),
-                ),
+                        child: Text(
+                          "Room ${room["room_number"]}",
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ],
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _statusBadge(Map content) {
-    final now = DateTime.now();
-    final start = DateTime.tryParse(content["startTime"] ?? "");
-    final end = DateTime.tryParse(content["endTime"] ?? "");
-
-    String label = "Unknown";
-    Color color = AppColors.textSecondary;
-
-    if (start != null && end != null) {
-      if (now.isBefore(start)) {
-        label = "Scheduled";
-        color = AppColors.accent;
-      } else if (now.isAfter(end)) {
-        label = "Expired";
-        color = AppColors.textSecondary;
-      } else {
-        label = "Live";
-        color = AppColors.secondary;
-      }
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-            color: color,
-            fontWeight: FontWeight.w600,
-            fontSize: 12),
       ),
     );
   }

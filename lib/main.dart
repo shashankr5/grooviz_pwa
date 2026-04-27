@@ -50,6 +50,8 @@ void main() async {
 
   await FCMService.initialize();
 
+  unawaited(FCMService.ensureFCMToken());
+
   await localNotifications.cancelAll();
 
   await createNotificationChannel();

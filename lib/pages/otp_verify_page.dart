@@ -25,7 +25,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
 
   AnimationController? _successAnimationController;
 
-  String _generatedOtp = ""; // store generated OTP
+  //String _generatedOtp = ""; // store generated OTP
 
   @override
   void initState() {
@@ -78,10 +78,10 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
       return;
     }
 
-    _generatedOtp = response['otp'] ?? ""; // Save 4-digit OTP
-    _showSnack("OTP sent successfully");
+    _showSnack(response["message"]); // ✅ dynamic message
     _startResendTimer();
   }
+    //_generatedOtp = response['otp'] ??
 
   Future<void> _verifyOtp() async {
     if (_enteredOtp.length != 4) { // 4 digits
@@ -183,11 +183,11 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
               ),
               const SizedBox(height: 10),
 
-              if (_generatedOtp.isNotEmpty)
-                Text(
-                  "Generated OTP: $_generatedOtp",
-                  style: const TextStyle(color: AppColors.error, fontSize: 16),
-                ),
+              //if (_generatedOtp.isNotEmpty)
+              //  Text(
+              //    "Generated OTP: $_generatedOtp",
+              //    style: const TextStyle(color: AppColors.error, fontSize: 16),
+              //  ),
 
               const SizedBox(height: 30),
               Row(

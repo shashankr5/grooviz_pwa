@@ -24,25 +24,12 @@ class CameraContentPage extends StatefulWidget {
 class _CameraContentPageState extends State<CameraContentPage> {
   final ImagePicker _picker = ImagePicker();
   File? _selectedImage;
-  int _timerSeconds = 5;
-  DateTime? _startDate;
-  int _startHour = 10;
-  int _startMinute = 0;
-  DateTime? _endDate;
-  int _endHour = 10;
-  int _endMinute = 0;
   Set<String> _selectedRooms = {};
 
   bool get _isEditMode => widget.existingContent != null;
   String? _existingImageUrl;
   int? _contentId;
   bool _isPrefilled = false;
-
-  final TextEditingController _titleController = TextEditingController();
-  String _contentTitle = "";
-
-  final TextEditingController _timerController =
-      TextEditingController(text: "5");
   
   final RoomsService _roomsService = RoomsService();
 
@@ -52,10 +39,14 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
   bool _isUploading = false;
 
+  static const Color _accent = Color(0xFF5C6BC0);
+
   List<int> _getSelectedDeviceIds() {
     final selectedRooms = _rooms.where((room) {
       final label = "Room ${room["roomNumber"]}";
       return _selectedRooms.contains(label);
+      print("Rooms: $_rooms");
+      print("Selected Rooms: $_selectedRooms");
     });
 
     return selectedRooms
@@ -68,23 +59,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
   @override
   void initState() {
     super.initState();
-    _initializeDates();
     _fetchRooms();
 
     if (_isEditMode) {
       _prefillExistingData();
       _isPrefilled = true;
     }
-  }
-
-  void _initializeDates() {
-    final now = DateTime.now();
-    _startDate = now;
-    _startHour = now.hour;
-    _startMinute = now.minute;
-    _endDate = now;
-    _endHour = now.hour;
-    _endMinute = now.minute;
   }
 
   void _toggleSelectAll() {
@@ -103,50 +83,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
       _selectedImage = null;
       _existingImageUrl = null;
       _selectedRooms.clear();
-      _timerSeconds = 5;
-      _timerController.text = "5";
-      _titleController.clear();
-      _contentTitle = "";
-      _initializeDates();
     });
-  }
-
-  DateTime _buildDateTime(DateTime? date, int hour, int minute) {
-    final d = date ?? DateTime.now();
-    return DateTime(d.year, d.month, d.day, hour, minute);
-  }
-
-  bool _validateDateTimes() {
-    final now = DateTime.now();
-
-    final startDateTime =
-        _buildDateTime(_startDate, _startHour, _startMinute);
-
-    final endDateTime =
-        _buildDateTime(_endDate, _endHour, _endMinute);
-
-    // ✅ allow past start in edit mode
-    if (!_isEditMode && startDateTime.isBefore(now)) {
-      _showError("Start time is in the past.");
-      return false;
-    }
-
-    if (!_isEditMode && endDateTime.isBefore(now)) {
-      _showError("End time is in the past.");
-      return false;
-    }
-
-    if (!endDateTime.isAfter(startDateTime)) {
-      setState(() {
-        _endHour = _startHour;
-        _endMinute = _startMinute + 5;
-      });
-
-      _showError("End time adjusted to be after start time.");
-      return false;
-    }
-
-    return true;
   }
 
   Future<void> _fetchRooms() async {
@@ -191,23 +128,47 @@ class _CameraContentPageState extends State<CameraContentPage> {
     }
   }
 
+  img.Image _fitTo1920x1080(img.Image src) {
+    const int targetW = 1920;
+    const int targetH = 1080;
+
+    final double scaleW = targetW / src.width;
+    final double scaleH = targetH / src.height;
+    final double scale = scaleW < scaleH ? scaleW : scaleH;
+
+    final int scaledW = (src.width * scale).round();
+    final int scaledH = (src.height * scale).round();
+
+    final img.Image resized = img.copyResize(
+      src,
+      width: scaledW,
+      height: scaledH,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    final img.Image canvas = img.Image(
+      width: targetW,
+      height: targetH,
+      numChannels: 3,
+    );
+
+    img.fill(canvas, color: img.ColorRgb8(0, 0, 0));
+
+    final int dx = ((targetW - scaledW) / 2).round();
+    final int dy = ((targetH - scaledH) / 2).round();
+
+    img.compositeImage(canvas, resized, dstX: dx, dstY: dy);
+
+    return canvas;
+  }
+
   Future<void> _uploadContent() async {
     if (_isUploading) return;
 
     setState(() => _isUploading = true);
 
-    if (!_validateDateTimes()) {
-      setState(() => _isUploading = false);
-      return;
-    }
-
-    if (_contentTitle.trim().isEmpty) {
-      _showError("Please enter a content title");
-      setState(() => _isUploading = false);
-      return;
-    }
-
     final deviceIds = _getSelectedDeviceIds();
+    print("Selected Device IDs: $deviceIds");
 
     if (deviceIds.isEmpty) {
       _showError("No devices found for selected rooms");
@@ -215,25 +176,27 @@ class _CameraContentPageState extends State<CameraContentPage> {
       return;
     }
 
+    if (_selectedImage == null && _existingImageUrl == null) {
+      _showError("Please select an image");
+      setState(() => _isUploading = false);
+      return;
+    }
+
     try {
       String finalUrl = _existingImageUrl ?? "";
 
-      /// upload new image ONLY if user selected one
+      /// upload new image if selected
       if (_selectedImage != null) {
         final originalBytes = await _selectedImage!.readAsBytes();
 
         final img.Image? decoded = img.decodeImage(originalBytes);
         if (decoded == null) {
-          throw Exception("Invalid image – could not decode");
+          throw Exception("Invalid image");
         }
 
-        // ✅ Fix orientation (critical)
         final img.Image oriented = img.bakeOrientation(decoded);
-
-        // ✅ Fit into 1920x1080 without distortion
         final img.Image tv = _fitTo1920x1080(oriented);
 
-        // ✅ Use PNG (best quality for TVs)
         final List<int> outputBytes = img.encodePng(tv);
 
         final String base64Image =
@@ -258,45 +221,15 @@ class _CameraContentPageState extends State<CameraContentPage> {
         finalUrl = uploadResult["url"];
       }
 
-      final startDateTime =
-          _buildDateTime(_startDate, _startHour, _startMinute);
-
-      final endDateTime =
-          _buildDateTime(_endDate, _endHour, _endMinute);
-
-      final startISO = startDateTime.toIso8601String();
-      final endISO = endDateTime.toIso8601String();
-
-      Map result;
-
-      if (_isEditMode) {
-        /// 🔥 UPDATE CONTENT
-        result = await _roomsService.updateContent(
-          contentId: _contentId!,
-          title: _contentTitle,
-          filePath: finalUrl,
-          startTime: startDateTime,
-          endTime: endDateTime,
-          displayTimer: _timerSeconds,
-          deviceIds: deviceIds,
-        );
-      } else {
-        /// ➕ NEW CONTENT
-        result = await _roomsService.uploadImageContent(
-          title: _contentTitle,
-          filePath: finalUrl,
-          startTime: startDateTime,
-          endTime: endDateTime,
-          displayTimer: _timerSeconds,
-          deviceIds: deviceIds,
-        );
-      }
+      /// 🔥 NEW API CALL
+      final result = await _roomsService.updateGuestPhoto(
+        filePath: finalUrl,
+        deviceIds: deviceIds,
+      );
 
       if (!mounted) return;
 
       if (result["success"]) {
-        if (!mounted) return;
-
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result["message"]),
@@ -304,7 +237,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
           ),
         );
 
-        _resetForm();   // clear fields safely
+        _resetForm();
       } else {
         throw Exception(result["message"]);
       }
@@ -354,34 +287,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
     final content = widget.existingContent!;
 
     _contentId = int.tryParse(content["id"].toString());
-    _existingImageUrl = content["filePath"];
-
-    _contentTitle = content["title"] ?? "";
-    _titleController.text = _contentTitle;
-
-    _timerSeconds = content["displayTimer"] ?? 5;
-    _timerController.text = _timerSeconds.toString();
-
-    final start = DateTime.tryParse(content["startTime"] ?? "");
-    final end = DateTime.tryParse(content["endTime"] ?? "");
-
-    final now = DateTime.now();
-
-    if (start != null) {
-      _startDate = start;
-      _startHour = start.hour;
-      _startMinute = start.minute;
-    }
-
-    if (end != null && end.year > 2000) {
-        _endDate = end;
-        _endHour = end.hour;
-        _endMinute = end.minute;
-      } else {
-        _endDate = now.add(const Duration(hours: 1)); // safe fallback
-        _endHour = _endDate!.hour;
-        _endMinute = _endDate!.minute;
-      }
+    final photo = content["guestPhoto"];
+    _existingImageUrl = (photo != null && photo.toString().isNotEmpty) ? photo : null;
 
     /// preselect rooms
     final rooms = content["rooms"] as List?;
@@ -413,69 +320,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
-  Future<void> _selectStartDate() async {
-    final now = DateTime.now();
-
-    final firstDate = _isEditMode ? DateTime(2000) : now;
-    final lastDate = now.add(const Duration(days: 365 * 5));
-
-    DateTime initial = _startDate ?? now;
-
-    if (initial.isBefore(firstDate)) {
-      initial = firstDate;
-    } else if (initial.isAfter(lastDate)) {
-      initial = lastDate;
-    }
-
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: firstDate,
-      lastDate: lastDate,
-    );
-
-    if (picked != null && mounted) {
-      setState(() {
-        _startDate = picked;
-      });
-    }
-  }
-
-  Future<void> _selectEndDate() async {
-    final now = DateTime.now();
-
-    final firstDate = _isEditMode ? DateTime(2000) : now;
-    final lastDate = now.add(const Duration(days: 365 * 5)); // extend range
-
-    // ✅ Ensure initialDate is always within range
-    DateTime initial = _endDate ?? now;
-
-    if (initial.isBefore(firstDate)) {
-      initial = firstDate;
-    } else if (initial.isAfter(lastDate)) {
-      initial = lastDate;
-    }
-
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: firstDate,
-      lastDate: lastDate,
-    );
-
-    if (picked != null && mounted) {
-      setState(() {
-        _endDate = picked;
-        _endHour = 0;
-        _endMinute = 0;
-      });
-    }
-  }
-
   @override
   void dispose() {
-    _timerController.dispose();
-    _titleController.dispose();
     super.dispose();
   }
 
@@ -488,26 +334,37 @@ class _CameraContentPageState extends State<CameraContentPage> {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        title: const Text(
-          'Camera Content',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _isEditMode ? 'Edit Photo' : 'Camera Content',
+            style: const TextStyle(
+              color: Colors.black,
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+            ),
           ),
-        ),
-        elevation: 1,
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
-
-        actions: _isEditMode
-            ? []
-            : [
-                IconButton(
-                  icon: const Icon(
-                    Icons.history_outlined,
-                    color: AppColors.textPrimary,
-                  ),
-                  tooltip: 'My Contents',
+          const Text(
+            'Upload and display content instantly',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ],
+      ),
+      elevation: 0,
+      backgroundColor: Colors.white,
+      iconTheme: const IconThemeData(color: Colors.black),
+      actions: _isEditMode
+          ? []
+          : [
+              Container(
+                margin: const EdgeInsets.only(right: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0F1FF),
+                  borderRadius: BorderRadius.circular(50),
+                ),
+                child: IconButton(
+                  icon: Icon(Icons.history_outlined, color: _accent),
                   onPressed: () {
                     Navigator.push(
                       context,
@@ -517,31 +374,47 @@ class _CameraContentPageState extends State<CameraContentPage> {
                     );
                   },
                 ),
-                const SizedBox(width: 8),
-              ],
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              _buildImageSection(),
-              const SizedBox(height: 20),
-              _buildTitleSection(),
-              const SizedBox(height: 20),
-              _buildRoomSection(),
-              const SizedBox(height: 20),
-              _buildDateSection("Start Date & Time", _startDate,
-                  _selectStartDate, true),
-              const SizedBox(height: 20),
-              _buildDateSection(
-                  "End Date & Time", _endDate, _selectEndDate, false),
-              const SizedBox(height: 20),
-              _buildTimerSection(),
-              const SizedBox(height: 30),
-              _buildActionButtons(isAddContentEnabled),
+              ),
             ],
-          ),
+    ),
+      body: SafeArea(
+        child: Column(
+          children: [
+
+            /// SCROLLABLE CONTENT
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    _buildImageSection(),
+                    const SizedBox(height: 20),
+
+                    _buildRoomSection(),
+                    const SizedBox(height: 20),
+
+                    const SizedBox(height: 80), // space for bottom buttons
+                  ],
+                ),
+              ),
+            ),
+
+            /// 🔥 FIXED BOTTOM BUTTONS
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              child: _buildActionButtons(isAddContentEnabled),
+            ),
+          ],
         ),
       ),
     );
@@ -550,107 +423,84 @@ class _CameraContentPageState extends State<CameraContentPage> {
   Widget _buildImageSection() {
     return Container(
       decoration: _cardDecoration(),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Stack(
-          children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: GestureDetector(
-                onTap: _selectedImage == null ? _showImagePicker : null,
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    color: AppColors.bgLight,
-                  ),
-                  child: _selectedImage != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: Image.file(_selectedImage!, fit: BoxFit.cover),
-                      )
-                    : _existingImageUrl != null
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          GestureDetector(
+            onTap: _showImagePicker,
+            child: Stack(
+              children: [
+                AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      color: const Color(0xFFF0F1FF),
+                      border: Border.all(
+                        color: _accent.withOpacity(0.3),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: _selectedImage != null
                         ? ClipRRect(
-                            borderRadius: BorderRadius.circular(16),
-                            child: Image.network(_existingImageUrl!, fit: BoxFit.cover),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Image.file(_selectedImage!, fit: BoxFit.cover),
                           )
-                        : Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(Icons.camera_alt,
-                                size: 48, color: AppColors.textSecondary),
-                            SizedBox(height: 12),
-                            Text(
-                              'Tap to add content image',
-                              style: TextStyle(
-                                  fontSize: 14, color: AppColors.textSecondary),
-                            ),
-                          ],
+                        : (_existingImageUrl != null && _existingImageUrl!.isNotEmpty)
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: Image.network(
+                                  _existingImageUrl!,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => _buildPlaceholder(),
+                                ),
+                              )
+                            : _buildPlaceholder(),
+                ),
+                ),
+                if (_selectedImage != null)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: GestureDetector(
+                      onTap: _removeImage,
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: const BoxDecoration(
+                          color: Colors.black87,
+                          shape: BoxShape.circle,
                         ),
+                        child: const Icon(Icons.close,
+                            color: Colors.white, size: 16),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          if (_selectedImage != null ||
+    (_existingImageUrl != null && _existingImageUrl!.isNotEmpty)) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _showImagePicker,
+                icon: const Icon(Icons.swap_horiz, size: 18),
+                label: const Text('Change Image'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _accent,
+                  side: BorderSide(color: _accent.withOpacity(0.4)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
-            if (_selectedImage != null)
-              Positioned(
-                top: 8,
-                right: 8,
-                child: GestureDetector(
-                  onTap: _removeImage,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: const BoxDecoration(
-                      color: AppColors.textPrimary,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.close,
-                        color: Colors.white, size: 18),
-                  ),
-                ),
-              )
           ],
-        ),
+        ],
       ),
     );
   }
-
-  Widget _buildTitleSection() {
-  return Container(
-    decoration: _cardDecoration(),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Content Title",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _titleController,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              hintText: "Enter content title",
-              filled: true,
-              fillColor: AppColors.bgLight,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            onChanged: (value) {
-              setState(() {
-                _contentTitle = value.trim();
-              });
-            },
-          ),
-        ],
-      ),
-    ),
-  );
-}
 
   Widget _buildRoomSection() {
     if (_isLoadingRooms) {
@@ -720,19 +570,14 @@ class _CameraContentPageState extends State<CameraContentPage> {
             ),
             const SizedBox(height: 16),
 
-            GridView.builder(
+            GridView.count(
+              crossAxisCount: 3,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _rooms.length,
-              gridDelegate:
-                  const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 3,
-              ),
-              itemBuilder: (context, index) {
-                final room = _rooms[index];
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 2.4,
+              children: _rooms.map((room) {
                 final roomLabel = "Room ${room["roomNumber"]}";
                 final selected = _selectedRooms.contains(roomLabel);
 
@@ -747,25 +592,39 @@ class _CameraContentPageState extends State<CameraContentPage> {
                     });
                   },
                   child: Container(
-                    alignment: Alignment.center,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                     decoration: BoxDecoration(
-                      color: selected
-                          ? AppColors.primary
-                          : AppColors.bgLight,
-                      borderRadius: BorderRadius.circular(12),
+                      color: selected ? _accent : const Color(0xFFF0F1FF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: selected ? _accent : _accent.withOpacity(0.2),
+                      ),
                     ),
-                    child: Text(
-                      roomLabel,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color:
-                            selected ? Colors.white : AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
+                    child: Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (selected)
+                            const Icon(Icons.check_circle,
+                                size: 16, color: Colors.white),
+                          if (selected) const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              roomLabel,
+                              style: TextStyle(
+                                color: selected ? Colors.white : _accent,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 );
-              },
+              }).toList(),
             ),
           ],
         ),
@@ -773,193 +632,47 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
-  Widget _buildDateSection(String title, DateTime? date,
-      VoidCallback onTap, bool isStart) {
-    return Container(
-      decoration: _cardDecoration(),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 12),
-            GestureDetector(
-              onTap: onTap,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                decoration: BoxDecoration(
-                  color: AppColors.bgLight,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.calendar_today,
-                        size: 18, color: AppColors.textSecondary),
-                    const SizedBox(width: 12),
-                    Text(
-                      (date != null && date.year > 0)
-                          ? "${date.day}/${date.month}/${date.year}"
-                          : "Select Date",
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: AppColors.textPrimary),
-                    )
-                  ],
-                ),
+  Widget _buildActionButtons(bool enabled) {
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: enabled ? _accent : Colors.grey.shade300,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
             ),
-            const SizedBox(height: 16),
-            _buildMinimalTimeSelector(
-              hour: isStart ? _startHour : _endHour,
-              minute: isStart ? _startMinute : _endMinute,
-              onHourChanged: (v) =>
-                  setState(() => isStart ? _startHour = v : _endHour = v),
-              onMinuteChanged: (v) =>
-                  setState(() => isStart ? _startMinute = v : _endMinute = v),
-            )
-          ],
+            onPressed: (enabled && !_isUploading) ? _uploadContent : null,
+            child: _isUploading
+                ? const SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : Text(
+                    _isEditMode ? "Update Photo" : "Upload Photo",
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+          ),
         ),
-      ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: _resetForm,
+            child: const Text("Cancel"),
+          ),
+        ),
+      ],
     );
   }
-
-  Widget _buildTimerSection() {
-    return Container(
-      decoration: _cardDecoration(),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "Display Timer",
-              style: TextStyle(
-                  fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              "Enter how many seconds the content should be displayed",
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _timerController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-              ],
-              decoration: InputDecoration(
-                hintText: "Enter seconds",
-                suffixText: "sec",
-                filled: true,
-                fillColor: AppColors.bgLight,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              onChanged: (value) {
-                if (value.isNotEmpty) {
-                  final int? parsed = int.tryParse(value);
-                  if (parsed != null &&
-                      parsed >= 1 &&
-                      parsed <= 60) {
-                    setState(() {
-                      _timerSeconds = parsed;
-                    });
-                  }
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              "Allowed range: 1–60 seconds",
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
- Widget _buildActionButtons(bool enabled) {
-  return Row(
-    children: [
-      // PRIMARY BUTTON
-      Expanded(
-        child: ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor:
-                enabled ? AppColors.primary : Colors.grey.shade400,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-          ),
-          onPressed: (enabled && !_isUploading) ? _uploadContent : null,
-
-          child: _isUploading
-            ? const SizedBox(
-                height: 22,
-                width: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : Text(
-                _isEditMode ? "Update Content" : "Add Content",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-        ),
-      ),
-
-      const SizedBox(width: 16),
-
-      // SECONDARY BUTTON
-      Expanded(
-        child: OutlinedButton(
-          style: OutlinedButton.styleFrom(
-            side: const BorderSide(color: AppColors.primary, width: 1.2),
-            foregroundColor: AppColors.primary,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-          ),
-          onPressed: () {
-            setState(() {
-              _selectedImage = null;
-              _selectedRooms.clear();
-              _timerSeconds = 5;
-              _timerController.text = "5";
-              _initializeDates();
-            });
-          },
-          child: const Text(
-            "Cancel",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ),
-    ],
-  );
-}
-
   BoxDecoration _cardDecoration() {
     return BoxDecoration(
       color: Colors.white,
@@ -974,35 +687,29 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
-  Widget _buildMinimalTimeSelector({
-    required int hour,
-    required int minute,
-    required ValueChanged<int> onHourChanged,
-    required ValueChanged<int> onMinuteChanged,
-  }) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+  Widget _buildPlaceholder() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        NumberPicker(
-          value: hour,
-          minValue: 0,
-          maxValue: 23,
-          itemHeight: 40,
-          selectedTextStyle: const TextStyle(
-              fontSize: 24, fontWeight: FontWeight.bold),
-          onChanged: onHourChanged,
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _accent.withOpacity(0.12),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.person_outline,
+            size: 32,
+            color: _accent,
+          ),
         ),
-        const Text(":",
-            style:
-                TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-        NumberPicker(
-          value: minute,
-          minValue: 0,
-          maxValue: 59,
-          itemHeight: 40,
-          selectedTextStyle: const TextStyle(
-              fontSize: 24, fontWeight: FontWeight.bold),
-          onChanged: onMinuteChanged,
+        const SizedBox(height: 12),
+        const Text(
+          'No image available',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ],
     );

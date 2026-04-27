@@ -98,11 +98,20 @@ class RoomsService {
 
       // Parse devices JSON string safely
       List devices = [];
-      try {
-        if (m["devices"] != null && m["devices"].toString().isNotEmpty) {
-          devices = jsonDecode(m["devices"]);
+
+      final rawDevices = m["devices"];
+
+      if (rawDevices != null && rawDevices.toString().isNotEmpty) {
+        try {
+          if (rawDevices is String) {
+            devices = jsonDecode(rawDevices);
+          } else if (rawDevices is List) {
+            devices = rawDevices;
+          }
+        } catch (e) {
+          dev.log("Device decode error: $e");
         }
-      } catch (_) {}
+      }
 
       return {
         "roomId": m["room_id"],
@@ -139,14 +148,10 @@ class RoomsService {
         return Colors.blueGrey;
     }
   }
-
-  /// UPLOAD IMAGE CONTENT TO DEVICES
-  Future<Map<String, dynamic>> uploadImageContent({
-    required String title,
+  
+  /// UPLOAD / UPDATE GUEST PHOTO TO DEVICES 
+  Future<Map<String, dynamic>> updateGuestPhoto({
     required String filePath,
-    required DateTime startTime,
-    DateTime? endTime,
-    required int displayTimer,
     required List<int> deviceIds,
   }) async {
     try {
@@ -167,33 +172,17 @@ class RoomsService {
 
       final payload = {
         "user_id": userId,
-        "enterprise_id": enterpriseId.toString(),
-        "stage": "dev",
-
-        /// REQUIRED CONSTANT
-        "type_name": "IMAGE",
-
-        "title": title,
+        "enterprise_id": enterpriseId,
+        "device_ids": deviceIds, // ✅ CORRECT (ARRAY)
         "file_path": filePath,
-
-        "start_time": startTime.toIso8601String(),
-
-        // If null → backend accepts zero date
-        "end_time": endTime != null
-          ? endTime.toIso8601String()
-          : "0000-00-00 00:00:00",
-
-        "display_timer": displayTimer,
-
-        /// MULTIPLE DEVICE IDS
-        "device_ids": deviceIds,
+        "stage": "dev",
       };
 
-      dev.log("📤 Uploading Image Content");
+      dev.log("📤 Updating Guest Photo");
       dev.log("Payload: $payload");
 
       final response = await _dio.post(
-        ApiConstants.uploadImage,
+        ApiConstants.updateGuestPhoto,
         data: payload,
       );
 
@@ -219,103 +208,15 @@ class RoomsService {
 
       return {
         "success": true,
-        "message": message,
+        "message": message ?? "Photo updated successfully",
       };
     } catch (e) {
-      dev.log("❌ ERROR (uploadImageContent): $e");
+      dev.log("❌ ERROR (updateGuestPhoto): $e");
       return {"success": false, "message": "Network error"};
     }
   }
 
-  /// UPDATE EXISTING CONTENT
-  Future<Map<String, dynamic>> updateContent({
-    required int contentId,
-    required String title,
-    required String filePath,
-    required DateTime startTime,
-    DateTime? endTime,
-    required int displayTimer,
-    required List<int> deviceIds,
-  }) async {
-    try {
-      final int? userId = await UserSessionHelper.getUserId();
-      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
-
-      if (userId == null || userId == 0) {
-        return {"success": false, "message": "User ID missing"};
-      }
-
-      if (enterpriseId == null || enterpriseId == 0) {
-        return {"success": false, "message": "Enterprise ID missing"};
-      }
-
-      if (deviceIds.isEmpty) {
-        return {"success": false, "message": "No devices selected"};
-      }
-
-      final payload = {
-        "user_id": userId,
-        "content_id": contentId,
-        "enterprise_id": enterpriseId.toString(),
-        "stage": "dev",
-
-        /// REQUIRED
-        "type_name": "IMAGE",
-
-        "title": title,
-        "file_path": filePath,
-
-        "start_time": startTime.toIso8601String(),
-
-        "end_time": endTime != null
-            ? endTime.toIso8601String()
-            : "0000-00-00 00:00:00",
-
-        "display_timer": displayTimer,
-
-        /// MULTIPLE DEVICE IDS
-        "device_ids": deviceIds,
-      };
-
-      dev.log("📤 Updating Content");
-      dev.log("Payload: $payload");
-
-      final response = await _dio.post(
-        ApiConstants.updateContent,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error"};
-      }
-
-      final resultList = response.data["RESULT"] as List?;
-
-      if (resultList == null || resultList.isEmpty) {
-        return {"success": false, "message": "Invalid server response"};
-      }
-
-      final status = resultList[0]["status"];
-      final message = resultList[0]["message"];
-
-      if (status != "S") {
-        return {
-          "success": false,
-          "message": message ?? "Update failed",
-        };
-      }
-
-      return {
-        "success": true,
-        "message": message ?? "Content updated",
-      };
-    } catch (e) {
-      dev.log("❌ ERROR (updateContent): $e");
-      return {"success": false, "message": "Network error"};
-    }
-  }
-
-  /// GET UPLOADED CONTENTS
+  /// GET GUEST CONTENTS
   Future<Map<String, dynamic>> getContents() async {
     try {
       final int? userId = await UserSessionHelper.getUserId();
@@ -326,12 +227,12 @@ class RoomsService {
       }
 
       final payload = {
-        "user_id": userId.toString(),
+        "user_id": userId, // ✅ FIX: no toString
         "enterprise_id": enterpriseId.toString(),
         "stage": "dev",
       };
 
-      dev.log("📤 Fetching Contents (Mobile)");
+      dev.log("📤 Fetching Guest Contents");
       dev.log("Payload: $payload");
 
       final response = await _dio.post(
@@ -357,13 +258,13 @@ class RoomsService {
       final resultList = response.data["RESULT"] as List?;
 
       if (resultList == null) {
-        return {"success": false, "message": "No contents returned"};
+        return {"success": false, "message": "No data returned"};
       }
 
       final contents = resultList.map<Map<String, dynamic>>((item) {
         final m = Map<String, dynamic>.from(item);
 
-        // 🔹 decode rooms JSON string safely
+        /// 🔹 decode rooms JSON string safely
         List rooms = [];
         try {
           if (m["rooms"] != null && m["rooms"].toString().isNotEmpty) {
@@ -372,22 +273,18 @@ class RoomsService {
         } catch (_) {}
 
         return {
-          "id": m["content_id"].toString(),
-          "title": m["title"] ?? "",
-          "filePath": m["file_path"] ?? "",
-          "type": m["content_type_name"] ?? "",
-          "status": m["status"] ?? "",
-          "startTime": m["start_time"],
-          "endTime": m["end_time"],
-          "displayTimer": m["display_timer"] ?? 0,
+          "guestId": m["guest_id"],
+          "fullName": m["full_name"] ?? "",
+          "guestPhoto": m["guest_photo"] ?? "",
 
-          /// NEW: rooms info
+          /// rooms
           "rooms": rooms,
           "roomNumbers":
               rooms.map((r) => r["room_number"]).join(", "),
-
-          /// derived count
           "roomCount": rooms.length,
+
+          /// optional raw
+          "raw": m,
         };
       }).toList();
 

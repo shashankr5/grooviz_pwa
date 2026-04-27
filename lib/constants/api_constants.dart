@@ -31,12 +31,12 @@ class ApiConstants {
   static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile";
   static const String orderSummary = "$baseUrl/ScreenSync_get_order_summary_mobile";
   // Camera Page
-  static const String getRooms = "$baseUrl/ScreenSync_get_rooms_web";
-  static const String uploadImage = "$baseUrl/ScreenSync_add_image_from_mobile";
-  static const String getContents = "$baseUrl/ScreenSync_get_contents_mobile";
-  static const String updateContent = "$baseUrl/ScreenSync_update_image_from_mobile";
+  static const String getRooms = "$baseUrl/ScreenSync_get_rooms_for_mobile";
+  static const String updateGuestPhoto = "$baseUrl/ScreenSync_update_guest_photo_from_mobile";
+  static const String getContents = "$baseUrl/ScreenSync_get_guest_images_mobile";
+  
   static const String deleteContent = "$baseUrl/ScreenSync_delete_content_web";
-  //"$baseUrl/ScreenSync_update_guest_photo_from_mobile";
+  
   // Checkout
   static const String checkoutReport = "$baseUrl/ScreenSync_get_guest_checkout_report_mobile";
 }

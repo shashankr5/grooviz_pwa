@@ -843,9 +843,7 @@ class _HomePageState extends State<HomePage>
           ),
         ],
       ),
-      actions: [
-        _buildProfileIcon(),
-      ],        
+      actions: _buildAppBarActions(),       
     );
   }
 
@@ -867,37 +865,7 @@ class _HomePageState extends State<HomePage>
           ),
         ],
       ),
-      actions: [
-      if (isFrontOfficeUser)
-        Padding(
-          padding: const EdgeInsets.only(right: 12),
-          child: GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const GuestCheckoutPage(),
-                ),
-              );
-            },
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primaryLight,
-                shape: BoxShape.circle,
-              ),
-              child: Image.asset(
-                "assets/icons/checkout_report.png",
-                width: 22,
-                height: 22,
-                color: Colors.black,
-              ),
-            ),
-          ),
-        ),
-        _buildProfileIcon(),
-      ],
-
+      actions: _buildAppBarActions(),
       // 👇 TAB BAR ADDED HERE
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(60),
@@ -972,6 +940,42 @@ class _HomePageState extends State<HomePage>
                 fontWeight: FontWeight.bold,
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildAppBarActions() {
+    return [
+      if (isFrontOfficeUser) _buildCheckoutButton(),
+      _buildProfileIcon(),
+    ];
+  }
+
+  Widget _buildCheckoutButton() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: GestureDetector(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const GuestCheckoutPage(),
+            ),
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.primaryLight,
+            shape: BoxShape.circle,
+          ),
+          child: Image.asset(
+            "assets/icons/checkout_report.png",
+            width: 22,
+            height: 22,
+            color: Colors.black,
           ),
         ),
       ),
