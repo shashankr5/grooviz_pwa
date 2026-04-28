@@ -99,8 +99,14 @@ class _CameraContentPageState extends State<CameraContentPage> {
     if (result["success"]) {
       final rooms = result["rooms"] as List;
 
+      // ✅ FILTER ONLY OCCUPIED ROOMS
+      final occupiedRooms = rooms.where((room) {
+        final status = (room["status"] ?? "").toString().toLowerCase();
+        return status == "occupied";
+      }).toList();
+
       setState(() {
-        _rooms = List<Map<String, dynamic>>.from(rooms);
+        _rooms = List<Map<String, dynamic>>.from(occupiedRooms);
         _isLoadingRooms = false;
       });
     } else {

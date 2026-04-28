@@ -22,6 +22,7 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
 
   String name = "";
+  String role = "";
   String designation = "";
   String email = "";
   String phone = "";
@@ -95,6 +96,7 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() {
       userId = profile["user_id"] ?? 0;
       name = profile["name"] ?? "";
+      role = profile["role"] ?? "";
       designation = profile["designation"] ?? "";
       email = profile["email"] ?? "";
       phone = profile["phone_number"] ?? "";
@@ -177,6 +179,108 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Widget _infoRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.08),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: AppColors.primary, size: 18),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  )),
+              const SizedBox(height: 2),
+              Text(
+                value.isNotEmpty ? value : "—",
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _departmentChip(String dept) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              dept,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+                fontSize: 13,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dotGrid() {
+    const int cols = 4;
+    const int rows = 4;
+    const double spacing = 6.0;
+    const double dotSize = 3.5;
+
+    return SizedBox(
+      width: cols * (dotSize + spacing),
+      height: rows * (dotSize + spacing),
+      child: Column(
+        children: List.generate(rows, (r) {
+          return Row(
+            children: List.generate(cols, (c) {
+              return Container(
+                width: dotSize,
+                height: dotSize,
+                margin: const EdgeInsets.all(spacing / 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.18),
+                  shape: BoxShape.circle,
+                ),
+              );
+            }),
+          );
+        }),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -209,30 +313,45 @@ class _ProfilePageState extends State<ProfilePage> {
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(20),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.05),
-                    blurRadius: 6,
-                    offset: const Offset(0, 3),
-                  )
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
                 ],
               ),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 30,
-                        backgroundColor: AppColors.primary,
-                        child: Text(
-                          name.isNotEmpty
-                              ? name.substring(0, 1).toUpperCase()
-                              : "?",
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
+                  // ── Avatar + Name ──
+                  Stack(
+                  children: [
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: _dotGrid(),
+                    ),
+                    Row(
+                      children: [
+                      Container(
+                        width: 64,
+                        height: 64,
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: Text(
+                            name.isNotEmpty
+                                ? name.substring(0, 1).toUpperCase()
+                                : "?",
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ),
@@ -244,8 +363,9 @@ class _ProfilePageState extends State<ProfilePage> {
                             Text(
                               name,
                               style: const TextStyle(
-                                fontSize: 18,
+                                fontSize: 20,
                                 fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary,
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -256,70 +376,77 @@ class _ProfilePageState extends State<ProfilePage> {
                                 color: AppColors.textSecondary,
                                 fontSize: 14,
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
                           ],
                         ),
+                      ),
+                          ],
                       ),
                     ],
                   ),
-                  const SizedBox(height: 18),
-                  Divider(color: AppColors.textSecondary),
-                  const SizedBox(height: 18),
-
+                  const SizedBox(height: 20),
+                  Divider(color: AppColors.border),
+                  const SizedBox(height: 20),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // LEFT SIDE
                       Expanded(
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text("Email",
-                                style: TextStyle(
-                                    color: AppColors.textSecondary)),
-                            const SizedBox(height: 4),
-                            Text(
-                              email,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 10),
-                            Text("Phone",
-                                style: TextStyle(
-                                  color: AppColors.textSecondary)),
-                            const SizedBox(height: 4),
-                            Text(
-                              phone,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600),
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                            _infoRow(Icons.email_outlined, "Email", email),
+                            const SizedBox(height: 14),
+                            _infoRow(Icons.phone_outlined, "Phone", phone),
+                            if (role.isNotEmpty) ...[
+                              const SizedBox(height: 14),
+                              _infoRow(Icons.badge_outlined, "Role", role),
+                            ],
                           ],
                         ),
                       ),
-                      const SizedBox(width: 30),
+
+                      // DIVIDER
+                      Container(
+                        width: 1,
+                        height: 180,
+                        color: AppColors.border,
+                        margin: const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+
+                      // RIGHT SIDE (Departments)
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text("Departments",
-                                style: TextStyle(
-                                    color: AppColors.textSecondary)),
-                            const SizedBox(height: 4),
-                            ...departments.map(
-                                  (d) => Padding(
-                                padding:
-                                const EdgeInsets.only(bottom: 2),
-                                child: Text(
-                                  d,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.w600),
-                                  overflow: TextOverflow.ellipsis,
+                            Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primary.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(
+                                  Icons.grid_view_rounded,
+                                  color: AppColors.primary,
+                                  size: 16,
                                 ),
                               ),
-                            ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                "Departments",
+                                style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                            const SizedBox(height: 8),
+                            if (departments.isEmpty)
+                              const Text("—")
+                            else
+                              ...departments.map((d) => _departmentChip(d)),
                           ],
                         ),
                       ),

@@ -1,4 +1,4 @@
-//food_orders_page.dart
+// food_orders_page.dart
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -9,11 +9,10 @@ import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
 import '../utils/app_snackbar.dart';
-import '../utils/order_alert_sound.dart';
 import '../utils/app_colors.dart';
+import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
 import '../services/websocket_service.dart';
-
 
 class FoodOrdersPage extends StatefulWidget {
   const FoodOrdersPage({super.key});
@@ -24,6 +23,7 @@ class FoodOrdersPage extends StatefulWidget {
 
 class _FoodOrdersPageState extends State<FoodOrdersPage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+
   final String userRole = 'Food & Beverage';
   late Timer _timer;
   late AnimationController _pulseController;
@@ -36,253 +36,141 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   late AnimationController _blinkController;
   late Animation<double> _blinkAnimation;
 
-  bool rushHourActive = false;
-  int rushExtraMinutesSelected = 0;
-  Timer? _rushTimer;
+  bool rushHourActive           = false;
+  int  rushExtraMinutesSelected = 0;
+  Timer?    _rushTimer;
   DateTime? _rushHourEndsAt;
 
-  DateTime _normalizeDate(DateTime d) =>
-      DateTime(d.year, d.month, d.day);
+  DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  String selectedFilter = 'All';
-  DateTime _currentDay = DateTime.now();
+  String   selectedFilter = 'All';
+  DateTime _currentDay    = DateTime.now();
 
   final FoodOrderService _foodOrderService = FoodOrderService();
-  final HomeService _homeService = HomeService();
+  final HomeService      _homeService      = HomeService();
 
-  //  Prevent duplicate WebSocket events
-  final Set<String> _processedOrders = {};
-
-  bool _isLoading = true;
-  bool _hasError = false;
+  bool    _isLoading = true;
+  bool    _hasError  = false;
   String? _errorMessage;
 
-  Timer? _reloadDebounce;
-  bool _isReloading = false;
-  bool _reloadPending = false;
-  DateTime? _lastReloadTime;
-
   StreamSubscription? _wsSubscription;
-
   StreamSubscription? _orderSubscription;
 
-  // WEBSOCKET 
+  // ====================== WEBSOCKET ======================
   Future<void> _initializeWebSocket() async {
-    final ws = WebSocketService();
-
-    final userId = await UserSessionHelper.getUserId();
+    final ws           = WebSocketService();
+    final userId       = await UserSessionHelper.getUserId();
     final enterpriseId = await UserSessionHelper.getEnterpriseId();
-
     ws.connect(
-      userId: userId?.toString(),
-      enterpriseId: enterpriseId?.toString(),
-    );
-
+        userId: userId?.toString(),
+        enterpriseId: enterpriseId?.toString());
     await _wsSubscription?.cancel();
-
-    _wsSubscription = ws.stream.listen(
-      (event) {
-        if (!mounted) return;
-
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          final type = (event['type'] ?? '').toString().toUpperCase();
-
-          switch (type) {
-            case 'NEW_FOOD_ORDER':
-              _handleSocketNewOrder(event['data'] ?? event);
-              break;
-
-            case 'ORDER_ACCEPTED':
-            case 'ORDER_DELIVERED':
-            case 'ORDER_STATUS_CHANGED':
-            case 'ORDER_STATUS_UPDATED':
-            case 'ORDER_CANCELLED':
-              _handleSocketUpdate(event['data'] ?? event);
-              break;
-          }
-        });
-      },
-
-      // ✅ NEW: handle socket errors
-      onError: (error) {
-        print('WebSocket error: $error');
-        _scheduleReload(); // fallback sync
-      },
-
-      // ✅ NEW: auto reconnect when socket closes
-      onDone: () {
-        print('WebSocket closed. Reconnecting...');
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) {
-            _initializeWebSocket();
-          }
-        });
-      },
-    );
+    _wsSubscription = ws.stream.listen((event) {
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final type =
+            (event['type'] ?? '').toString().toUpperCase();
+        switch (type) {
+          case 'NEW_FOOD_ORDER':
+            _handleSocketNewOrder(event['data'] ?? event);
+            break;
+          case 'ORDER_ACCEPTED':
+          case 'ORDER_DELIVERED':
+          case 'ORDER_STATUS_CHANGED':
+          case 'ORDER_STATUS_UPDATED':
+          case 'ORDER_CANCELLED':
+            _handleSocketUpdate(event['data'] ?? event);
+            break;
+        }
+      });
+    });
   }
 
   void _handleSocketNewOrder(dynamic data) {
     if (data == null) return;
-
     try {
       final newOrders = _groupApiOrders([data]);
       if (newOrders.isEmpty) return;
-
       final newOrder = newOrders.first;
-
-      // prevent duplicates
       if (foodOrders.any((o) => o['orderNo'] == newOrder['orderNo'])) return;
-
       _addNewOrder(newOrder);
-
-      // 🔥 NEW: each order increments alert count
       OrderAlertService.start();
-
     } catch (e) {
-      print('WS new order error: $e');
-      _scheduleReload(); // fallback
+      _loadFoodOrders();
     }
   }
 
   void _handleSocketUpdate(dynamic data) {
-    final orderNo =
-        data['order_number']?.toString() ?? data['orderNo']?.toString();
-
+    final orderNo = data['order_number']?.toString() ??
+        data['orderNo']?.toString();
     if (orderNo == null || orderNo.isEmpty) return;
-
     final newStatus =
         (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
-
-    // ===== DELIVERED (terminal state) =====
     if (newStatus == 'DELIVERED') {
       OrderAlertService.stop();
-
       final index =
           foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
-
       if (index != -1) {
         setState(() {
           final order = foodOrders.removeAt(index);
-          order['status'] = FoodOrderStatus.delivered.label;
-          order['raw']['order_status'] = 'DELIVERED';
+          order['status']                  = FoodOrderStatus.delivered.label;
+          order['raw']['order_status']     = 'DELIVERED';
           deliveredOrders.insert(0, order);
         });
       } else {
-        _scheduleReload(); // fallback
+        _loadFoodOrders();
       }
       return;
     }
-
     final index =
         foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
-
-    if (index == -1) {
-      _scheduleReload(); // fallback sync
-      return;
-    }
-
-    // ===== ACCEPTED =====
+    if (index == -1) { _loadFoodOrders(); return; }
     if (newStatus == 'ACCEPTED') {
       setState(() {
-        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
+        foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
         foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
-        foodOrders[index]['acceptedAt'] = DateTime.now();
+        foodOrders[index]['acceptedAt']          = DateTime.now();
       });
-
-      // 🔥 decrement alert count (important fix)
       OrderAlertService.stopOne();
       return;
     }
-
-    // ===== CANCELLED =====
     if (newStatus == 'CANCELLED') {
       setState(() {
         final order = foodOrders.removeAt(index);
-        order['status'] = FoodOrderStatus.cancelled.label;
-        order['cancelReason'] = data['cancel_reason'];
-        order['raw']['order_status'] = 'CANCELLED';
+        order['status']                  = FoodOrderStatus.cancelled.label;
+        order['cancelReason']            = data['cancel_reason'];
+        order['raw']['order_status']     = 'CANCELLED';
         cancelledOrders.insert(0, order);
       });
-
       OrderAlertService.stopOne();
       return;
     }
-
-    // ===== READY / PREPARING =====
     setState(() {
       if (newStatus == 'READY') {
-        foodOrders[index]['status'] = FoodOrderStatus.ready.label;
+        foodOrders[index]['status']              = FoodOrderStatus.ready.label;
         foodOrders[index]['raw']['order_status'] = 'READY';
       } else if (newStatus == 'PREPARING') {
-        foodOrders[index]['status'] = FoodOrderStatus.preparing.label;
+        foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
         foodOrders[index]['raw']['order_status'] = 'PREPARING';
       }
     });
   }
 
-  void _scheduleReload() {
-    _reloadPending = true;
-
-    final now = DateTime.now();
-
-    // ⛑ Force reload if too long since last one
-    if (_lastReloadTime == null ||
-        now.difference(_lastReloadTime!) > const Duration(seconds: 3)) {
-      _reloadNow();
-      return;
-    }
-
-    _reloadDebounce?.cancel();
-
-    _reloadDebounce = Timer(const Duration(milliseconds: 800), () {
-      _reloadNow();
-    });
-  }
-
-  void _reloadNow() async {
-    if (_isReloading) {
-      _reloadPending = true;
-      return;
-    }
-
-    _isReloading = true;
-    _reloadPending = false;
-
-    await _loadFoodOrders();
-
-    _lastReloadTime = DateTime.now();
-
-    _isReloading = false;
-
-    if (_reloadPending) {
-      _scheduleReload();
-    }
-  }
-
+  // ====================== HELPERS ======================
   bool _isValidTransition(String from, String to) {
     if (from == FoodOrderStatus.pending.label &&
         (to == FoodOrderStatus.preparing.label ||
-            to == FoodOrderStatus.cancelled.label)) {
-      return true;
-    }
-
+            to == FoodOrderStatus.cancelled.label)) return true;
     if (from == FoodOrderStatus.preparing.label &&
         (to == FoodOrderStatus.ready.label ||
-            to == FoodOrderStatus.cancelled.label)) {
-      return true;
-    }
-
+            to == FoodOrderStatus.cancelled.label)) return true;
     if (from == FoodOrderStatus.ready.label &&
-        to == FoodOrderStatus.delivered.label) {
-      return true;
-    }
-
+        to == FoodOrderStatus.delivered.label) return true;
     return false;
   }
 
-  String _rawStatus(Map<String, dynamic> order) {
-    return (order["raw"]?["order_status"] ?? "").toString().toUpperCase();
-  }
+  String _rawStatus(Map<String, dynamic> order) =>
+      (order["raw"]?["order_status"] ?? "").toString().toUpperCase();
 
   final List<String> filters = [
     'All',
@@ -290,14 +178,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     FoodOrderStatus.preparing.label,
     FoodOrderStatus.ready.label,
     FoodOrderStatus.delivered.label,
-    FoodOrderStatus.cancelled.label
+    FoodOrderStatus.cancelled.label,
   ];
-  final Map<DateTime, List<Map<String, dynamic>>> orderHistoryByDate = {};
 
-  final List<Map<String, dynamic>> foodOrders = [];
-
+  final List<Map<String, dynamic>> foodOrders      = [];
   final List<Map<String, dynamic>> cancelledOrders = [];
-
   final List<Map<String, dynamic>> deliveredOrders = [];
 
   final List<String> cancelReasons = [
@@ -308,159 +193,100 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     'Other',
   ];
 
-  int _rushExtraByItems(Map<String, dynamic> order) {
-    final int itemCount = (order['items'] as List).length;
+  int _rushExtraMinutes() => 10;
 
-    if (itemCount == 1) return 3;
-    if (itemCount == 2) return 5;
-    if (itemCount >= 3) return 7; // you can make this 10 if needed
-
-    return 0;
-  }
-
+  // ====================== DATA LOADING ======================
   Future<void> _loadFoodOrders() async {
-    if (mounted) {
-      setState(() {
-        _isLoading = true;
-        _hasError = false;
-      });
-    }
-
+    if (mounted) setState(() { _isLoading = true; _hasError = false; });
     final result = await _foodOrderService.getFoodOrders();
-
     if (!mounted) return;
-
     if (result["success"] != true) {
       setState(() {
-        _hasError = true;
-        _errorMessage = result["message"] ?? "Failed to load orders";
-        _isLoading = false;
+        _hasError      = true;
+        _errorMessage  = result["message"] ?? "Failed to load orders";
+        _isLoading     = false;
       });
       return;
     }
-
-    final List orders = result["orders"] ?? [];
-
-    // Convert API rows → UI cards
-    final mappedOrders = _groupApiOrders(orders);
-
-    final List<Map<String, dynamic>> activeOrders = [];
-    final List<Map<String, dynamic>> delivered = [];
-    final List<Map<String, dynamic>> cancelled = [];
-
+    final mappedOrders = _groupApiOrders(result["orders"] ?? []);
+    final active    = <Map<String, dynamic>>[];
+    final delivered = <Map<String, dynamic>>[];
+    final cancelled = <Map<String, dynamic>>[];
     for (final o in mappedOrders) {
-      final raw = o["raw"];
       final rawStatus =
-      (raw?["order_status"] ?? "").toString().toUpperCase();
-
-      // 🔐 Always trust backend raw status first
+          (o["raw"]?["order_status"] ?? "").toString().toUpperCase();
       if (rawStatus == "DELIVERED") {
         o["status"] = FoodOrderStatus.delivered.label;
         delivered.add(o);
-        continue;
-      }
-
-      if (rawStatus == "CANCELLED") {
-        o["status"] = FoodOrderStatus.cancelled.label;
-        o["cancelReason"] = raw?["cancel_reason"];
+      } else if (rawStatus == "CANCELLED") {
+        o["status"]       = FoodOrderStatus.cancelled.label;
+        o["cancelReason"] =
+            o["raw"]?["cancel_reason"] ?? o["cancelReason"] ?? "";
         cancelled.add(o);
-        continue;
+      } else {
+        active.add(o);
       }
-      // Otherwise active
-      activeOrders.add(o);
     }
 
+    // Sort all lists: latest first
+    active.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    delivered.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    cancelled.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+
     setState(() {
-      foodOrders
-        ..clear()
-        ..addAll(activeOrders);
-
-      cancelledOrders
-        ..clear()
-        ..addAll(cancelled);
-
+      foodOrders..clear()..addAll(active);
+      cancelledOrders..clear()..addAll(cancelled);
+      deliveredOrders..clear()..addAll(delivered);
       _isLoading = false;
     });
-
-    // ⬇️ load delivered from HomeService
-    await _loadDeliveredOrders();
+    final pendingCount = active
+        .where((o) => o['status'] == FoodOrderStatus.pending.label)
+        .length;
+    OrderAlertService.resetCount(pendingCount);
   }
 
   void _addNewOrder(Map<String, dynamic> order) {
     setState(() {
       if (rushHourActive) {
-        order['etaMinutes'] += rushExtraMinutesSelected;
-        order['extraEta'] = rushExtraMinutesSelected;
-
+        final extra       = _rushExtraMinutes();
+        order['etaMinutes'] = (order['etaMinutes'] ?? 15) + extra;
+        order['extraEta']   = extra;
       }
       foodOrders.insert(0, order);
     });
   }
 
-  Future<void> _loadDeliveredOrders() async {
-    setState(() => _isLoading = true);
-
-    final result = await _homeService.getDeliveredOrdersForRoomService();
-
-    if (!mounted) return;
-
-    if (result["success"] != true) {
-      setState(() => _isLoading = false);
-      return;
-    }
-
-    final List rawDelivered = result["orders"] ?? [];
-    final groupedDelivered = _groupApiOrders(rawDelivered);
-
-    for (final o in groupedDelivered) {
-      o["status"] = FoodOrderStatus.delivered.label;
-    }
-
-    setState(() {
-      deliveredOrders
-        ..clear()
-        ..addAll(groupedDelivered);
-
-      _isLoading = false;
-    });
-  }
-
   List<Map<String, dynamic>> _groupApiOrders(List apiOrders) {
     final Map<String, Map<String, dynamic>> grouped = {};
-
     for (final o in apiOrders) {
-      final orderNo = o["orderNumber"];
-      // extract raw once
-      final raw = o["raw"];
-      // works for normal + delivered
-      final createdTime =
-          raw?["order_time"] ??
-              raw?["delivered_time"] ??
-              "";
+      final orderNo     = o["orderNumber"];
+      final raw         = o["raw"];
+      final createdTime = raw?["order_time"] ?? raw?["delivered_time"] ?? "";
       if (!grouped.containsKey(orderNo)) {
         grouped[orderNo] = {
-          "orderNo": orderNo,
-          "room": o["roomNumber"],
-          "guest": (o["guestName"] ?? "Guest").toString(),
-          "status": o["status"],
-          "items": [],
-          "raw": raw,
-          // ✅ FIXED timestamp
-          "createdAt": _safeParseDate(createdTime),
-          // acceptedAt only for preparing
-          "acceptedAt": o["status"] == FoodOrderStatus.preparing.label
+          "orderNo":      orderNo,
+          "room":         o["roomNumber"],
+          "guest":        (o["guestName"] ?? "Guest").toString(),
+          "status":       o["status"],
+          "items":        [],
+          "raw":          raw,
+          "createdAt":    _safeParseDate(createdTime),
+          "acceptedAt":   o["status"] == FoodOrderStatus.preparing.label
               ? _safeParseDate(createdTime)
               : null,
-          "etaMinutes": 15,
-          "extraEta": 0,
-          "cancelReason": o["cancelReason"],
+          "etaMinutes":   15,
+          "extraEta":     0,
+          "cancelReason": o["cancelReason"] ?? raw?["cancel_reason"] ?? "",
+          // FIX: read is_veg from API
+          "isVeg":        raw?["is_veg"],
         };
       }
-
       grouped[orderNo]!["items"].add({
-        "name": o["foodItem"],
-        "qty": o["quantity"],
+        "name":         o["foodItem"],
+        "qty":          o["quantity"],
         "instructions": o["cookingInstructions"],
+        // FIX: per-item veg flag
+        "isVeg":        o["raw"]?["is_veg"] ?? raw?["is_veg"],
       });
     }
     return grouped.values.toList();
@@ -468,105 +294,72 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   Future<void> _handleFilterChange(String filter) async {
     if (selectedFilter == filter) return;
-
     setState(() => selectedFilter = filter);
-
     if (filter == FoodOrderStatus.delivered.label) {
       await _loadDeliveredOrders();
     } else if (filter == FoodOrderStatus.cancelled.label) {
-      _scheduleReload();
+      await _loadFoodOrders();
     }
   }
 
-  Future<void> _checkAndStopAlertIfNeeded() async {
-    final hasPending = foodOrders.any(
-      (o) => o['status'] == FoodOrderStatus.pending.label,
-    );
-
-    if (!hasPending) {
-      await OrderAlertService.stop();
+  Future<void> _loadDeliveredOrders() async {
+    final result =
+        await _homeService.getDeliveredOrdersForRoomService();
+    if (!mounted) return;
+    if (result["success"] == true) {
+      final grouped = _groupApiOrders(result["orders"] ?? []);
+      for (final o in grouped) o["status"] = FoodOrderStatus.delivered.label;
+      grouped.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+      setState(() => deliveredOrders..clear()..addAll(grouped));
     }
   }
-  
 
+  // ====================== INIT / DISPOSE ======================
   @override
   void initState() {
     super.initState();
-
     _initializeWebSocket();
-
-    _loadFoodOrders(); 
-
+    _loadFoodOrders();
     _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
     _acceptController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 350),
-    );
-
+        vsync: this, duration: const Duration(milliseconds: 350));
     _shakeAnimation = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(
-        parent: _acceptController,
-        curve: Curves.easeOut,
-      ),
-    );
-
+        CurvedAnimation(
+            parent: _acceptController, curve: Curves.easeOut));
     _delayBlinkController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
-
-    _delayBlinkAnimation = Tween<double>(
-      begin: 1.0,
-      end: 0.9,
-    ).animate(
-      CurvedAnimation(
-        parent: _delayBlinkController,
-        curve: Curves.easeInOut,
-      ),
-    );
-
+        vsync: this, duration: const Duration(milliseconds: 800))
+      ..repeat(reverse: true);
+    _delayBlinkAnimation = Tween<double>(begin: 1.0, end: 0.0).animate(
+        CurvedAnimation(
+            parent: _delayBlinkController, curve: Curves.easeInOut));
     _blinkController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-
-    _blinkAnimation = Tween<double>(
-      begin: 1.0,
-      end: 0.2,
-    ).animate(
-      CurvedAnimation(
-        parent: _blinkController,
-        curve: Curves.easeInOut,
-      ),
-    );
-
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _blinkAnimation = Tween<double>(begin: 1.0, end: 0.2).animate(
+        CurvedAnimation(
+            parent: _blinkController, curve: Curves.easeInOut));
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-
       final now = DateTime.now();
       setState(() {
-        // Always rebuild to update timer display
-        if (!_normalizeDate(now).isAtSameMomentAs(_normalizeDate(_currentDay))) {
+        if (!_normalizeDate(now)
+            .isAtSameMomentAs(_normalizeDate(_currentDay))) {
           _currentDay = now;
         }
       });
     });
-
     WidgetsBinding.instance.addObserver(this);
-
     _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
-      if (!mounted) return;
-      _scheduleReload();
-    });  
+      if (mounted) _loadFoodOrders();
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _wsSubscription?.cancel();
     _orderSubscription?.cancel();
     _timer.cancel();
     _rushTimer?.cancel();
@@ -575,15 +368,19 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _acceptController.dispose();
     _blinkController.dispose();
     OrderAlertSound.stop();
-    _wsSubscription?.cancel();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadFoodOrders();
+  }
+
+  // ====================== ETA / TIMING ======================
   int _remainingSeconds(Map<String, dynamic> order) {
     final createdAt = order['createdAt'] as DateTime;
-    int etaMin = order['etaMinutes'] as int;
     return createdAt
-        .add(Duration(minutes: etaMin))
+        .add(Duration(minutes: order['etaMinutes'] as int))
         .difference(DateTime.now())
         .inSeconds;
   }
@@ -591,924 +388,124 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   double _orderProgress(Map<String, dynamic> order) {
     final totalSeconds = (order['etaMinutes'] as int) * 60;
     if (totalSeconds <= 0) return 0;
-
-    final elapsedSeconds =
-        DateTime.now().difference(order['createdAt']).inSeconds;
-
-    return (elapsedSeconds / totalSeconds).clamp(0.0, 1.5);
+    return (DateTime.now()
+                .difference(order['createdAt'])
+                .inSeconds /
+            totalSeconds)
+        .clamp(0.0, 1.5);
   }
 
-
-  /// READY → visible ONLY in Ready filter
-  Future<void> _markReady(Map<String, dynamic> order) async {
-    final raw = order["raw"];
-    if (raw == null) {
-      _showError("Order data missing");
-      return;
+  String _etaText(Map<String, dynamic> order) {
+    final s = order['status'];
+    if (s == FoodOrderStatus.delivered.label ||
+        s == FoodOrderStatus.cancelled.label) return '';
+    if (s == FoodOrderStatus.ready.label) return 'Ready';
+    final sec = _remainingSeconds(order);
+    if (sec >= 0) {
+      return 'READY IN ${(sec ~/ 60).toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
     }
-
-    if (!_isValidTransition(order['status'], FoodOrderStatus.ready.label)) {
-      _showError("Order cannot be marked Ready");
-      return;
-    }
-
-    final previousStatus = order['status'];
-
-    // Optimistic update
-    setState(() {
-      order['status'] = FoodOrderStatus.ready.label;
-      order['readyAt'] = DateTime.now();
-    });
-
-    final result = await _foodOrderService.updateFoodOrderStatus(
-      orderNumber: order["orderNo"],
-      status: FoodOrderStatus.ready.api,
-    );
-
-    if (!mounted) return;
-
-    if (result["success"] != true) {
-      setState(() {
-        order['status'] = FoodOrderStatus.preparing.label;
-        order.remove('readyAt');
-      });
-
-      _showError(result["message"]);
-    } else {
-      // ✅ backend truth
-      final backendStatus = result["data"]?["new_status"];
-      if (backendStatus != null) {
-        order["raw"]["order_status"] = backendStatus;
-      }
-      // Optional: auto move READY orders out of Preparing list
-      _scheduleReload();
-      AppSnackBar.show(context, "Order marked Ready");
-    }
+    final delayMin = (-sec ~/ 60) + 1;
+    return 'DELAYED BY $delayMin MIN';
   }
 
-  Future<void> _handleReadyTap(Map<String, dynamic> order) async {
-    final rawStatus = _rawStatus(order);
-
-    if (rawStatus == "DELIVERED" || rawStatus == "CANCELLED") {
-      _showError("This order cannot be updated");
-      _scheduleReload();
-      return;
-    }
-
-    if (!_isValidTransition(order['status'], FoodOrderStatus.ready.label)) {
-      _showError("Order cannot be marked Ready");
-      return;
-    }
-
-    if (order['status'] == FoodOrderStatus.ready.label) return;
-
-    final remaining = _remainingSeconds(order);
-    final isDelayed = remaining < 0;
-
-    // If delayed → ALWAYS confirm
-    if (isDelayed) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Order Delayed'),
-          content: const Text(
-            'Are you sure you want to mark it as Ready?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('NO'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('YES'),
-            ),
-          ],
-        ),
-      );
-
-      if (confirm == true) {
-        _markReady(order);
-      }
-
-      return;
-    }
-
-    // 🟡 If still early (<75%) → confirm
-    if (_orderProgress(order) < 0.75) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Mark order as Ready?'),
-          content: const Text('Is the order fully prepared?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('NO'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('YES'),
-            ),
-          ],
-        ),
-      );
-
-      if (confirm == true) {
-        _markReady(order);
-      }
-
-      return;
-    }
-
-    // 🟢 ≥75% progress → direct
-    _markReady(order);
+  Color _etaColor(Map<String, dynamic> order) {
+    if (order['status'] == FoodOrderStatus.ready.label) return AppColors.success;
+    return _remainingSeconds(order) >= 0 ? AppColors.info : AppColors.error;
   }
 
   String _formattedDateTime(DateTime time) {
-    final day = time.day.toString().padLeft(2, '0');
-    final month = time.month.toString().padLeft(2, '0');
-    final year = time.year;
-
-    final hour = time.hour > 12 ? time.hour - 12 : time.hour;
-    final minute = time.minute.toString().padLeft(2, '0');
-    final period = time.hour >= 12 ? 'PM' : 'AM';
-
-    return '$day/$month/$year • ${hour == 0 ? 12 : hour}:$minute $period';
+    final d   = time.day.toString().padLeft(2, '0');
+    final m   = time.month.toString().padLeft(2, '0');
+    final h   = time.hour > 12 ? time.hour - 12 : time.hour;
+    final min = time.minute.toString().padLeft(2, '0');
+    final p   = time.hour >= 12 ? 'PM' : 'AM';
+    return '$d/$m/${time.year} • ${h == 0 ? 12 : h}:$min $p';
   }
 
   DateTime _safeParseDate(String s) {
     try {
-      return DateTime.parse(s.replaceFirst(' ', 'T'));
+      return DateTime.parse(s.replaceFirst(' ', 'T')).toLocal();
     } catch (_) {
       return DateTime.now();
     }
   }
 
-  String _etaText(Map<String, dynamic> order) {
-    final status = order['status'];
-
-    // No ETA or delay text for Delivered or Cancelled
-    if (status == FoodOrderStatus.delivered.label ||
-        status == FoodOrderStatus.cancelled.label) {
-      return '';
-    }
-
-    if (status == FoodOrderStatus.ready.label) return 'ORDER READY';
-
-    final sec = _remainingSeconds(order);
-    if (sec >= 0) {
-      final m = sec ~/ 60;
-      final s = sec % 60;
-      return 'READY IN ${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-    }
-
-    return 'DELAYED BY ${(-sec ~/ 60) + 1} MIN';
-  }
-
-
-  Color _etaColor(Map<String, dynamic> order) {
-    if (order['status'] == FoodOrderStatus.ready.label) return Colors.green;
-    final sec = _remainingSeconds(order);
-    return sec >= 0 ? AppColors.accent : AppColors.error;
-  }
-
   String _rushTimeLeftText() {
     if (_rushHourEndsAt == null) return '';
-
     final diff = _rushHourEndsAt!.difference(DateTime.now());
     if (diff.isNegative) return '0s';
+    final s  = diff.inSeconds;
+    final h  = s ~/ 3600;
+    final mm = (s % 3600) ~/ 60;
+    final ss = s % 60;
+    if (h > 0) return '${h}h ${mm}m:${ss.toString().padLeft(2, '0')}';
+    if (mm > 0) return '${mm}m:${ss.toString().padLeft(2, '0')}';
+    return '${ss}s';
+  }
 
-    final totalSeconds = diff.inSeconds;
-    final hours = totalSeconds ~/ 3600;
-    final minutes = (totalSeconds % 3600) ~/ 60;
-    final seconds = totalSeconds % 60;
+  bool _isDelayedOrder(Map<String, dynamic> order) {
+    final s = order['status'] as String;
+    return (s == FoodOrderStatus.pending.label ||
+            s == FoodOrderStatus.preparing.label) &&
+        _remainingSeconds(order) < 0;
+  }
 
-    // 1+ hours → "3h 45m:00"
-    if (hours > 0) {
-      return '${hours}h ${minutes}m:${seconds.toString().padLeft(2, '0')}';
+  // ====================== MARK READY ======================
+  Future<void> _markReady(Map<String, dynamic> order) async {
+    if (order["raw"] == null) { _showError(null); return; }
+    if (!_isValidTransition(
+        order['status'], FoodOrderStatus.ready.label)) {
+      _showError(null);
+      return;
     }
-
-    // Under 1 hour → "45m:12"
-    if (minutes > 0) {
-      return '${minutes}m:${seconds.toString().padLeft(2, '0')}';
-    }
-
-    // Last minute → "30s"
-    return '${seconds}s';
-  }
-
-  /// CORE SORTING + FILTERING LOGIC
-  List<Map<String, dynamic>> get _filteredOrders {
-    final pending = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.pending.label)
-        .toList()
-      ..sort((a, b) =>
-          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-
-    final preparing = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.preparing.label)
-        .toList()
-      ..sort((a, b) =>
-          ((b['acceptedAt'] ?? b['createdAt']) as DateTime)
-              .compareTo((a['acceptedAt'] ?? a['createdAt']) as DateTime));
-
-    final ready = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.ready.label)
-        .toList()
-      ..sort((a, b) =>
-          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-
-    final delivered = [...deliveredOrders];
-
-    if (selectedFilter == FoodOrderStatus.pending.label) return pending;
-    if (selectedFilter == FoodOrderStatus.preparing.label) return preparing;
-    if (selectedFilter == FoodOrderStatus.ready.label) return ready;
-    if (selectedFilter == FoodOrderStatus.delivered.label) return delivered;
-    if (selectedFilter == FoodOrderStatus.cancelled.label)
-      return [...cancelledOrders];
-
-    // ALL
-    return [...pending, ...preparing];
-  }
-
-  bool _isVeg(String name) => name.toLowerCase().contains('veg');
-
-  Widget _fssaiIcon(bool isVeg) {
-    final color = isVeg ? Colors.green : Colors.brown;
-    return Container(
-      width: 14,
-      height: 14,
-      decoration:
-      BoxDecoration(border: Border.all(color: color, width: 1.5)),
-      child: Center(
-        child: Container(
-          width: 6,
-          height: 6,
-          decoration:
-          BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRushHourBanner() {
-  return Container(
-    width: double.infinity,
-    margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-    decoration: BoxDecoration(
-      color: rushHourActive
-          ? AppColors.error.withOpacity(0.08)
-          : AppColors.primaryLight,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(
-        color: rushHourActive
-            ? AppColors.error.withOpacity(0.3)
-            : AppColors.border,
-      ),
-    ),
-    child: Row(
-      children: [
-        Icon(
-          Icons.local_fire_department,
-          size: 18,
-          color: rushHourActive
-              ? AppColors.error
-              : AppColors.textSecondary,
-        ),
-        const SizedBox(width: 8),
-
-        Expanded(
-          child: Text(
-            rushHourActive
-                ? 'Rush Hour ON • ${_rushTimeLeftText()} left'
-                : 'Rush Hour OFF',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: rushHourActive
-                  ? AppColors.error
-                  : AppColors.textSecondary,
-            ),
-          ),
-        ),
-
-        if (rushHourActive)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.error,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Text(
-              "ACTIVE",
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-      ],
-    ),
-  );
-}
-
-  void _deactivateRushHour() {
     setState(() {
-      rushHourActive = false;
-      rushExtraMinutesSelected = 0;
-      _rushHourEndsAt = null;
+      order['status']  = FoodOrderStatus.ready.label;
+      order['readyAt'] = DateTime.now();
     });
-    _rushTimer?.cancel();
-  }
-
-  String _formatDay(DateTime d) {
-    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    return '${days[d.weekday % 7]} • ${d.day}/${d.month}';
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _scheduleReload();
+    final result = await _foodOrderService.updateFoodOrderStatus(
+        orderNumber: order["orderNo"],
+        status: FoodOrderStatus.ready.api);
+    if (!mounted) return;
+    if (result["success"] != true) {
+      setState(() {
+        order['status'] = FoodOrderStatus.preparing.label;
+        order.remove('readyAt');
+      });
+      _showError(result["message"]);
+    } else {
+      final b = result["data"]?["new_status"];
+      if (b != null) order["raw"]["order_status"] = b;
+      await _loadFoodOrders();
+      AppSnackBar.show(context, "Order marked Ready");
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bgLight,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 1,
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Food Orders',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: AppColors.textPrimary,
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.bar_chart, color: AppColors.textPrimary),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => OrderHistoryPage()),
-              );
-            },
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.local_fire_department,
-              color: rushHourActive ? Colors.red : Colors.grey,
-            ),
-            onPressed: () {
-              if (rushHourActive) {
-                _deactivateRushHour();
-              } else {
-                _showRushHourOptions();
-              }
-            },
-          ),
-        ],
-      ),      
-      body: Column(
-        children: [
-          _buildRushHourBanner(),
-
-          const SizedBox(height: 8),
-          
-          SizedBox(
-            height: 56,
-            child: ListView.separated(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              scrollDirection: Axis.horizontal,
-              itemCount: filters.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (_, i) {
-                final f = filters[i];
-                final bool isActive = selectedFilter == f;
-
-                return GestureDetector(
-                  onTap: () => _handleFilterChange(f),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: isActive ? AppColors.primary : Colors.white,
-                      borderRadius: BorderRadius.circular(25),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Text(
-                      f,
-                      style: TextStyle(
-                        color: isActive ? Colors.white : AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Expanded(
-            child: _isLoading
-                ? const Center(
-              child: CircularProgressIndicator(),
-            )
-                : _hasError
-                ? Center(
-              child: Text(
-                _errorMessage ?? "Something went wrong",
-                style: const TextStyle(
-                  color: Colors.red,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            )
-                : RefreshIndicator(
-              onRefresh: _loadFoodOrders,
-              child: ListView.builder(
-                physics: const AlwaysScrollableScrollPhysics(), // IMPORTANT
-                padding: const EdgeInsets.all(16),
-                itemCount: _filteredOrders.length,
-                itemBuilder: (_, i) =>
-                    _buildOrderCard(_filteredOrders[i], i),
-              ),
-            ),
-
-          ),
-        ],
-      ),
-    );
+  // FIX: Ready confirmation as bottom sheet instead of dialog
+  Future<void> _handleReadyTap(Map<String, dynamic> order) async {
+    final rs = _rawStatus(order);
+    if (rs == "DELIVERED" || rs == "CANCELLED") {
+      _showError(null);
+      await _loadFoodOrders();
+      return;
+    }
+    if (!_isValidTransition(
+        order['status'], FoodOrderStatus.ready.label)) {
+      _showError(null);
+      return;
+    }
+    if (order['status'] == FoodOrderStatus.ready.label) return;
+    final rem = _remainingSeconds(order);
+    if (rem < 0 || _orderProgress(order) < 0.75) {
+      final ok = await _showReadyConfirmationSheet(order, rem);
+      if (ok == true) _markReady(order);
+      return;
+    }
+    _markReady(order);
   }
 
-  Widget _buildOrderCard(Map<String, dynamic> order, int index) {
-    final items = order['items'] as List;
-
-    final bool isDelayed =
-        (order['status'] == FoodOrderStatus.pending.label ||
-            order['status'] == FoodOrderStatus.preparing.label) &&
-            _remainingSeconds(order) < 0;
-
-    final instructionsList = items
-    .map((i) => (i['instructions'] ?? "").toString().trim())
-    .where((i) => i.isNotEmpty)
-    .toSet()
-    .toList();
-
-
-    return AnimatedBuilder(
-      animation: Listenable.merge([_delayBlinkController, _acceptController]),
-      builder: (context, child) {
-        final double shakeX =
-        _acceptingIndex == index ? sin(_shakeAnimation.value * pi * 2) * 3 : 0;
-
-        final double glowStrength = isDelayed ? 1 + _delayBlinkController.value : 0;
-
-        return Transform.translate(
-          offset: Offset(shakeX, 0),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: isDelayed
-                ? Border(
-                    left: BorderSide(
-                      color: AppColors.error,
-                      width: 4,
-                    ),
-                  )
-                : null,
-
-              boxShadow: [
-                if (isDelayed)
-                  BoxShadow(
-                    color: AppColors.error.withOpacity(0.20 + 0.05 * glowStrength),
-                    blurRadius: 10,
-                    spreadRadius: 1,
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-              ],
-            ),
-            child: AnimatedScale(
-              scale: isDelayed
-                  ? 1.0 + (_delayBlinkController.value * 0.02) // subtle pulse
-                  : 1.0,
-              duration: const Duration(milliseconds: 300),
-
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: child,
-              ),
-            ),
-          ),
-        );
-      },
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min, // ← very important
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Room ${order["room"]}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        order['guest'],
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      '#${order["orderNo"]}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      _formattedDateTime(order['createdAt']),
-                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Items
-            ...items.map((i) {
-              final instructions =
-                  (i['instructions'] ?? "").toString().trim();
-
-              return Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _fssaiIcon(_isVeg(i['name'])),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            i['name'],
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          '${i['qty']}',
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w500,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              );
-            }),
-
-            const SizedBox(height: 12),
-
-            // ✅ GROUPED COOKING INSTRUCTIONS (like Notes UI but food styled)
-            if (instructionsList.isNotEmpty) ...[
-              const SizedBox(height: 12),
-
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.white, // ✅ white background
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: Colors.blue.withOpacity(0.25), // ✅ light blue border
-                  ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.04),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],                  
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.restaurant_menu,
-                      color: Colors.blue, // ✅ blue icon
-                      size: 18,
-                    ),
-                    const SizedBox(width: 10),
-
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "Cooking Instructions",
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.accent,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-
-                          ...instructionsList.map(
-                            (ins) => Padding(
-                              padding: const EdgeInsets.only(bottom: 2),
-                              child: Text(
-                                ins,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  height: 1.3,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 14), // ✅ spacing before buttons
-            ],
-
-            // Cancel reason block
-            if (order['status'] == FoodOrderStatus.cancelled.label &&
-                order['cancelReason'] != null &&
-                (order['cancelReason'] as String).isNotEmpty) ...[
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.07),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.red.withOpacity(0.25)),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.cancel, color: AppColors.error, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Cancelled Reason',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.red,
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            order['cancelReason'],
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-
-            // Action buttons area
-            if (order['status'] == FoodOrderStatus.pending.label &&
-                userRole == 'Food & Beverage') ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: _actionBar(
-                      text: 'ACCEPT',
-                      color: AppColors.secondary,
-                      onTap: () async {
-                        if (_acceptingIndex != null) return;
-
-                        final rawStatus = _rawStatus(order);
-
-                        if (rawStatus == "DELIVERED" || rawStatus == "CANCELLED") {
-                          _showError("This order cannot be accepted");
-                          _scheduleReload();// sync with backend
-                          return;
-                        }
-
-                        final raw = order["raw"];
-                        if (raw == null) {
-                          _showError("Order data missing");
-                          return;
-                        }
-
-                        HapticFeedback.selectionClick();
-
-                        setState(() {
-                          _acceptingIndex = index;
-                          order["status"] = FoodOrderStatus.preparing.label;
-                          order["acceptedAt"] = DateTime.now();
-
-                          // 🔥 silently increase ETA during rush hour
-                          if (rushHourActive) {
-                            final extra = _rushExtraByItems(order);
-
-                            order['etaMinutes'] = (order['etaMinutes'] ?? 15) + extra;
-                            order['extraEta'] = extra; // optional tracking
-                          }
-                        });
-
-                        final result = await _foodOrderService.updateFoodOrderStatus(
-                          orderNumber: order["orderNo"],
-                          status: FoodOrderStatus.preparing.api,
-                        );
-
-                        if (!mounted) return;
-
-                        if (result["success"] != true) {
-                          setState(() {
-                            order["status"] = FoodOrderStatus.pending.label;
-                            order.remove("acceptedAt");
-                          });
-
-                          _showError(result["message"]);
-                        } else {
-                          // ✅ SYNC RAW STATUS FROM BACKEND
-                          final backendStatus = result["data"]?["new_status"];
-                          if (backendStatus != null) {
-                            order["raw"]["order_status"] = backendStatus;
-                          }                          
-                          // STOP alert sound
-                          //await OrderAlertSound.stop();
-                          await OrderAlertService.stop();
-
-                          AppSnackBar.show(context, "Order accepted");
-                        }
-                        setState(() => _acceptingIndex = null);
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _actionBar(
-                      text: 'CANCEL',
-                      color: Colors.red,
-                      onTap: () => _showCancelReasons(order),
-                    ),
-                  ),
-                ],
-              ),
-            ] else if (order['status'] != FoodOrderStatus.cancelled.label &&
-                order['status'] != FoodOrderStatus.delivered.label) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: _actionBar(
-                      text: _etaText(order),
-                      color: _etaColor(order),
-                      onTap: order['status'] == FoodOrderStatus.preparing.label
-                          ? () => _handleReadyTap(order)
-                          : null,
-                    ),
-                  ),
-                  if (order['status'] == FoodOrderStatus.preparing.label) ...[
-                    const SizedBox(width: 12),
-                    GestureDetector(
-                      onTap: () {
-                        final int currentExtra = order['extraEta'] ?? 0;
-
-                        const int maxExtraMinutes = 14; // 7 taps × 2 mins
-                        const int stepMinutes = 2;
-
-                        if (currentExtra >= maxExtraMinutes) {
-                          _showError("Maximum delay reached");
-                          return;
-                        }
-
-                        setState(() {
-                          order['etaMinutes'] += stepMinutes;
-                          order['extraEta'] += stepMinutes;
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppColors.textPrimary,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(Icons.add, color: Colors.white, size: 20),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showRushHourOptions() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'Rush Hour Duration',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ),
-            _rushOption('30 Minutes', 30),
-            _rushOption('1 Hour', 60),
-            _rushOption('2 Hours', 120),
-            _rushOption('4 Hours', 240),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _rushOption(String label, int minutes) {
-    return ListTile(
-      title: Text(label),
-      onTap: () {
-        Navigator.pop(context);
-        _activateRushHour(minutes);
-      },
-    );
-  }
-
-  void _activateRushHour(int durationMinutes) {
-    setState(() {
-      rushHourActive = true;
-      rushExtraMinutesSelected = 5;
-      _rushHourEndsAt = DateTime.now().add(
-        Duration(minutes: durationMinutes),
-      );
-    });
-
-    _rushTimer?.cancel();
-    _rushTimer = Timer(Duration(minutes: durationMinutes), () {
-      if (mounted) {
-        _deactivateRushHour();
-      }
-    });
-  }
-
-  void _showCancelReasons(Map<String, dynamic> order) {
-    showModalBottomSheet(
+  // FIX: Bottom sheet for ready confirmation
+  Future<bool?> _showReadyConfirmationSheet(Map<String, dynamic> order, int rem) {
+    return showModalBottomSheet<bool>(
       context: context,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
@@ -1516,90 +513,960 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       ),
       builder: (_) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: SizedBox(
-            width: double.infinity,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Cancel Order',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 16),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                const SizedBox(height: 12),
-
-                ...cancelReasons.map(
-                      (reason) => InkWell(
-                    onTap: () async {
-                      Navigator.pop(context);
-
-                      final raw = order["raw"];
-                      if (raw == null) {
-                        _showError("Order data missing");
-                        return;
-                      }
-
-                      final previousStatus = order['status'];
-
-                      // Optimistic UI update
-                      setState(() {
-                        order['status'] = FoodOrderStatus.cancelled.label;
-                        order['cancelReason'] = reason;
-                      });
-
-                      final result =
-                      await _foodOrderService.updateFoodOrderStatus(
-                        orderNumber: order["orderNo"],
-                        status: FoodOrderStatus.cancelled.api,
-                        cancelReason: reason,
-                      );
-
-                      if (!mounted) return;
-
-                      // Rollback if backend fails
-                      if (result["success"] != true) {
-                        setState(() {
-                          order['status'] = previousStatus;
-                          order.remove('cancelReason');
-                        });
-
-                        _showError(result["message"]);
-                        return;
-                      }
-
-                      // ✅ backend truth
-                      final backendStatus = result["data"]?["new_status"];
-                      if (backendStatus != null) {
-                        order["raw"]["order_status"] = backendStatus;
-                      }
-                      // Move to cancelled list
-                      setState(() {
-                        order["raw"]["cancel_reason"] = reason;
-
-                        foodOrders.remove(order);
-                        cancelledOrders.insert(0, order);
-                      });
-
-                      await _checkAndStopAlertIfNeeded();
-
-                      AppSnackBar.show(context, "Order cancelled");
-                    },
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      decoration: const BoxDecoration(
-                        border: Border(
-                          bottom: BorderSide(color: Colors.black12),
-                        ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: rem < 0
+                      ? AppColors.errorLight
+                      : AppColors.warningLight,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  rem < 0
+                      ? Icons.warning_rounded
+                      : Icons.check_circle_outline_rounded,
+                  color: rem < 0 ? AppColors.error : AppColors.warning,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                rem < 0 ? 'Order Delayed' : 'Mark as Ready?',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                rem < 0
+                    ? 'This order is delayed. Are you sure you want to mark it as Ready?'
+                    : 'Is the order fully prepared and ready for delivery?',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: AppColors.textSecondary,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: AppColors.border),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                       ),
-                      child: Text(
-                        reason,
-                        style: const TextStyle(fontSize: 16),
-                      ),
+                      child: const Text('No',
+                          style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w600)),
                     ),
                   ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                      ),
+                      child: const Text('Yes, Mark Ready',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ====================== FILTERED ORDERS ======================
+  List<Map<String, dynamic>> get _filteredOrders {
+    final pending = foodOrders
+        .where((o) => o['status'] == FoodOrderStatus.pending.label)
+        .toList()
+      ..sort((a, b) => (b['createdAt'] as DateTime)
+          .compareTo(a['createdAt'] as DateTime));
+    final preparing = foodOrders
+        .where((o) => o['status'] == FoodOrderStatus.preparing.label)
+        .toList()
+      ..sort((a, b) =>
+          ((b['acceptedAt'] ?? b['createdAt']) as DateTime).compareTo(
+              (a['acceptedAt'] ?? a['createdAt']) as DateTime));
+    final ready = foodOrders
+        .where((o) => o['status'] == FoodOrderStatus.ready.label)
+        .toList()
+      ..sort((a, b) => (b['createdAt'] as DateTime)
+          .compareTo(a['createdAt'] as DateTime));
+    final delivered = [...deliveredOrders]
+      ..sort((a, b) => (b['createdAt'] as DateTime)
+          .compareTo(a['createdAt'] as DateTime));
+    final cancelled = [...cancelledOrders]
+      ..sort((a, b) => (b['createdAt'] as DateTime)
+          .compareTo(a['createdAt'] as DateTime));
+
+    if (selectedFilter == FoodOrderStatus.pending.label)   return pending;
+    if (selectedFilter == FoodOrderStatus.preparing.label) return preparing;
+    if (selectedFilter == FoodOrderStatus.ready.label)     return ready;
+    if (selectedFilter == FoodOrderStatus.delivered.label) return delivered;
+    if (selectedFilter == FoodOrderStatus.cancelled.label) return cancelled;
+
+    return [
+      ...pending,
+      ...preparing,
+      ...ready,
+      ...delivered,
+      ...cancelled,
+    ];
+  }
+
+  // ====================== STATUS HELPERS ======================
+  Color _statusChipColor(String status) {
+    return AppColors.statusColor(status);
+  }
+
+  static const _pending   = 'Pending';
+  static const _preparing = 'Preparing';
+  static const _ready     = 'Ready';
+  static const _delivered = 'Delivered';
+  static const _cancelled = 'Cancelled';
+
+  // FIX: is_veg from API field (1 = veg green, 0 = non-veg red)
+  bool _isVeg(dynamic isVegFlag, String name) {
+    if (isVegFlag != null) {
+      final v = isVegFlag.toString();
+      return v == '1' || v == 'true';
+    }
+    // fallback to name heuristic
+    return name.toLowerCase().contains('veg');
+  }
+
+  Widget _fssaiIcon(bool isVeg) {
+    final c = isVeg ? AppColors.success : AppColors.error;
+    return Container(
+      width: 14,
+      height: 14,
+      decoration: BoxDecoration(
+          border: Border.all(color: c, width: 1.5)),
+      child: Center(
+        child: Container(
+          width: 6,
+          height: 6,
+          decoration:
+              BoxDecoration(color: c, shape: BoxShape.circle),
+        ),
+      ),
+    );
+  }
+
+  void _deactivateRushHour() {
+    setState(() {
+      rushHourActive           = false;
+      rushExtraMinutesSelected = 0;
+      _rushHourEndsAt          = null;
+    });
+    _rushTimer?.cancel();
+  }
+
+  // ====================== COUNTS ======================
+  int get _pendingCount =>
+      foodOrders
+          .where((o) => o['status'] == FoodOrderStatus.pending.label)
+          .length;
+  int get _preparingCount =>
+      foodOrders
+          .where((o) => o['status'] == FoodOrderStatus.preparing.label)
+          .length;
+  int get _readyCount =>
+      foodOrders
+          .where((o) => o['status'] == FoodOrderStatus.ready.label)
+          .length;
+
+  int _countForFilter(String filter) {
+    switch (filter) {
+      case 'All':       return _pendingCount + _preparingCount + _readyCount + deliveredOrders.length + cancelledOrders.length;
+      case _pending:    return _pendingCount;
+      case _preparing:  return _preparingCount;
+      case _ready:      return _readyCount;
+      case _delivered:  return deliveredOrders.length;
+      case _cancelled:  return cancelledOrders.length;
+      default:          return 0;
+    }
+  }
+
+  // ====================== BUILD ======================
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      appBar: _buildAppBar(),
+      body: Column(
+        children: [
+          _buildRushHourBanner(),
+          _buildFilterContainers(),
+
+          // Count label
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                      color: AppColors.primary,
+                      shape: BoxShape.circle),
                 ),
+                const SizedBox(width: 6),
+                Text(
+                  "${_filteredOrders.isNotEmpty ? '${_filteredOrders.length} ' : 'No '}${selectedFilter == 'All' ? 'Total' : selectedFilter} Orders",
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary),
+                ),
+              ],
+            ),
+          ),
+
+          // List
+          Expanded(
+            child: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(
+                        color: AppColors.primary))
+                : _hasError
+                    ? Center(
+                        child: Text(
+                          _errorMessage ?? "Something went wrong",
+                          style: const TextStyle(
+                              color: AppColors.error,
+                              fontWeight: FontWeight.w600),
+                        ),
+                      )
+                    : RefreshIndicator(
+                        color: AppColors.primary,
+                        onRefresh: _loadFoodOrders,
+                        child: _filteredOrders.isEmpty
+                            ? ListView(
+                                physics:
+                                    const AlwaysScrollableScrollPhysics(),
+                                children: const [
+                                  SizedBox(height: 120),
+                                  Center(
+                                    child: Column(children: [
+                                      Icon(
+                                          Icons.room_service_rounded,
+                                          size: 48,
+                                          color: Colors.black12),
+                                      SizedBox(height: 12),
+                                      Text("No orders here",
+                                          style: TextStyle(
+                                              color: AppColors
+                                                  .textDisabled,
+                                              fontSize: 15)),
+                                    ]),
+                                  ),
+                                ],
+                              )
+                            : ListView.builder(
+                                physics:
+                                    const AlwaysScrollableScrollPhysics(),
+                                padding: const EdgeInsets.fromLTRB(
+                                    16, 4, 16, 16),
+                                itemCount: _filteredOrders.length,
+                                itemBuilder: (_, i) => _buildOrderCard(
+                                    _filteredOrders[i], i),
+                              ),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── APP BAR ───────────────────────────────────────────────────
+  AppBar _buildAppBar() {
+    return AppBar(
+      backgroundColor: Colors.white,
+      elevation: 0,
+      surfaceTintColor: Colors.white,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Food Orders",
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
+          Text(
+            "Manage incoming food orders in real-time",
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+          ),
+        ],
+      ),
+      actions: [
+        IconButton(
+          icon: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceAlt,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.bar_chart_rounded,
+                color: AppColors.textPrimary, size: 20),
+          ),
+          onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => OrderHistoryPage())),
+        ),
+        const SizedBox(width: 4),
+      ],
+    );
+  }
+
+  // ── RUSH HOUR BANNER — FIX: more compact ─────────────────────
+  Widget _buildRushHourBanner() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: rushHourActive
+            ? AppColors.error.withOpacity(0.08)
+            : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: rushHourActive
+              ? AppColors.error.withOpacity(0.3)
+              : AppColors.border,
+        ),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: rushHourActive
+                  ? AppColors.error.withOpacity(0.15)
+                  : AppColors.surfaceAlt,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.local_fire_department_rounded,
+              color: rushHourActive ? AppColors.error : Colors.grey,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  rushHourActive ? "Rush Hour ON" : "Rush Hour",
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: rushHourActive
+                        ? AppColors.error
+                        : AppColors.textPrimary,
+                  ),
+                ),
+                if (rushHourActive)
+                  Text(
+                    "+10 min ETA • ${_rushTimeLeftText()} left",
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.error.withOpacity(0.7)),
+                  ),
+              ],
+            ),
+          ),
+          GestureDetector(
+            onTap: () => rushHourActive
+                ? _deactivateRushHour()
+                : _showRushHourOptions(),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 44,
+              height: 24,
+              decoration: BoxDecoration(
+                color: rushHourActive
+                    ? AppColors.error
+                    : Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: AnimatedAlign(
+                duration: const Duration(milliseconds: 200),
+                alignment: rushHourActive
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
+                child: Container(
+                  margin: const EdgeInsets.all(3),
+                  width: 18,
+                  height: 18,
+                  decoration: const BoxDecoration(
+                      color: Colors.white, shape: BoxShape.circle),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── FILTER CONTAINERS ─────────────────────────────────────────
+  Widget _buildFilterContainers() {
+    final filterData = [
+      {'label': 'All',      'color': AppColors.primary,    'icon': Icons.all_inclusive_rounded},
+      {'label': _pending,   'color': AppColors.warning,    'icon': Icons.hourglass_top_rounded},
+      {'label': _preparing, 'color': AppColors.info,       'icon': Icons.restaurant_rounded},
+      {'label': _ready,     'color': AppColors.success,    'icon': Icons.check_circle_rounded},
+      {'label': _delivered, 'color': AppColors.teal,       'icon': Icons.local_shipping_rounded},
+      {'label': _cancelled, 'color': AppColors.error,      'icon': Icons.cancel_rounded},
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 0, 0),
+      child: SizedBox(
+        height: 78,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: filterData.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          padding: const EdgeInsets.only(right: 16),
+          itemBuilder: (_, i) {
+            final f          = filterData[i];
+            final label      = f['label'] as String;
+            final color      = f['color'] as Color;
+            final icon       = f['icon'] as IconData;
+            final isSelected = selectedFilter == label;
+            final count      = _countForFilter(label);
+
+            return GestureDetector(
+              onTap: () => _handleFilterChange(label),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                width: 76,
+                padding: const EdgeInsets.symmetric(
+                    vertical: 10, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: isSelected ? color : Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isSelected ? color : AppColors.border,
+                    width: 1.5,
+                  ),
+                  boxShadow: isSelected
+                      ? [
+                          BoxShadow(
+                              color: color.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 3))
+                        ]
+                      : [
+                          BoxShadow(
+                              color: Colors.black.withOpacity(0.04),
+                              blurRadius: 5,
+                              offset: const Offset(0, 1))
+                        ],
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon,
+                        color:
+                            isSelected ? Colors.white : color,
+                        size: 17),
+                    const SizedBox(height: 3),
+                    Text('$count',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : color,
+                        )),
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected
+                            ? Colors.white.withOpacity(0.85)
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ── ORDER CARD ────────────────────────────────────────────────
+  Widget _buildOrderCard(Map<String, dynamic> order, int index) {
+    final items     = order['items'] as List;
+    final status    = order['status'] as String;
+    final isDelayed = _isDelayedOrder(order);
+    final chipColor = _statusChipColor(status);
+
+    final instructionsList = items
+        .map((i) => (i['instructions'] ?? "").toString().trim())
+        .where((i) => i.isNotEmpty)
+        .toSet()
+        .toList();
+
+    // FIX: check max delay for + button
+    final extraEta  = (order['extraEta'] ?? 0) as int;
+    final maxDelayReached = extraEta >= 14;
+
+    return AnimatedBuilder(
+      animation: _acceptController,
+      builder: (context, child) {
+        final double shakeX = _acceptingIndex == index
+            ? sin(_shakeAnimation.value * pi * 2) * 3
+            : 0;
+        return Transform.translate(
+            offset: Offset(shakeX, 0), child: child);
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 3)),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // ── HEADER ─────────────────────────────────
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: isDelayed
+                            ? AppColors.error.withOpacity(0.08)
+                            : Colors.indigo.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("Room",
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: isDelayed
+                                      ? AppColors.error
+                                      : Colors.indigo,
+                                  fontWeight: FontWeight.w600)),
+                          Text(
+                            "${order["room"]}",
+                            style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: isDelayed
+                                    ? AppColors.error
+                                    : Colors.indigo,
+                                height: 1.1),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _buildStatusChip(status, chipColor),
+                        const SizedBox(height: 6),
+                        Text(
+                          "#${order["orderNo"]}",
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textPrimary),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(
+                                Icons.calendar_today_rounded,
+                                size: 11,
+                                color: AppColors.textDisabled),
+                            const SizedBox(width: 3),
+                            Text(
+                              _formattedDateTime(
+                                  order['createdAt']),
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                // Guest name
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceAlt,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.person_rounded,
+                          size: 13,
+                          color: AppColors.textSecondary),
+                    ),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(order['guest'],
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textSecondary),
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
+
+                const Divider(
+                    height: 16, color: AppColors.borderLight),
+
+                // Items header
+                const Row(
+                  children: [
+                    Icon(Icons.restaurant_menu_rounded,
+                        size: 13,
+                        color: AppColors.textDisabled),
+                    SizedBox(width: 5),
+                    Text("Order Items",
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textDisabled,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                const SizedBox(height: 7),
+
+                // FIX: Items list with per-item is_veg flag
+                ...items.map((i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 5),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      _fssaiIcon(_isVeg(i['isVeg'], i['name'] ?? '')),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(i['name'],
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary)),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceAlt,
+                          borderRadius:
+                              BorderRadius.circular(7),
+                        ),
+                        child: Text('${i['qty']}',
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary)),
+                      ),
+                    ],
+                  ),
+                )),
+
+                // Cooking instructions
+                if (instructionsList.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.infoLight,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: AppColors.info.withOpacity(0.25)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_rounded,
+                            color: AppColors.info, size: 14),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
+                            children: [
+                              const Text("Cooking Instructions",
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.info)),
+                              const SizedBox(height: 2),
+                              ...instructionsList.map((ins) =>
+                                  Text(ins,
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          height: 1.4))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                // Cancel reason
+                if (status == FoodOrderStatus.cancelled.label &&
+                    order['cancelReason'] != null &&
+                    (order['cancelReason'] as String)
+                        .isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.errorLight,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color:
+                              AppColors.error.withOpacity(0.2)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.cancel_rounded,
+                            color: AppColors.error, size: 14),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
+                            children: [
+                              const Text("Cancelled Reason",
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.error)),
+                              const SizedBox(height: 2),
+                              Text(order['cancelReason'],
+                                  style: const TextStyle(
+                                      fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 12),
+
+                // ── ACTION BUTTONS ──────────────────────────
+                if (status == FoodOrderStatus.pending.label &&
+                    userRole == 'Food & Beverage') ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _actionButton(
+                          text: 'Accept Order',
+                          icon: Icons.check_circle_rounded,
+                          color: AppColors.success,
+                          onTap: () async {
+                            if (_acceptingIndex != null) return;
+                            final rs = _rawStatus(order);
+                            if (rs == "DELIVERED" ||
+                                rs == "CANCELLED") {
+                              _showError(null);
+                              await _loadFoodOrders();
+                              return;
+                            }
+                            if (order["raw"] == null) {
+                              _showError(null);
+                              return;
+                            }
+                            HapticFeedback.selectionClick();
+                            setState(() {
+                              _acceptingIndex = index;
+                              order["status"] = FoodOrderStatus
+                                  .preparing.label;
+                              order["acceptedAt"] =
+                                  DateTime.now();
+                              if (rushHourActive) {
+                                final extra = _rushExtraMinutes();
+                                order['etaMinutes'] =
+                                    (order['etaMinutes'] ?? 15) +
+                                        extra;
+                                order['extraEta'] = extra;
+                              }
+                            });
+                            final result = await _foodOrderService
+                                .updateFoodOrderStatus(
+                                    orderNumber: order["orderNo"],
+                                    status: FoodOrderStatus
+                                        .preparing.api);
+                            if (!mounted) return;
+                            if (result["success"] != true) {
+                              setState(() {
+                                order["status"] = FoodOrderStatus
+                                    .pending.label;
+                                order.remove("acceptedAt");
+                              });
+                              _showError(result["message"]);
+                            } else {
+                              final b =
+                                  result["data"]?["new_status"];
+                              if (b != null) {
+                                order["raw"]["order_status"] = b;
+                              }
+                              await OrderAlertService.stopOne();
+                              AppSnackBar.show(
+                                  context, "Order accepted");
+                            }
+                            setState(
+                                () => _acceptingIndex = null);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _actionButton(
+                          text: 'Cancel',
+                          icon: Icons.cancel_rounded,
+                          color: AppColors.error,
+                          onTap: () =>
+                              _showCancelReasons(order),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else if (status ==
+                    FoodOrderStatus.preparing.label) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: AnimatedBuilder(
+                          animation: _delayBlinkController,
+                          builder: (context, _) {
+                            final opacity = isDelayed
+                                ? _delayBlinkAnimation.value
+                                : 1.0;
+                            return Opacity(
+                              opacity: opacity,
+                              child: _actionButton(
+                                text: _etaText(order),
+                                icon: _remainingSeconds(order) >= 0
+                                    ? Icons.timer_rounded
+                                    : Icons.warning_rounded,
+                                color: _etaColor(order),
+                                onTap: () =>
+                                    _handleReadyTap(order),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      // FIX: hide/fade + button when max delay reached
+                      AnimatedOpacity(
+                        duration: const Duration(milliseconds: 200),
+                        opacity: maxDelayReached ? 0.3 : 1.0,
+                        child: GestureDetector(
+                          onTap: maxDelayReached
+                              ? () => _showError("Maximum delay reached")
+                              : () {
+                                  setState(() {
+                                    order['etaMinutes'] += 2;
+                                    order['extraEta'] =
+                                        (order['extraEta'] ?? 0) + 2;
+                                  });
+                                },
+                          child: Container(
+                            padding: const EdgeInsets.all(11),
+                            decoration: BoxDecoration(
+                              color: maxDelayReached
+                                  ? AppColors.textDisabled
+                                  : AppColors.textPrimary,
+                              borderRadius:
+                                  BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              maxDelayReached
+                                  ? Icons.block_rounded
+                                  : Icons.add_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
@@ -1608,8 +1475,38 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     );
   }
 
-  Widget _actionBar({
+  // ── STATUS CHIP ───────────────────────────────────────────────
+  Widget _buildStatusChip(String label, Color color) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+              width: 5,
+              height: 5,
+              decoration: BoxDecoration(
+                  color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 10)),
+        ],
+      ),
+    );
+  }
+
+  Widget _actionButton({
     required String text,
+    required IconData icon,
     required Color color,
     VoidCallback? onTap,
   }) {
@@ -1619,15 +1516,207 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           color: color,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(13),
+          boxShadow: [
+            BoxShadow(
+                color: color.withOpacity(0.3),
+                blurRadius: 8,
+                offset: const Offset(0, 3)),
+          ],
         ),
-        child: Center(
-          child: Text(
-            text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 15),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(
+                text,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── MODALS ────────────────────────────────────────────────────
+  void _showRushHourOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Rush Hour Duration',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+            ),
+            _rushOption('30 Minutes', 30),
+            _rushOption('1 Hour', 60),
+            _rushOption('2 Hours', 120),
+            _rushOption('4 Hours', 240),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _rushOption(String label, int minutes) => ListTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.errorLight,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: const Icon(Icons.local_fire_department_rounded,
+              color: AppColors.error, size: 18),
+        ),
+        title: Text(label,
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        trailing: const Icon(Icons.chevron_right_rounded,
+            color: AppColors.textDisabled),
+        onTap: () {
+          Navigator.pop(context);
+          _activateRushHour(minutes);
+        },
+      );
+
+  void _activateRushHour(int durationMinutes) {
+    setState(() {
+      rushHourActive           = true;
+      rushExtraMinutesSelected = 10;
+      _rushHourEndsAt =
+          DateTime.now().add(Duration(minutes: durationMinutes));
+    });
+    _rushTimer?.cancel();
+    _rushTimer = Timer(Duration(minutes: durationMinutes),
+        () { if (mounted) _deactivateRushHour(); });
+  }
+
+  void _showCancelReasons(Map<String, dynamic> order) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const Text('Cancel Order',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              const Text('Select a reason',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textSecondary)),
+              const SizedBox(height: 12),
+              ...cancelReasons.map((reason) => InkWell(
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (order["raw"] == null) {
+                    _showError(null);
+                    return;
+                  }
+                  final prev = order['status'];
+                  setState(() {
+                    order['status']       = FoodOrderStatus.cancelled.label;
+                    order['cancelReason'] = reason;
+                  });
+                  final result =
+                      await _foodOrderService.updateFoodOrderStatus(
+                          orderNumber: order["orderNo"],
+                          status: FoodOrderStatus.cancelled.api,
+                          cancelReason: reason);
+                  if (!mounted) return;
+                  if (result["success"] != true) {
+                    setState(() {
+                      order['status'] = prev;
+                      order.remove('cancelReason');
+                    });
+                    _showError(result["message"]);
+                    return;
+                  }
+                  final b = result["data"]?["new_status"];
+                  if (b != null) order["raw"]["order_status"] = b;
+                  setState(() {
+                    order["raw"]["cancel_reason"] = reason;
+                    foodOrders.remove(order);
+                    cancelledOrders.insert(0, order);
+                  });
+                  await OrderAlertService.stopOne();
+                  AppSnackBar.show(context, "Order cancelled");
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 14, horizontal: 8),
+                  decoration: const BoxDecoration(
+                      border: Border(
+                          bottom: BorderSide(
+                              color: AppColors.borderLight))),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: AppColors.error.withOpacity(0.5),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(reason,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w500,
+                              color: AppColors.textPrimary)),
+                    ],
+                  ),
+                ),
+              )),
+            ],
           ),
         ),
       ),
@@ -1636,11 +1725,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   void _showError(String? message) {
     if (!mounted) return;
-
     AppSnackBar.show(
-      context,
-      message ?? "Something went wrong. Please try again.",
-      isError: true,
-    );
+        context,
+        message ?? "Something went wrong. Please try again.",
+        isError: true);
   }
 }

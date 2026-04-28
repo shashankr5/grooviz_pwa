@@ -173,7 +173,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
         ),        
         centerTitle: true,
         backgroundColor: Colors.white,
-        elevation: 1,
+        elevation: 2,
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -193,9 +193,19 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(child: _summaryTile('Total Orders', weeklyTotal)),
+                Expanded(child: _summaryTile(
+                  'Total Orders',
+                  weeklyTotal,
+                  icon: Icons.shopping_bag_outlined,
+                  color: AppColors.primary,
+                )),
                 const SizedBox(width: 12),
-                Expanded(child: _summaryTile('Cancelled', weeklyCancelled, AppColors.error)),
+                Expanded(child: _summaryTile(
+                  'Cancelled',
+                  weeklyCancelled,
+                  icon: Icons.cancel_outlined,
+                  color: AppColors.error,
+                )),
               ],
             ),
 
@@ -241,6 +251,8 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                     child: _summaryTile(
                       'Total Orders',
                       dailyTotal,
+                      icon: Icons.shopping_bag_outlined,
+                      color: AppColors.primary,
                     ),
                   ),
                 ),
@@ -251,8 +263,9 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                     child: _summaryTile(
                       'Cancelled',
                       dailyCancelled,
-                      Colors.red, // red for cancelled
-                    ),
+                      icon: Icons.cancel_outlined,
+                      color: AppColors.error,
+                    )
                   ),
                 ),
               ],
@@ -348,44 +361,84 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
 
   Widget _weeklyBarChart() {
     final data = _currentWeek();
-    final max = data
-        .map((d) => _orderCountForDate(d))
-        .fold<int>(1, (a, b) => a > b ? a : b);
+    final counts = data.map((d) => _orderCountForDate(d)).toList();
+    final max = counts.fold<int>(1, (a, b) => a > b ? a : b);
+    final today = _normalize(DateTime.now());
 
     return _cardContainer(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Orders (This Week)',
-              style: TextStyle(fontWeight: FontWeight.w600)),
+          const Text(
+            'Orders (This Week)',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
           const SizedBox(height: 16),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: data.map((d) {
-              final height = (_orderCountForDate(d) / max) * 80;
+            children: List.generate(data.length, (i) {
+              final d = data[i];
+              final count = counts[i];
+              final isToday = _normalize(d) == today;
 
-              return SizedBox(
-                width: 30,
+              final barHeight =
+                  max > 0 ? (count / max) * 80.0 : 4.0;
+
+              return Expanded(
                 child: Column(
                   children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 500),
-                      height: height,
-                      width: 16,
-                      decoration: BoxDecoration(
-                        color: AppColors.primary,
-                        borderRadius: BorderRadius.circular(6),
+                    // 🔼 FIXED HEIGHT BAR AREA
+                    SizedBox(
+                      height: 110, // 🔥 IMPORTANT: fixed height
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (count > 0)
+                            Text(
+                              '$count',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: isToday
+                                    ? AppColors.primary
+                                    : AppColors.textSecondary,
+                              ),
+                            ),
+                          const SizedBox(height: 4),
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 500),
+                            height: barHeight.clamp(4.0, 90.0),
+                            width: 18,
+                            decoration: BoxDecoration(
+                              color: isToday
+                                  ? AppColors.primary
+                                  : AppColors.primary.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+
+                    // 🔽 LABEL (fixed baseline)
                     const SizedBox(height: 6),
                     Text(
                       _weekLabels[d.weekday - 1],
-                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isToday
+                            ? AppColors.primary
+                            : AppColors.textSecondary,
+                        fontWeight:
+                            isToday ? FontWeight.w700 : FontWeight.normal,
+                      ),
                     ),
                   ],
                 ),
               );
-            }).toList(),
+            }),
           ),
         ],
       ),
@@ -393,40 +446,75 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
   }
 
   Widget _orderCard(Map<String, dynamic> o) {
-    final cancelled = o['status'] == 'Cancelled';
+    final status = (o['status'] ?? '').toString().toLowerCase();
+
+    final isCancelled = status == 'cancelled';
+    final isDelivered = status == 'delivered';
+
+    final color = isCancelled
+        ? AppColors.error
+        : isDelivered
+            ? AppColors.secondary
+            : Colors.orange;
+
+    final orderedAt = DateTime.tryParse(o["raw"]["order_time"] ?? "");
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: _boxDecoration,
       child: Row(
         children: [
-          Icon(Icons.room_service_outlined,
-              color: cancelled ? AppColors.error : AppColors.secondary,
-              ),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.room_service_outlined, color: color, size: 20),
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Room ${o["roomNumber"]}',
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
-                Text(o['guestName'],
-                    style: const TextStyle(
+                Text(
+                  'Room ${o["roomNumber"]}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  o['guestName'] ?? '',
+                  style: const TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 13,
                   ),
                 ),
+                if (orderedAt != null)
+                  Text(
+                    _formatTime(orderedAt),
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
               ],
             ),
           ),
-          Text(
-            o['status'],
-            style: TextStyle(
-              fontSize: 12,
-              color: cancelled ? AppColors.error : AppColors.secondary,
-              fontWeight: FontWeight.bold,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              o['status'],
+              style: TextStyle(
+                fontSize: 12,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ],
@@ -454,28 +542,47 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     );
   }
 
-  Widget _summaryTile(String label, int value, [Color? color]) {
+  Widget _summaryTile(
+    String label,
+    int value, {
+    IconData? icon,
+    Color? color,
+  }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: _boxDecoration,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+      child: Row(
         children: [
-          Text(
-            '$value',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: color ?? AppColors.textPrimary,
+          if (icon != null)
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: (color ?? AppColors.primary).withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color ?? AppColors.primary, size: 20),
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 13,
-            ),
+          if (icon != null) const SizedBox(width: 10),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$value',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: color ?? AppColors.textPrimary,
+                ),
+              ),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
+            ],
           ),
         ],
       ),
