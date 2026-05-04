@@ -1,41 +1,99 @@
 import 'package:flutter/material.dart';
+import 'app_colors.dart';
 
 class AppSnackBar {
   static void show(
-      BuildContext context,
-      String message, {
-        bool isError = false,
-      }) {
+    BuildContext context,
+    String message, {
+    bool isError = false,
+  }) {
     ScaffoldMessenger.of(context).clearSnackBars();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.all(16),
-        backgroundColor: isError ? Colors.red.shade600 : Colors.green.shade600,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-        duration: const Duration(seconds: 3),
-        content: Row(
-          children: [
-            Icon(
-              isError ? Icons.error_outline : Icons.check_circle_outline,
-              color: Colors.white,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
+    final Color bgColor = isError ? AppColors.error   : AppColors.success;
+    final Color lightBg = isError ? AppColors.errorLight : AppColors.successLight;
+    final IconData icon = isError ? Icons.error_rounded : Icons.check_circle_rounded;
+
+    // Capture navigator before the async gap
+    final navigator = Navigator.of(context, rootNavigator: false);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.transparent,
+      isDismissible: true,
+      enableDrag: true,
+      builder: (ctx) {
+        Future.delayed(const Duration(seconds: 3), () {
+          if (navigator.canPop()) navigator.pop();
+        });
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
                   color: Colors.white,
-                  fontWeight: FontWeight.w600,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: bgColor.withValues(alpha: 0.25),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: bgColor.withValues(alpha: 0.12),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: lightBg,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(icon, color: bgColor, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        if (navigator.canPop()) navigator.pop();
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Icon(Icons.close_rounded,
+                            size: 18, color: AppColors.textDisabled),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

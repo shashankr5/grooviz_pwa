@@ -39,4 +39,6 @@ class ApiConstants {
   
   // Checkout
   static const String checkoutReport = "$baseUrl/ScreenSync_get_guest_checkout_report_mobile";
+  static const String guestBill = "$baseUrl/ScreenSync_get_guest_bill_mobile";
+
 }

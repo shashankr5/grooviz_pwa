@@ -106,9 +106,11 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    Navigator.pushReplacement(
+    // Wipes the entire navigation stack — nothing to go back to
+    Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const MainNavigation()),
+      (route) => false,
     );
   }
 

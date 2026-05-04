@@ -106,6 +106,18 @@ class ProfileService {
         dev.log("⚠️ Failed to save departments from profile: $e");
       }
 
+      // ✅ SAVE ROLE FROM PROFILE  ← NEW BLOCK
+      try {
+        final rawRole = profile["role"];   // adjust key if API uses "user_role" etc.
+        if (rawRole != null) {
+          final role = rawRole.toString().trim();
+          await UserSessionHelper.saveRole(role);
+          dev.log("✅ Role saved from profile: $role");
+        }
+      } catch (e) {
+        dev.log("⚠️ Failed to save role from profile: $e");
+      }
+
       await UserSessionHelper.saveUserProfile(profile);
 
       return {"success": true, "message": message, "profile": profile};

@@ -1,16 +1,26 @@
+// camera_content_page.dart
+//
+// CHANGES:
+//  - Upload mode: once an image is picked it is locked (no "Change Image").
+//    The picker sheet still has Gallery + Camera options for the initial pick.
+//  - Edit mode: "Change Image" button is shown so the photo can be swapped.
+//  - "Cancel / Reset" button is hidden in upload mode — only shown in edit mode.
+//  - Successful edit pops back with `true` so MyContentsPage can refresh
+//    its own list in-place (no navigation to home page).
+
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:numberpicker/numberpicker.dart';
 import 'package:image/image.dart' as img;
 
-import 'my_contents_page.dart'; 
+import 'my_contents_page.dart';
 import '../services/rooms_service.dart';
 import '../services/upload_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_colors.dart';
+import '../utils/app_snackbar.dart';
 
 class CameraContentPage extends StatefulWidget {
   final Map<String, dynamic>? existingContent;
@@ -29,8 +39,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
   bool get _isEditMode => widget.existingContent != null;
   String? _existingImageUrl;
   int? _contentId;
-  bool _isPrefilled = false;
-  
+
   final RoomsService _roomsService = RoomsService();
 
   List<Map<String, dynamic>> _rooms = [];
@@ -41,12 +50,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
   static const Color _accent = Color(0xFF5C6BC0);
 
+  // ── Device IDs from selected rooms ────────────────────────────────────────
+
   List<int> _getSelectedDeviceIds() {
     final selectedRooms = _rooms.where((room) {
       final label = "Room ${room["roomNumber"]}";
       return _selectedRooms.contains(label);
-      print("Rooms: $_rooms");
-      print("Selected Rooms: $_selectedRooms");
     });
 
     return selectedRooms
@@ -56,6 +65,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
         .toList();
   }
 
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
   @override
   void initState() {
     super.initState();
@@ -63,21 +74,22 @@ class _CameraContentPageState extends State<CameraContentPage> {
 
     if (_isEditMode) {
       _prefillExistingData();
-      _isPrefilled = true;
     }
   }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   void _toggleSelectAll() {
     setState(() {
       if (_selectedRooms.length == _rooms.length) {
         _selectedRooms.clear();
       } else {
-        _selectedRooms =
-          _rooms.map((r) => "Room ${r["roomNumber"]}").toSet();
-            }
+        _selectedRooms = _rooms.map((r) => "Room ${r["roomNumber"]}").toSet();
+      }
     });
   }
 
+  /// Resets form — only used in edit mode via the Cancel button.
   void _resetForm() {
     setState(() {
       _selectedImage = null;
@@ -99,7 +111,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
     if (result["success"]) {
       final rooms = result["rooms"] as List;
 
-      // ✅ FILTER ONLY OCCUPIED ROOMS
       final occupiedRooms = rooms.where((room) {
         final status = (room["status"] ?? "").toString().toLowerCase();
         return status == "occupied";
@@ -127,12 +138,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error picking image: $e')),
-        );
+        AppSnackBar.show(context, 'Error picking image: $e', isError: true);
       }
     }
   }
+
+  // ── Image processing ──────────────────────────────────────────────────────
 
   img.Image _fitTo1920x1080(img.Image src) {
     const int targetW = 1920;
@@ -168,22 +179,24 @@ class _CameraContentPageState extends State<CameraContentPage> {
     return canvas;
   }
 
+  // ── Upload ────────────────────────────────────────────────────────────────
+
   Future<void> _uploadContent() async {
     if (_isUploading) return;
 
     setState(() => _isUploading = true);
 
     final deviceIds = _getSelectedDeviceIds();
-    print("Selected Device IDs: $deviceIds");
 
     if (deviceIds.isEmpty) {
-      _showError("No devices found for selected rooms");
+      AppSnackBar.show(context, "No devices found for selected rooms",
+          isError: true);
       setState(() => _isUploading = false);
       return;
     }
 
     if (_selectedImage == null && _existingImageUrl == null) {
-      _showError("Please select an image");
+      AppSnackBar.show(context, "Please select an image", isError: true);
       setState(() => _isUploading = false);
       return;
     }
@@ -191,7 +204,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
     try {
       String finalUrl = _existingImageUrl ?? "";
 
-      /// upload new image if selected
       if (_selectedImage != null) {
         final originalBytes = await _selectedImage!.readAsBytes();
 
@@ -227,7 +239,6 @@ class _CameraContentPageState extends State<CameraContentPage> {
         finalUrl = uploadResult["url"];
       }
 
-      /// 🔥 NEW API CALL
       final result = await _roomsService.updateGuestPhoto(
         filePath: finalUrl,
         deviceIds: deviceIds,
@@ -236,29 +247,39 @@ class _CameraContentPageState extends State<CameraContentPage> {
       if (!mounted) return;
 
       if (result["success"]) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result["message"]),
-            backgroundColor: AppColors.secondary,
-          ),
-        );
+        AppSnackBar.show(
+            context, result["message"] as String? ?? "Uploaded successfully");
 
-        _resetForm();
+        if (_isEditMode) {
+          // Pop back to MyContentsPage with refresh signal — stays on that page
+          Navigator.pop(context, true);
+        } else {
+          // Upload mode: reset for next upload
+          setState(() {
+            _selectedImage = null;
+            _selectedRooms.clear();
+          });
+        }
       } else {
         throw Exception(result["message"]);
       }
     } catch (e) {
-      _showError("Upload failed: $e");
+      if (mounted) {
+        AppSnackBar.show(context, "Upload failed: $e", isError: true);
+      }
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
   }
 
   void _removeImage() {
+    // Only callable in edit mode (remove button only shown there)
     setState(() {
       _selectedImage = null;
     });
   }
+
+  // ── Image picker bottom sheet ─────────────────────────────────────────────
 
   void _showImagePicker() {
     showModalBottomSheet(
@@ -268,35 +289,201 @@ class _CameraContentPageState extends State<CameraContentPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Row(
+                children: const [
+                  Text(
+                    "Add Photo",
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.borderLight),
+            const SizedBox(height: 4),
+            _pickerTile(
+              context,
+              icon: Icons.photo_library_outlined,
+              label: "Choose from Gallery",
+              subtitle: "Pick an existing photo",
+              color: AppColors.primary,
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+            _pickerTile(
+              context,
+              icon: Icons.camera_alt_outlined,
+              label: "Take a Photo",
+              subtitle: "Best in landscape mode",
+              color: AppColors.textPrimary,
+              onTap: () {
+                Navigator.pop(context);
+                _showLandscapeDialog();
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pickerTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: color, size: 22),
+      ),
+      title: Text(label,
+          style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+              color: AppColors.textPrimary)),
+      subtitle: Text(subtitle,
+          style: const TextStyle(
+              fontSize: 12, color: AppColors.textSecondary)),
+      onTap: onTap,
+    );
+  }
+
+  // ── Landscape dialog ──────────────────────────────────────────────────────
+
+  Future<void> _showLandscapeDialog() async {
+    final bool? proceed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _bottomSheetTile(Icons.photo_library, "Gallery", AppColors.primary,
-                  () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.gallery);
-              }),
-              _bottomSheetTile(Icons.camera_alt, "Camera", AppColors.textPrimary, () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.camera);
-              }),
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 20),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: _accent.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.screen_rotation_outlined,
+                    color: _accent, size: 32),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                "Hold in Landscape",
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "Please hold your device sideways while taking the photo. "
+                "This ensures the best viewing experience on TV screens.",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                    height: 1.5),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: AppColors.border),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text("Cancel",
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => Navigator.pop(context, true),
+                      icon: const Icon(Icons.camera_alt_rounded, size: 18),
+                      label: const Text("Open Camera",
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _accent,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
       ),
     );
+
+    if (proceed == true) {
+      _pickImage(ImageSource.camera);
+    }
   }
+
+  // ── Prefill for edit mode ─────────────────────────────────────────────────
 
   void _prefillExistingData() {
     final content = widget.existingContent!;
 
     _contentId = int.tryParse(content["id"].toString());
     final photo = content["guestPhoto"];
-    _existingImageUrl = (photo != null && photo.toString().isNotEmpty) ? photo : null;
+    _existingImageUrl =
+        (photo != null && photo.toString().isNotEmpty) ? photo : null;
 
-    /// preselect rooms
     final rooms = content["rooms"] as List?;
     if (rooms != null) {
       _selectedRooms = rooms
@@ -305,114 +492,88 @@ class _CameraContentPageState extends State<CameraContentPage> {
     }
   }
 
-  void _showError(String message) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: AppColors.error,
-        ),
-      );
-  }
-
-  Widget _bottomSheetTile(
-      IconData icon, String title, Color color, VoidCallback onTap) {
-    return ListTile(
-      leading: Icon(icon, color: color),
-      title: Text(title,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
-      onTap: onTap,
-    );
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final bool hasImage =
+        _selectedImage != null || _existingImageUrl != null;
     final bool isAddContentEnabled =
-        (_selectedImage != null || _existingImageUrl != null) &&
-        _selectedRooms.isNotEmpty;
+        hasImage && _selectedRooms.isNotEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _isEditMode ? 'Edit Photo' : 'Camera Content',
-            style: const TextStyle(
-              color: Colors.black,
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-            ),
-          ),
-          const Text(
-            'Upload and display content instantly',
-            style: TextStyle(color: Colors.grey, fontSize: 12),
-          ),
-        ],
-      ),
-      elevation: 0,
-      backgroundColor: Colors.white,
-      iconTheme: const IconThemeData(color: Colors.black),
-      actions: _isEditMode
-          ? []
-          : [
-              Container(
-                margin: const EdgeInsets.only(right: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF0F1FF),
-                  borderRadius: BorderRadius.circular(50),
-                ),
-                child: IconButton(
-                  icon: Icon(Icons.history_outlined, color: _accent),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const MyContentsPage(),
-                      ),
-                    );
-                  },
-                ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _isEditMode ? 'Edit Photo' : 'Camera Content',
+              style: const TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
               ),
-            ],
-    ),
+            ),
+            const Text(
+              'Upload and display content instantly',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ],
+        ),
+        elevation: 0,
+        backgroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.black),
+        actions: _isEditMode
+            ? []
+            : [
+                Container(
+                  margin: const EdgeInsets.only(right: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F1FF),
+                    borderRadius: BorderRadius.circular(50),
+                  ),
+                  child: IconButton(
+                    icon: Icon(Icons.history_outlined, color: _accent),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const MyContentsPage(),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+      ),
       body: SafeArea(
         child: Column(
           children: [
-
-            /// SCROLLABLE CONTENT
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
+                    _buildLandscapeTip(),
+                    const SizedBox(height: 16),
                     _buildImageSection(),
                     const SizedBox(height: 20),
-
                     _buildRoomSection(),
-                    const SizedBox(height: 20),
-
-                    const SizedBox(height: 80), // space for bottom buttons
+                    const SizedBox(height: 80),
                   ],
                 ),
               ),
             ),
 
-            /// 🔥 FIXED BOTTOM BUTTONS
+            // Fixed bottom buttons
             Container(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               decoration: BoxDecoration(
                 color: Colors.white,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
+                    color: Colors.black.withValues(alpha: 0.05),
                     blurRadius: 10,
                     offset: const Offset(0, -2),
                   ),
@@ -426,14 +587,153 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
+  // ── Landscape tip banner ──────────────────────────────────────────────────
+
+  Widget _buildLandscapeTip() {
+    return GestureDetector(
+      onTap: () => _showLandscapeInfoSheet(),
+      child: Container(
+        width: double.infinity,
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: _accent.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _accent.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: _accent.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.screen_rotation_outlined,
+                  color: _accent, size: 20),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Hold your phone sideways for the best shot',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                        color: _accent),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Tap to learn more',
+                    style: TextStyle(fontSize: 11, color: _accent),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                color: _accent, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showLandscapeInfoSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 20),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: _accent.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.screen_rotation_outlined,
+                    color: _accent, size: 32),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                "Why Landscape?",
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                "TV screens display in 16:9 widescreen format. Holding your phone "
+                "horizontally ensures your photo fills the entire TV screen without "
+                "black bars or cropping.",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                    height: 1.6),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _accent,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: const Text("Got it",
+                      style: TextStyle(
+                          fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Image section ─────────────────────────────────────────────────────────
+
   Widget _buildImageSection() {
+    final bool hasImage =
+        _selectedImage != null || (_existingImageUrl?.isNotEmpty == true);
+
     return Container(
       decoration: _cardDecoration(),
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
+          // Tap to pick — only active when no image yet OR in edit mode
           GestureDetector(
-            onTap: _showImagePicker,
+            onTap: _isUploading
+                ? null
+                : (!hasImage || _isEditMode)
+                    ? _showImagePicker
+                    : null, // locked in upload mode once image is picked
             child: Stack(
               children: [
                 AspectRatio(
@@ -443,28 +743,56 @@ class _CameraContentPageState extends State<CameraContentPage> {
                       borderRadius: BorderRadius.circular(16),
                       color: const Color(0xFFF0F1FF),
                       border: Border.all(
-                        color: _accent.withOpacity(0.3),
-                        width: 1.5,
-                      ),
+                          color: _accent.withValues(alpha: 0.3), width: 1.5),
                     ),
                     child: _selectedImage != null
                         ? ClipRRect(
                             borderRadius: BorderRadius.circular(14),
-                            child: Image.file(_selectedImage!, fit: BoxFit.cover),
+                            child: Image.file(_selectedImage!,
+                                fit: BoxFit.cover),
                           )
-                        : (_existingImageUrl != null && _existingImageUrl!.isNotEmpty)
+                        : (_existingImageUrl?.isNotEmpty == true)
                             ? ClipRRect(
                                 borderRadius: BorderRadius.circular(14),
                                 child: Image.network(
                                   _existingImageUrl!,
                                   fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => _buildPlaceholder(),
+                                  errorBuilder: (_, __, ___) =>
+                                      _buildPlaceholder(),
                                 ),
                               )
                             : _buildPlaceholder(),
+                  ),
                 ),
-                ),
-                if (_selectedImage != null)
+
+                // Uploading overlay
+                if (_isUploading)
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        child: const Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2.5),
+                            SizedBox(height: 10),
+                            Text(
+                              'Uploading…',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Remove button — only in edit mode so upload mode image is locked
+                if (_isEditMode && _selectedImage != null && !_isUploading)
                   Positioned(
                     top: 8,
                     right: 8,
@@ -473,9 +801,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
                       child: Container(
                         padding: const EdgeInsets.all(6),
                         decoration: const BoxDecoration(
-                          color: Colors.black87,
-                          shape: BoxShape.circle,
-                        ),
+                            color: Colors.black87,
+                            shape: BoxShape.circle),
                         child: const Icon(Icons.close,
                             color: Colors.white, size: 16),
                       ),
@@ -485,8 +812,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
             ),
           ),
 
-          if (_selectedImage != null ||
-    (_existingImageUrl != null && _existingImageUrl!.isNotEmpty)) ...[
+          // "Change Image" — only shown in edit mode
+          if (!_isUploading && _isEditMode && hasImage) ...[
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
@@ -496,7 +823,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
                 label: const Text('Change Image'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _accent,
-                  side: BorderSide(color: _accent.withOpacity(0.4)),
+                  side: BorderSide(color: _accent.withValues(alpha: 0.4)),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                 ),
@@ -507,6 +834,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
       ),
     );
   }
+
+  // ── Room section ──────────────────────────────────────────────────────────
 
   Widget _buildRoomSection() {
     if (_isLoadingRooms) {
@@ -523,15 +852,11 @@ class _CameraContentPageState extends State<CameraContentPage> {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            Text(
-              _roomsError!,
-              style: const TextStyle(color: AppColors.error),
-            ),
+            Text(_roomsError!,
+                style: const TextStyle(color: AppColors.error)),
             const SizedBox(height: 10),
             ElevatedButton(
-              onPressed: _fetchRooms,
-              child: const Text("Retry"),
-            )
+                onPressed: _fetchRooms, child: const Text("Retry")),
           ],
         ),
       );
@@ -541,7 +866,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
       return Container(
         decoration: _cardDecoration(),
         padding: const EdgeInsets.all(24),
-        child: const Text("No rooms available", style: TextStyle(color: AppColors.textSecondary)),
+        child: const Text("No rooms available",
+            style: TextStyle(color: AppColors.textSecondary)),
       );
     }
 
@@ -571,11 +897,10 @@ class _CameraContentPageState extends State<CameraContentPage> {
                         color: AppColors.primary,
                         fontWeight: FontWeight.w600),
                   ),
-                )
+                ),
               ],
             ),
             const SizedBox(height: 16),
-
             GridView.count(
               crossAxisCount: 3,
               shrinkWrap: true,
@@ -598,13 +923,15 @@ class _CameraContentPageState extends State<CameraContentPage> {
                     });
                   },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 10),
                     decoration: BoxDecoration(
                       color: selected ? _accent : const Color(0xFFF0F1FF),
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: selected ? _accent : _accent.withOpacity(0.2),
-                      ),
+                          color: selected
+                              ? _accent
+                              : _accent.withValues(alpha: 0.2)),
                     ),
                     child: Center(
                       child: Row(
@@ -618,7 +945,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
                             child: Text(
                               roomLabel,
                               style: TextStyle(
-                                color: selected ? Colors.white : _accent,
+                                color:
+                                    selected ? Colors.white : _accent,
                                 fontWeight: FontWeight.w600,
                                 fontSize: 13,
                               ),
@@ -638,6 +966,8 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 
+  // ── Action buttons ────────────────────────────────────────────────────────
+
   Widget _buildActionButtons(bool enabled) {
     return Column(
       children: [
@@ -645,21 +975,31 @@ class _CameraContentPageState extends State<CameraContentPage> {
           width: double.infinity,
           child: ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: enabled ? _accent : Colors.grey.shade300,
+              backgroundColor:
+                  enabled ? _accent : Colors.grey.shade300,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
+                  borderRadius: BorderRadius.circular(14)),
             ),
-            onPressed: (enabled && !_isUploading) ? _uploadContent : null,
+            onPressed:
+                (enabled && !_isUploading) ? _uploadContent : null,
             child: _isUploading
-                ? const SizedBox(
-                    height: 22,
-                    width: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
+                ? const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      ),
+                      SizedBox(width: 10),
+                      Text('Uploading…',
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                    ],
                   )
                 : Text(
                     _isEditMode ? "Update Photo" : "Upload Photo",
@@ -668,24 +1008,31 @@ class _CameraContentPageState extends State<CameraContentPage> {
                   ),
           ),
         ),
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton(
-            onPressed: _resetForm,
-            child: const Text("Cancel"),
+
+        // Cancel only shown in edit mode — upload mode has no cancel
+        if (_isEditMode) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: _isUploading ? null : () => Navigator.pop(context),
+              child: const Text("Cancel"),
+            ),
           ),
-        ),
+        ],
       ],
     );
   }
+
+  // ── Shared decorators ─────────────────────────────────────────────────────
+
   BoxDecoration _cardDecoration() {
     return BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.circular(16),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withOpacity(0.05),
+          color: Colors.black.withValues(alpha: 0.05),
           blurRadius: 8,
           offset: const Offset(0, 3),
         ),
@@ -700,22 +1047,22 @@ class _CameraContentPageState extends State<CameraContentPage> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: _accent.withOpacity(0.12),
+            color: _accent.withValues(alpha: 0.12),
             shape: BoxShape.circle,
           ),
-          child: const Icon(
-            Icons.person_outline,
-            size: 32,
-            color: _accent,
-          ),
+          child: const Icon(Icons.camera_alt_outlined,
+              size: 32, color: _accent),
         ),
         const SizedBox(height: 12),
         const Text(
-          'No image available',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
+          'Tap to add a guest photo',
+          style:
+              TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Best taken in landscape',
+          style: TextStyle(fontSize: 11, color: Colors.grey),
         ),
       ],
     );

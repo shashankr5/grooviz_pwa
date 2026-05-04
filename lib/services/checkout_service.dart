@@ -34,7 +34,16 @@ class CheckoutService {
     );
   }
 
-  /// 🔥 GET GUEST CHECKOUT REPORT
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  List<Map<String, dynamic>> _normalizeList(dynamic raw) {
+    if (raw is List) return List<Map<String, dynamic>>.from(raw);
+    if (raw is Map) return [Map<String, dynamic>.from(raw)];
+    return [];
+  }
+
+  // ── GET GUEST CHECKOUT REPORT ─────────────────────────────────────────────
+
   Future<Map<String, dynamic>> getGuestCheckoutReport() async {
     try {
       final userId = await UserSessionHelper.getUserId();
@@ -52,58 +61,31 @@ class CheckoutService {
       );
 
       if (response.statusCode != 200) {
-        return {
-          "success": false,
-          "message": "Server error ${response.statusCode}"
-        };
+        return {"success": false, "message": "Server error ${response.statusCode}"};
       }
 
-      final statusRaw = response.data["STATUS"];
-      final resultRaw = response.data["RESULT"];
-
-      List<Map<String, dynamic>> statusList = [];
-      List<Map<String, dynamic>> resultList = [];
-
-      /// Normalize STATUS
-      if (statusRaw is List) {
-        statusList = List<Map<String, dynamic>>.from(statusRaw);
-      } else if (statusRaw is Map) {
-        statusList = [Map<String, dynamic>.from(statusRaw)];
-      }
-
-      /// Normalize RESULT
-      if (resultRaw is List) {
-        resultList = List<Map<String, dynamic>>.from(resultRaw);
-      } else if (resultRaw is Map) {
-        resultList = [Map<String, dynamic>.from(resultRaw)];
-      }
+      final statusList = _normalizeList(response.data["STATUS"]);
+      final resultList = _normalizeList(response.data["RESULT"]);
 
       if (statusList.isEmpty) {
-        return {
-          "success": false,
-          "message": "Invalid server response"
-        };
+        return {"success": false, "message": "Invalid server response"};
       }
 
       final statusFlag = statusList[0]["status"]?.toString() ?? "F";
-      final message =
-          statusList[0]["message"]?.toString() ?? "Unknown error";
+      final message = statusList[0]["message"]?.toString() ?? "Unknown error";
 
       if (statusFlag != "S") {
-        return {
-          "success": false,
-          "message": message,
-        };
+        return {"success": false, "message": message};
       }
 
-      /// 🔥 Map API → UI friendly structure
       final guests = resultList.map((g) {
         return {
           "guestId": g["guest_id"],
           "guestName": g["guest_name"],
-          "roomNumber": g["room_number"],
-          "contact": g["phone_number"],
-          "email": g["email"],
+          // guard null room_number
+          "roomNumber": g["room_number"] ?? '—',
+          "contact": g["phone_number"] ?? '',
+          "email": g["email"] ?? '',
           "checkoutDate": g["checked_out_time"],
           "minutesToCheckout": g["minutes_to_checkout"],
           "checkoutStatus": g["checkout_status"],
@@ -118,16 +100,83 @@ class CheckoutService {
       };
     } on DioException catch (e) {
       dev.log("❌ Dio error: ${e.message}");
-      return {
-        "success": false,
-        "message": "Network error"
-      };
+      return {"success": false, "message": "Network error"};
     } catch (e) {
       dev.log("⚠️ Exception: $e");
-      return {
-        "success": false,
-        "message": "Error: $e"
+      return {"success": false, "message": "Error: $e"};
+    }
+  }
+
+  // ── GET GUEST BILL ────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getGuestBill({required int guestId}) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+
+      final payload = {
+        "user_id": userId,
+        "guest_id": guestId,
+        "stage": "dev",
       };
+
+      dev.log("📤 Guest Bill Payload: ${jsonEncode(payload)}");
+
+      // Uses the same base URL as all other endpoints — just swap the path.
+      // Match the naming convention from your other API constants, e.g.:
+      //   ApiConstants.guestBill = 'ScreenSync_get_guest_bill_mobile'
+      // If you haven't added that constant yet, replace the line below with
+      // the literal string: 'ScreenSync_get_guest_bill_mobile'
+      final response = await _dio.post(
+        ApiConstants.guestBill,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error ${response.statusCode}"};
+      }
+
+      final statusList = _normalizeList(response.data["STATUS"]);
+      final resultList = _normalizeList(response.data["RESULT"]);
+
+      if (statusList.isEmpty) {
+        return {"success": false, "message": "Invalid server response"};
+      }
+
+      final statusFlag = statusList[0]["status"]?.toString() ?? "F";
+      final message = statusList[0]["message"]?.toString() ?? "Unknown error";
+
+      if (statusFlag != "S") {
+        return {"success": false, "message": message};
+      }
+
+      // The SP returns items as a JSON_ARRAYAGG — Dio may parse it as a List
+      // already, or it might come as a JSON string. Handle both.
+      final orders = resultList.map((o) {
+        dynamic items = o["items"];
+        if (items is String) {
+          try {
+            items = jsonDecode(items);
+          } catch (_) {
+            items = [];
+          }
+        }
+        return <String, dynamic>{
+          ...o,
+          "items": (items is List) ? items : [],
+        };
+      }).toList();
+
+      return {
+        "success": true,
+        "message": message,
+        "orders": orders,
+      };
+    } on DioException catch (e) {
+      dev.log("❌ Dio error (bill): ${e.message}");
+      return {"success": false, "message": "Network error"};
+    } catch (e) {
+      dev.log("⚠️ Exception (bill): $e");
+      return {"success": false, "message": "Error: $e"};
     }
   }
 }

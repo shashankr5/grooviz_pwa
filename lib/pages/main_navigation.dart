@@ -1,13 +1,15 @@
-//main_navigation.dart
+// main_navigation.dart
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
 import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
+import 'login_page.dart';
 import '../utils/notification_permission_manager.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_colors.dart';
+import '../services/role_change_watcher.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -20,6 +22,8 @@ class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
   List<String> _departments = [];
   bool _isLoadingDepts = true;
+
+  late final RoleChangeWatcher _roleWatcher;
 
   // ── Nav config ────────────────────────────────────────────────────────────
   // Each entry pairs a page widget with its BottomNavigationBarItem.
@@ -75,7 +79,6 @@ class _MainNavigationState extends State<MainNavigation> {
 
   // ── Department → visible tab keys ─────────────────────────────────────────
 
-  // ADD these two methods in its place:
   Set<String> _tabsForDepartment(String dept) {
     final d = dept.trim().toLowerCase();
 
@@ -130,6 +133,19 @@ class _MainNavigationState extends State<MainNavigation> {
     super.initState();
     _loadDepartments();
     _requestPermissions();
+
+    // Auto-logout when role/department changes on the server.
+    // Fires on every app resume (foreground event).
+    _roleWatcher = RoleChangeWatcher(
+      onRoleChanged: _forceLogout,
+    );
+    _roleWatcher.startWatching();
+  }
+
+  @override
+  void dispose() {
+    _roleWatcher.stopWatching();
+    super.dispose();
   }
 
   Future<void> _loadDepartments() async {
@@ -146,6 +162,28 @@ class _MainNavigationState extends State<MainNavigation> {
   Future<void> _requestPermissions() async {
     await Future.delayed(const Duration(milliseconds: 500));
     await NotificationPermissionManager.requestAllNotificationPermissions();
+  }
+
+  // ── Force logout (called by RoleChangeWatcher) ────────────────────────────
+
+  void _forceLogout() {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Your role has been updated. Please log in again.',
+        ),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 4),
+      ),
+    );
+
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (route) => false,
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────

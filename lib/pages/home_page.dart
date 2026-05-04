@@ -23,27 +23,24 @@ class _HomePageState extends State<HomePage> {
   String userName           = "";
   int?   loggedInUserId;
 
-  bool    _isLoading    = true;
+  bool  _isLoading   = true;
   String? _errorMessage;
-  bool    _deptLoaded   = false;
+  bool  _deptLoaded  = false;
 
-  // Department flags — same conditional logic as the original home page
-  bool isRoomServiceUser  = false;
-  bool isFrontOfficeUser  = false;
+  bool isRoomServiceUser = false;
 
   List<Map<String, dynamic>> tasks = [];
 
-  // Delivery counts shown on the summary card (room-service users only)
-  int _readyOrderCount    = 0;
-  int _acceptedOrderCount = 0;
+  // Delivery counts cached from summary cards
+  int _readyOrderCount     = 0;
+  int _acceptedOrderCount  = 0;
+  int _deliveredOrderCount = 0;
 
-  // FCM-driven alert subscriptions
+  // Alert stream subscriptions
   StreamSubscription<void>? _newTaskSub;
   StreamSubscription<void>? _newDeliverySub;
 
   int get currentSectionCount => filteredTasks.length;
-
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -51,8 +48,27 @@ class _HomePageState extends State<HomePage> {
     _loadUserId();
     _loadUserName();
     _loadTasks();
-    _initDepartments();
+    _loadUserDepartments();
+    _loadDeliveryCounts();
     _subscribeToAlerts();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (loggedInUserId != null) _loadUserName();
+  }
+
+  // ── Subscribe to FCM-driven streams ──────────────────────────────────────
+
+  void _subscribeToAlerts() {
+    _newTaskSub = TaskAlertService.onNewTask.listen((_) {
+      if (mounted) _loadTasks();
+    });
+
+    _newDeliverySub = TaskAlertService.onNewDelivery.listen((_) {
+      if (mounted) _loadDeliveryCounts();
+    });
   }
 
   @override
@@ -60,17 +76,6 @@ class _HomePageState extends State<HomePage> {
     _newTaskSub?.cancel();
     _newDeliverySub?.cancel();
     super.dispose();
-  }
-
-  // ── Alert subscriptions ───────────────────────────────────────────────────
-
-  void _subscribeToAlerts() {
-    _newTaskSub = TaskAlertService.onNewTask.listen((_) {
-      if (mounted) _loadTasks();
-    });
-    _newDeliverySub = TaskAlertService.onNewDelivery.listen((_) {
-      if (mounted) _loadDeliveryCounts();
-    });
   }
 
   // ── Loaders ───────────────────────────────────────────────────────────────
@@ -85,24 +90,15 @@ class _HomePageState extends State<HomePage> {
     if (mounted) setState(() { userName = name ?? "User"; });
   }
 
-  /// Loads department flags then kicks off delivery-count fetch for
-  /// room-service users — mirrors the original _initDepartmentsAndFood logic.
-  Future<void> _initDepartments() async {
+  Future<void> _loadUserDepartments() async {
     final depts      = await UserSessionHelper.getDepartments();
     final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
     if (!mounted) return;
-
     setState(() {
-      isRoomServiceUser = normalized.any(
-          (d) => d.contains("room") && d.contains("service"));
-      isFrontOfficeUser = normalized.any(
-          (d) => d.contains("front") && d.contains("office"));
+      isRoomServiceUser =
+          normalized.any((d) => d.contains("room") && d.contains("service"));
       _deptLoaded = true;
     });
-
-    if (isRoomServiceUser) {
-      _loadDeliveryCounts();
-    }
   }
 
   Future<void> _loadTasks() async {
@@ -127,7 +123,7 @@ class _HomePageState extends State<HomePage> {
     final List<Map<String, dynamic>> rawList =
         List<Map<String, dynamic>>.from(result["tasks"]);
 
-    // Deduplicate by service_request_id, prefer rows with a real room number
+    // Deduplicate by service_request_id, preferring rows with a real room
     final Map<int, Map<String, dynamic>> uniqueMap = {};
     for (final t in rawList) {
       final id = t["service_request_id"];
@@ -150,8 +146,8 @@ class _HomePageState extends State<HomePage> {
 
     final List<Map<String, dynamic>> raw = uniqueMap.values.toList();
     raw.sort((a, b) {
-      final da = _parseTimestamp(a["raw"]?["created_at"] ?? a["created_at"]);
-      final db = _parseTimestamp(b["raw"]?["created_at"] ?? b["created_at"]);
+      final da = _parseTimestamp(a["raw"]["created_at"] ?? a["created_at"]);
+      final db = _parseTimestamp(b["raw"]["created_at"] ?? b["created_at"]);
       return db.compareTo(da);
     });
 
@@ -169,18 +165,36 @@ class _HomePageState extends State<HomePage> {
     TaskAlertService.resetServiceCount(openCount);
   }
 
-  /// Fetches ready + accepted order counts for the summary card badge.
+  // ── Distinct order count helper ───────────────────────────────────────────
+
+  int _distinctOrderCount(List<Map<String, dynamic>> orders) {
+    final seen = <dynamic>{};
+    for (final o in orders) {
+      final orderNo = o["orderNumber"];
+      if (orderNo != null) seen.add(orderNo);
+    }
+    return seen.length;
+  }
+
   Future<void> _loadDeliveryCounts() async {
-    final readyResult    = await HomeService().getReadyOrdersForRoomService();
-    final acceptedResult = await HomeService().getAcceptedOrdersForRoomService();
+    final readyResult     = await HomeService().getReadyOrdersForRoomService();
+    final acceptedResult  = await HomeService().getAcceptedOrdersForRoomService();
+    final deliveredResult = await HomeService().getDeliveredOrdersForRoomService();
+
     if (!mounted) return;
 
-    final readyCount    = (readyResult["orders"]    as List?)?.length ?? 0;
-    final acceptedCount = (acceptedResult["orders"] as List?)?.length ?? 0;
+    final readyOrders     = (readyResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final acceptedOrders  = (acceptedResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final deliveredOrders = (deliveredResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
+
+    final readyCount     = _distinctOrderCount(readyOrders);
+    final acceptedCount  = _distinctOrderCount(acceptedOrders);
+    final deliveredCount = _distinctOrderCount(deliveredOrders);
 
     setState(() {
-      _readyOrderCount    = readyCount;
-      _acceptedOrderCount = acceptedCount;
+      _readyOrderCount     = readyCount;
+      _acceptedOrderCount  = acceptedCount;
+      _deliveredOrderCount = deliveredCount;
     });
 
     TaskAlertService.resetDeliveryCount(readyCount);
@@ -278,20 +292,19 @@ class _HomePageState extends State<HomePage> {
       case "Closed":
         list = tasks.where((t) => t["status"] == "Closed").toList()
           ..sort((a, b) {
-            final da = _parseTimestamp(a["raw"]?["created_at"] ?? "");
-            final db = _parseTimestamp(b["raw"]?["created_at"] ?? "");
+            final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
+            final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
             return db.compareTo(da);
           });
         break;
       default:
         list = tasks.where((t) => t["status"] != "Closed").toList()
           ..sort((a, b) {
-            final da = _parseTimestamp(a["raw"]?["created_at"] ?? "");
-            final db = _parseTimestamp(b["raw"]?["created_at"] ?? "");
+            final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
+            final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
             return db.compareTo(da);
           });
     }
-
     return list.where((t) {
       final createdAt = t["raw"]?["created_at"] ?? "";
       final date      = _parseTimestamp(createdAt);
@@ -427,8 +440,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ── AppBar ────────────────────────────────────────────────────────────────
-
   AppBar _buildAppBar() {
     return AppBar(
       automaticallyImplyLeading: false,
@@ -452,8 +463,7 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       actions: [
-        // Guest-checkout button — front-office users only
-        if (isFrontOfficeUser)
+        if (isRoomServiceUser)
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: GestureDetector(
@@ -466,15 +476,14 @@ class _HomePageState extends State<HomePage> {
                 decoration: BoxDecoration(
                   color: AppColors.warningLight,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                      color: AppColors.warning.withOpacity(0.3)),
+                  border:
+                      Border.all(color: AppColors.warning.withOpacity(0.3)),
                 ),
                 child: Image.asset("assets/icons/checkout_report.png",
                     width: 20, height: 20, color: AppColors.textPrimary),
               ),
             ),
           ),
-        // Profile avatar
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: Material(
@@ -500,22 +509,21 @@ class _HomePageState extends State<HomePage> {
 
   // ── Summary cards ─────────────────────────────────────────────────────────
 
-  /// Builds the top summary row.
-  /// • "Service Tasks" card is always shown.
-  /// • "Delivery" card is shown only for room-service users and taps into
-  ///   the full [DeliveryPage].
   Widget _buildTopSummaryCards() {
     final openCount       = tasks.where((t) => t["status"] == "Open").length;
     final inProgressCount =
         tasks.where((t) => t["status"] == "In Progress").length;
-    final totalActive   = openCount + inProgressCount;
-    final deliveryCount = _readyOrderCount + _acceptedOrderCount;
+    final closedCount     = tasks.where((t) => t["status"] == "Closed").length;
+    final totalTaskCount  = openCount + inProgressCount + closedCount;
+
+    final totalDelivery =
+        _readyOrderCount + _acceptedOrderCount + _deliveredOrderCount;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Row(
         children: [
-          // ── Service Tasks card ──────────────────────────────────────
+          // Service Tasks card
           Expanded(
             child: GestureDetector(
               onTap: () => setState(() => selectedFilter = "All"),
@@ -532,130 +540,91 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-                child: const Center(
+                child: Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.checklist_rounded,
+                      const Icon(Icons.checklist_rounded,
                           color: Colors.white70, size: 20),
-                      SizedBox(height: 4),
+                      const SizedBox(height: 4),
                       Text(
-                        // rebuilt each frame via outer scope
-                        "",
-                        style: TextStyle(
+                        "$totalTaskCount",
+                        style: const TextStyle(
                             color: Colors.white,
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
                             height: 1.1),
                       ),
-                    ],
-                  ),
-                ),
-                // Rebuild count text properly (avoids const clash)
-              ),
-            ),
-          ),
-
-          // ── Delivery card — room-service users only ─────────────────
-          if (isRoomServiceUser) ...[
-            const SizedBox(width: 12),
-            Expanded(
-              child: GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const DeliveryPage()),
-                ),
-                child: Container(
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3),
+                      const SizedBox(height: 1),
+                      const Text(
+                        "Service Tasks",
+                        style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600),
                       ),
                     ],
                   ),
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.delivery_dining_rounded,
-                            color: AppColors.orange, size: 20),
-                        const SizedBox(height: 4),
-                        Text(
-                          "$deliveryCount",
-                          style: TextStyle(
-                              color: AppColors.orange,
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              height: 1.1),
-                        ),
-                        const SizedBox(height: 1),
-                        const Text(
-                          "Delivery",
-                          style: TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600),
-                        ),
-                      ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Delivery card
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DeliveryPage()),
+                ).then((_) {
+                  // Refresh delivery counts when returning from DeliveryPage
+                  if (mounted) _loadDeliveryCounts();
+                });
+              },
+              child: Container(
+                height: 80,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
                     ),
+                  ],
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.delivery_dining_rounded,
+                          color: AppColors.orange, size: 20),
+                      const SizedBox(height: 4),
+                      Text(
+                        "$totalDelivery",
+                        style: TextStyle(
+                            color: AppColors.orange,
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            height: 1.1),
+                      ),
+                      const SizedBox(height: 1),
+                      const Text(
+                        "Delivery",
+                        style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ],
                   ),
                 ),
               ),
             ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  // Service Tasks count overlay (we need a non-const widget for the count)
-  Widget _serviceTasksCard(int totalActive) {
-    return GestureDetector(
-      onTap: () => setState(() => selectedFilter = "All"),
-      child: Container(
-        height: 80,
-        decoration: BoxDecoration(
-          color: AppColors.primary,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withOpacity(0.25),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
-            ),
-          ],
-        ),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.checklist_rounded,
-                  color: Colors.white70, size: 20),
-              const SizedBox(height: 4),
-              Text(
-                "$totalActive",
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    height: 1.1),
-              ),
-              const SizedBox(height: 1),
-              const Text(
-                "Service Tasks",
-                style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600),
-              ),
-            ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -666,33 +635,33 @@ class _HomePageState extends State<HomePage> {
     final openCount       = tasks.where((t) => t["status"] == "Open").length;
     final inProgressCount =
         tasks.where((t) => t["status"] == "In Progress").length;
-    final closedCount = tasks.where((t) => t["status"] == "Closed").length;
-    final allActive   = openCount + inProgressCount;
+    final closedCount     = tasks.where((t) => t["status"] == "Closed").length;
+    final allCount        = openCount + inProgressCount + closedCount;
 
     final filters = [
       {
         "label": "All",
-        "count": allActive,
+        "count": allCount,
         "icon": Icons.all_inclusive_rounded,
-        "color": AppColors.primary,
+        "color": AppColors.primary
       },
       {
         "label": "Open",
         "count": openCount,
         "icon": Icons.radio_button_unchecked_rounded,
-        "color": AppColors.info,
+        "color": AppColors.info
       },
       {
         "label": "In Progress",
         "count": inProgressCount,
         "icon": Icons.timelapse_rounded,
-        "color": AppColors.orange,
+        "color": AppColors.orange
       },
       {
         "label": "Closed",
         "count": closedCount,
         "icon": Icons.check_circle_rounded,
-        "color": AppColors.success,
+        "color": AppColors.success
       },
     ];
 
@@ -765,7 +734,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ── Error widget ──────────────────────────────────────────────────────────
+  // ── Error / content widgets ───────────────────────────────────────────────
 
   Widget _buildError() {
     return Center(
@@ -792,87 +761,15 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ── Main content ──────────────────────────────────────────────────────────
-
   Widget _buildContent() {
-    final openCount       = tasks.where((t) => t["status"] == "Open").length;
-    final inProgressCount =
-        tasks.where((t) => t["status"] == "In Progress").length;
-    final totalActive   = openCount + inProgressCount;
-    final deliveryCount = _readyOrderCount + _acceptedOrderCount;
-
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Summary cards ─────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Row(
-              children: [
-                if (isRoomServiceUser)
-                  Expanded(child: _serviceTasksCard(totalActive)),
-
-                if (isRoomServiceUser) ...[
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const DeliveryPage()),
-                      ),
-                      child: Container(
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 8,
-                              offset: const Offset(0, 3),
-                            ),
-                          ],
-                        ),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.delivery_dining_rounded,
-                                  color: AppColors.orange, size: 20),
-                              const SizedBox(height: 4),
-                              Text(
-                                "$deliveryCount",
-                                style: TextStyle(
-                                    color: AppColors.orange,
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.bold,
-                                    height: 1.1),
-                              ),
-                              const SizedBox(height: 1),
-                              const Text(
-                                "Delivery",
-                                style: TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-          // ── Filter grid ───────────────────────────────────────────────
+          _buildTopSummaryCards(),
           _buildTaskFilterGrid(),
 
-          // ── Header: label + date filter trigger ───────────────────────
+          // Header row: Service Requests label + date filter trigger
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: Row(
@@ -929,7 +826,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ── Task list ─────────────────────────────────────────────────
+          // Task list
           ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -995,28 +892,25 @@ class _HomePageState extends State<HomePage> {
   // ── Task card ─────────────────────────────────────────────────────────────
 
   Widget _buildTaskCard(Map<String, dynamic> task) {
-    final createdAt  = task["raw"]?["created_at"] ?? task["created_at"] ?? "";
-    final stripColor = getTaskPriorityColor(createdAt);
+    final createdAt = task["raw"]["created_at"] ?? task["created_at"] ?? "";
 
-    // Category icon inference
     IconData categoryIcon = Icons.build_circle_rounded;
-    Color    iconBg       = AppColors.infoLight;
-    Color    iconColor    = AppColors.info;
-    final    titleLower   = (task["title"] ?? "").toString().toLowerCase();
-
-    if (titleLower.contains("clean") || titleLower.contains("housekeep")) {
+    Color iconBg    = AppColors.infoLight;
+    Color iconColor = AppColors.info;
+    final title = (task["title"] ?? "").toString().toLowerCase();
+    if (title.contains("clean") || title.contains("housekeep")) {
       categoryIcon = Icons.cleaning_services_rounded;
       iconBg    = AppColors.successLight;
       iconColor = AppColors.success;
-    } else if (titleLower.contains("food") ||
-        titleLower.contains("pillow") ||
-        titleLower.contains("towel")) {
+    } else if (title.contains("food") ||
+        title.contains("pillow") ||
+        title.contains("towel")) {
       categoryIcon = Icons.bed_rounded;
       iconBg    = AppColors.primaryLight;
       iconColor = AppColors.primary;
-    } else if (titleLower.contains("ac") ||
-        titleLower.contains("electric") ||
-        titleLower.contains("light")) {
+    } else if (title.contains("ac") ||
+        title.contains("electric") ||
+        title.contains("light")) {
       categoryIcon = Icons.electrical_services_rounded;
       iconBg    = AppColors.orangeLight;
       iconColor = AppColors.orange;
@@ -1038,131 +932,103 @@ class _HomePageState extends State<HomePage> {
               offset: const Offset(0, 2)),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: IntrinsicHeight(
-          child: Row(
-            children: [
-              // Priority strip
-              Container(width: 5, color: stripColor),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(13),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Category icon + room pill + status chip
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(children: [
-                            Container(
-                              padding: const EdgeInsets.all(7),
-                              decoration: BoxDecoration(
-                                color: iconBg,
-                                borderRadius: BorderRadius.circular(9),
-                              ),
-                              child: Icon(categoryIcon,
-                                  size: 16, color: iconColor),
-                            ),
-                            const SizedBox(width: 7),
-                            _pill(
-                              "Room ${task["room"]}",
-                              AppColors.warningLight,
-                              textColor: AppColors.warning,
-                            ),
-                          ]),
-                          _statusPill(status, statusClr),
-                        ],
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      // Title
-                      Text(
-                        task["title"],
-                        style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textPrimary),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-
-                      // Guest name
-                      if (guestName.toString().isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 3),
-                          child: Text(
-                            "👤 $guestName",
-                            style: const TextStyle(
-                                color: AppColors.textSecondary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500),
-                          ),
-                        ),
-
-                      // Assigned-to
-                      if (task["isAccepted"] == true)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 3),
-                          child: Text(
-                            "✅ ${task["assignedTo"] ?? "-"}",
-                            style: const TextStyle(
-                                color: AppColors.success,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500),
-                          ),
-                        ),
-
-                      const SizedBox(height: 8),
-
-                      // Date + action button
-                      Row(
-                        children: [
-                          const Icon(Icons.calendar_today_rounded,
-                              size: 12, color: AppColors.textSecondary),
-                          const SizedBox(width: 4),
-                          Text(
-                            formatDateTime(createdAt),
-                            style: const TextStyle(
-                                color: AppColors.textSecondary, fontSize: 12),
-                          ),
-                          const Spacer(),
-                          if (status == "Open")
-                            ElevatedButton(
-                              onPressed: () => _acceptTask(task),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.success,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 7),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10)),
-                              ),
-                              child: const Text("Accept",
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 13)),
-                            ),
-                          if (status != "Open")
-                            const Icon(Icons.chevron_right_rounded,
-                                color: AppColors.textDisabled),
-                        ],
-                      ),
-                    ],
+      child: Padding(
+        padding: const EdgeInsets.all(13),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: iconBg,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Icon(categoryIcon, size: 16, color: iconColor),
                   ),
+                  const SizedBox(width: 7),
+                  _pill(
+                    "Room ${task["room"]}",
+                    AppColors.warningLight,
+                    textColor: AppColors.warning,
+                  ),
+                ]),
+                _statusPill(status, statusClr),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              task["title"],
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (guestName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  "👤 $guestName",
+                  style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500),
                 ),
               ),
-            ],
-          ),
+            if (task["isAccepted"] == true)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  "✅ ${task["assignedTo"] ?? "-"}",
+                  style: const TextStyle(
+                      color: AppColors.success,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500),
+                ),
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.calendar_today_rounded,
+                    size: 12, color: AppColors.textSecondary),
+                const SizedBox(width: 4),
+                Text(
+                  formatDateTime(createdAt),
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
+                ),
+                const Spacer(),
+                if (status == "Open")
+                  ElevatedButton(
+                    onPressed: () => _acceptTask(task),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.success,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 7),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text("Accept",
+                        style: TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13)),
+                  ),
+                if (status != "Open")
+                  const Icon(Icons.chevron_right_rounded,
+                      color: AppColors.textDisabled),
+              ],
+            ),
+          ],
         ),
       ),
     );
   }
-
-  // ── Shared pill widgets ───────────────────────────────────────────────────
 
   Widget _statusPill(String status, Color color) {
     return Container(
@@ -1206,23 +1072,23 @@ class _HomePageState extends State<HomePage> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Veg / non-veg FSSAI-style indicator (shared with DeliveryPage)
+// Shared veg/non-veg FSSAI-style indicator
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Returns true when is_veg == 1 (int or string).
 bool resolveIsVeg(dynamic isVegFlag) {
   if (isVegFlag == null) return false;
   final v = isVegFlag.toString().trim();
   return v == '1' || v == 'true';
 }
 
-/// Strictly square FSSAI dot indicator.
 Widget vegIndicator(bool isVeg) {
   final c = isVeg ? AppColors.success : AppColors.error;
   return Container(
     width: 14,
     height: 14,
-    decoration: BoxDecoration(border: Border.all(color: c, width: 1.5)),
+    decoration: BoxDecoration(
+      border: Border.all(color: c, width: 1.5),
+    ),
     child: Center(
       child: Container(
         width: 6,
@@ -1234,7 +1100,7 @@ Widget vegIndicator(bool isVeg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DeliveryPage — full delivery management screen (room-service users only)
+// DeliveryPage
 // ─────────────────────────────────────────────────────────────────────────────
 
 class DeliveryPage extends StatefulWidget {
@@ -1270,19 +1136,22 @@ class _DeliveryPageState extends State<DeliveryPage> {
     super.dispose();
   }
 
-  // ── Loaders ───────────────────────────────────────────────────────────────
+  // ── Load all orders ───────────────────────────────────────────────────────
 
   Future<void> _loadAllOrders() async {
     setState(() {
       _isLoading    = true;
       _errorMessage = null;
     });
-    await Future.wait([
-      _loadReadyOrders(),
-      _loadAcceptedOrders(),
-      _loadDeliveredOrders(),
-    ]);
-    if (mounted) setState(() { _isLoading = false; });
+    try {
+      await Future.wait([
+        _loadReadyOrders(),
+        _loadAcceptedOrders(),
+        _loadDeliveredOrders(),
+      ]);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   Future<void> _loadReadyOrders() async {
@@ -1328,7 +1197,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
     });
   }
 
-  // ── Group order items by order number ─────────────────────────────────────
+  // ── Group orders by order_number ──────────────────────────────────────────
 
   DateTime _parseOrderTime(String? ts) {
     if (ts == null || ts.trim().isEmpty) return DateTime(2000);
@@ -1364,7 +1233,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
       grouped[orderNo]!["items"].add({
         "name":   o["foodItem"],
         "qty":    o["quantity"],
-        "is_veg": o["raw"]?["is_veg"],
+        "is_veg": o["raw"]?["is_veg"] ?? o["is_veg"],
       });
     }
 
@@ -1387,23 +1256,39 @@ class _DeliveryPageState extends State<DeliveryPage> {
   }
 
   void _showGenericError() {
+    if (!mounted) return;
     AppSnackBar.show(context, "Something went wrong. Please try again.",
         isError: true);
   }
 
-  // ── Actions ───────────────────────────────────────────────────────────────
+  // ── Accept order ──────────────────────────────────────────────────────────
 
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
+    // Optimistically move to Accepted tab so the user sees instant feedback
+    setState(() {
+      _isLoading = true;
+      selectedFilter = "Accepted";
+    });
+
     final res = await HomeService().updateRoomServiceStatus(
         orderNumber: order["orderNumber"], action: "Accept");
-    if (!res["success"]) {
+
+    if (!mounted) return;
+
+    final success = res["success"] == true || res["success"] == 1;
+    if (!success) {
+      setState(() => _isLoading = false);
       _showGenericError();
       return;
     }
+
     await TaskAlertService.stopOneDeliveryAlert();
+    // Full reload so counts and lists are accurate
     await _loadAllOrders();
-    AppSnackBar.show(context, "Order accepted");
+    if (mounted) AppSnackBar.show(context, "Order accepted ✅");
   }
+
+  // ── Deliver order ─────────────────────────────────────────────────────────
 
   Future<void> _deliverOrder(Map<String, dynamic> order) async {
     final confirm = await showModalBottomSheet<bool>(
@@ -1482,17 +1367,30 @@ class _DeliveryPageState extends State<DeliveryPage> {
 
     if (confirm != true) return;
 
+    // Show loader and switch to Delivered tab immediately
+    setState(() {
+      _isLoading     = true;
+      selectedFilter = "Delivered";
+    });
+
     final res = await HomeService().updateRoomServiceStatus(
         orderNumber: order["orderNumber"], action: "Delivered");
-    if (res["success"] != true) {
+
+    if (!mounted) return;
+
+    final success = res["success"] == true || res["success"] == 1;
+    if (!success) {
+      setState(() => _isLoading = false);
       _showGenericError();
       return;
     }
+
+    // Full reload so all tabs are up to date
     await _loadAllOrders();
-    AppSnackBar.show(context, "Order delivered successfully");
+    if (mounted) AppSnackBar.show(context, "Order delivered successfully 🎉");
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Format date ───────────────────────────────────────────────────────────
 
   String formatDateTime(String ts) {
     if (ts.isEmpty) return "";
@@ -1531,25 +1429,25 @@ class _DeliveryPageState extends State<DeliveryPage> {
         children: [
           _buildFilterRow(),
           if (_isLoading)
-            const Expanded(child: Center(child: CircularProgressIndicator()))
+            const Expanded(
+                child: Center(child: CircularProgressIndicator()))
           else if (_errorMessage != null)
             Expanded(child: Center(child: Text(_errorMessage!)))
           else if (filteredOrders.isEmpty)
             const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.delivery_dining_rounded,
-                        size: 48, color: AppColors.textDisabled),
-                    SizedBox(height: 12),
-                    Text("No orders",
-                        style: TextStyle(
-                            color: AppColors.textDisabled, fontSize: 15)),
-                  ],
-                ),
-              ),
-            )
+                child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.delivery_dining_rounded,
+                            size: 48, color: AppColors.textDisabled),
+                        SizedBox(height: 12),
+                        Text("No orders",
+                            style: TextStyle(
+                                color: AppColors.textDisabled,
+                                fontSize: 15)),
+                      ],
+                    )))
           else
             Expanded(
               child: RefreshIndicator(
@@ -1702,7 +1600,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Header: Room block + Status / order info ───────────────
+            // ── Header: Room + Status chip ──────────────────────────────
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1794,20 +1692,21 @@ class _DeliveryPageState extends State<DeliveryPage> {
 
             const SizedBox(height: 10),
 
-            // ── Guest name ─────────────────────────────────────────────
-            if (guestName.toString().isNotEmpty)
+            // ── Guest name ──────────────────────────────────────────────
+            if (guestName.isNotEmpty)
               Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.all(5),
                     decoration: const BoxDecoration(
-                        color: AppColors.surfaceAlt, shape: BoxShape.circle),
+                        color: AppColors.surfaceAlt,
+                        shape: BoxShape.circle),
                     child: const Icon(Icons.person_rounded,
                         size: 12, color: AppColors.textSecondary),
                   ),
                   const SizedBox(width: 7),
                   Flexible(
-                    child: Text(guestName.toString(),
+                    child: Text(guestName,
                         style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
@@ -1822,7 +1721,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
               child: Divider(height: 1, color: AppColors.borderLight),
             ),
 
-            // ── Items header ───────────────────────────────────────────
+            // ── Order items header ──────────────────────────────────────
             const Row(
               children: [
                 Icon(Icons.restaurant_menu_rounded,
@@ -1837,7 +1736,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
             ),
             const SizedBox(height: 8),
 
-            // ── Items list with veg/non-veg indicator ──────────────────
+            // ── Items list ──────────────────────────────────────────────
             ...items.map<Widget>((item) {
               final isVeg = resolveIsVeg(item["is_veg"]);
               return Padding(
@@ -1878,14 +1777,13 @@ class _DeliveryPageState extends State<DeliveryPage> {
 
             const SizedBox(height: 10),
 
-            // ── Action buttons ─────────────────────────────────────────
-
+            // ── Action buttons — NO button shown for Delivered ──────────
             if (uiStatus == "Ready")
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () => _acceptOrder(order),
-                  icon: const Icon(Icons.check_rounded, size: 16),
+                  icon: const Icon(Icons.check_circle_rounded, size: 16),
                   label: const Text("Accept",
                       style: TextStyle(
                           fontWeight: FontWeight.w700, fontSize: 13)),
@@ -1899,13 +1797,12 @@ class _DeliveryPageState extends State<DeliveryPage> {
                   ),
                 ),
               ),
-
             if (uiStatus == "Accepted")
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () => _deliverOrder(order),
-                  icon: const Icon(Icons.check_rounded, size: 16),
+                  icon: const Icon(Icons.check_circle_rounded, size: 16),
                   label: const Text("Deliver",
                       style: TextStyle(
                           fontWeight: FontWeight.w700, fontSize: 13)),
@@ -1919,25 +1816,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
                   ),
                 ),
               ),
-
-            if (uiStatus == "Delivered")
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.successLight,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Center(
-                  child: Text(
-                    "Delivered",
-                    style: TextStyle(
-                        color: AppColors.success,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13),
-                  ),
-                ),
-              ),
+            // uiStatus == "Delivered" → no button, no banner
           ],
         ),
       ),

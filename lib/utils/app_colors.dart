@@ -4,13 +4,9 @@ class AppColors {
   AppColors._();
 
   // ── Brand / Primary ───────────────────────────────────────────
-  static const primary      = Color(0xFF4C3BCF);
-  static const primaryDark  = Color(0xFF3A2BA8);
-  static const primaryLight = Color(0xFFEEECFB);
-
-  // Legacy accent support (from old file)
-  static const accent       = Color(0xFF1E88E5);
-  static const _accent      = Color(0xFF5C6BC0);
+  static const primary      = Color(0xFF052D50);
+  static const primaryDark  = Color(0xFF1E4262);
+  static const primaryLight = Color(0xFFEBEFF1);
 
   // ── Semantic Colors ───────────────────────────────────────────
   static const success      = Color(0xFF10B981);
@@ -32,31 +28,32 @@ class AppColors {
   static const tealLight    = Color(0xFFCCFBF1);
 
   // ── Background / Surface ──────────────────────────────────────
-  static const bg           = Color(0xFFF3F4F8);
-  static const bgLight      = Color(0xFFF3F4F8); // unified
+  static const bg           = Color(0xFFEBEFF1);
+  static const bgLight      = Color(0xFFEBEFF1);
 
   static const surface      = Colors.white;
-  static const surfaceAlt   = Color(0xFFF8F9FA);
+  static const surfaceAlt   = Color(0xFFF4F6F8);
 
   // ── Text ──────────────────────────────────────────────────────
-  static const textPrimary   = Color(0xFF1E293B);
-  static const textSecondary = Color(0xFF64748B);
+  static const textPrimary   = Color(0xFF052D50);
+  static const textSecondary = Color(0xFF4A6580);
   static const textDisabled  = Color(0xFFADB5BD);
   static const textOnDark    = Colors.white;
 
   // ── Borders ───────────────────────────────────────────────────
-  static const border       = Color(0xFFE5E7EB);
-  static const borderLight  = Color(0xFFF1F5F9);
+  static const border       = Color(0xFFD6DDE3);
+  static const borderLight  = Color(0xFFEBEFF1);
 
-  // ── Shadows / Overlay ─────────────────────────────────────────
-  static Color shadow        = Colors.black.withOpacity(0.06);
-  static Color shadowMedium  = Colors.black.withOpacity(0.10);
-  static Color overlay       = Colors.black.withOpacity(0.5);
+  // ── Shadows / Overlay — non-const because withValues() is not const ──
+  static Color get shadow       => Colors.black.withValues(alpha: 0.06);
+  static Color get shadowMedium => Colors.black.withValues(alpha: 0.10);
+  static Color get overlay      => Colors.black.withValues(alpha: 0.5);
 
-  // ── Secondary (kept for compatibility)
+  // ── Secondary / Accent ────────────────────────────────────────
   static const secondary = success;
+  static const accent    = Color(0xFF1E4262);
 
-  // ── Status Helpers (VERY useful across app) ───────────────────
+  // ── Status Helpers ────────────────────────────────────────────
   static Color statusColor(String status) {
     switch (status.toLowerCase()) {
       case 'open':        return info;

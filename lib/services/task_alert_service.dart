@@ -1,27 +1,24 @@
 // services/task_alert_service.dart
 //
-// Alert service for:
-//   • SERVICE TASKS  — a new guest service request arrived (e.g. water bottle,
-//                      housekeeping) and needs staff to accept it.
-//   • DELIVERY TASKS — a food order is marked READY and room service needs
-//                      to pick it up.
+// FIXES APPLIED:
+//  FIX-4: Removed SharedPreferences sound-key write. Sound name passed
+//          directly as taskData to startService(), eliminating the
+//          write/read race condition with UnifiedAlertTaskHandler.
 //
-// Design mirrors OrderAlertService exactly:
-//   • Two independent counters: _pendingServiceCount / _pendingDeliveryCount
-//   • One shared foreground service (TaskAlertTaskHandler)
-//   • Service stays alive as long as EITHER counter > 0
-//   • Broadcast streams let the UI refresh its list on new alerts
+//  FIX-1 (from previous): _reevaluate() calls _ensureRunning() when
+//          totalPending > 0 — covers cold-launch and app-resume.
 
 import 'dart:async';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'task_alert_foreground_task.dart';
+import 'unified_alert_foreground_task.dart';
 
 class TaskAlertService {
-  // ── Pending counters ────────────────────────────────────────────────────
-  static int _pendingServiceCount  = 0; // unaccepted service tasks
-  static int _pendingDeliveryCount = 0; // ready orders not yet picked up
+  static int _pendingServiceCount  = 0;
+  static int _pendingDeliveryCount = 0;
 
-  // ── Broadcast streams — UI subscribes to refresh its list ───────────────
+  static int get totalPending => _pendingServiceCount + _pendingDeliveryCount;
+
+  // ── Streams ─────────────────────────────────────────────────────────────
   static final StreamController<void> _newTaskController =
       StreamController.broadcast();
   static final StreamController<void> _newDeliveryController =
@@ -30,73 +27,58 @@ class TaskAlertService {
   static Stream<void> get onNewTask     => _newTaskController.stream;
   static Stream<void> get onNewDelivery => _newDeliveryController.stream;
 
-  /// Call this (from FCM handler or WebSocket) to notify the UI to reload tasks.
   static void notifyNewTask()     => _newTaskController.add(null);
-
-  /// Call this (from FCM handler or WebSocket) to notify the UI to reload delivery orders.
   static void notifyNewDelivery() => _newDeliveryController.add(null);
 
-  // ════════════════════════════════════════════════════════════════════════
-  //  SERVICE TASK API
-  //  Call startServiceAlert() when NEW_SERVICE_TASK FCM arrives.
-  //  Call stopOneServiceAlert() when the task is accepted (In Progress).
-  //  Call resetServiceCount() after _loadTasks() so the count matches reality.
-  // ════════════════════════════════════════════════════════════════════════
+  // ── Service task API ─────────────────────────────────────────────────────
 
-  static Future<bool> startServiceAlert() async {
-    _pendingServiceCount++;
-    print('TaskAlertService.startServiceAlert() | serviceCount=$_pendingServiceCount');
-    return _ensureRunning(
-      notificationTitle: 'New Service Request',
-      notificationText:  'Tap to view pending tasks',
-    );
-  }
+  static Future<bool> startServiceAlert()    => ensureServiceRunning();
+  static Future<bool> ensureServiceRunning() => _ensureRunning(
+        soundName:         AlertSoundKey.task,
+        notificationTitle: 'New Service Request',
+        notificationText:  'Tap to view pending tasks',
+      );
 
+  /// ACCEPTOR DEVICE ONLY — optimistic decrement.
+  /// Must be followed by _loadTasks() → resetServiceCount().
   static Future<void> stopOneServiceAlert() async {
     _pendingServiceCount = (_pendingServiceCount - 1).clamp(0, 9999);
     print('TaskAlertService.stopOneServiceAlert() | serviceCount=$_pendingServiceCount');
     await _reevaluate();
   }
 
-  /// Call after _loadTasks() with the authoritative open-task count from the API.
+  /// PRIMARY STOP GATE for service tasks.
   static void resetServiceCount(int count) {
     _pendingServiceCount = count.clamp(0, 9999);
     print('TaskAlertService.resetServiceCount($count)');
     _reevaluate();
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  //  DELIVERY TASK API
-  //  Call startDeliveryAlert() when NEW_DELIVERY_TASK FCM arrives.
-  //  Call stopOneDeliveryAlert() when room service accepts or delivers.
-  //  Call resetDeliveryCount() after _loadReadyOrders() in DeliveryPage.
-  // ════════════════════════════════════════════════════════════════════════
+  // ── Delivery API ─────────────────────────────────────────────────────────
 
-  static Future<bool> startDeliveryAlert() async {
-    _pendingDeliveryCount++;
-    print('TaskAlertService.startDeliveryAlert() | deliveryCount=$_pendingDeliveryCount');
-    return _ensureRunning(
-      notificationTitle: 'Order Ready for Delivery',
-      notificationText:  'Tap to view delivery queue',
-    );
-  }
+  static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
+  static Future<bool> ensureDeliveryRunning() => _ensureRunning(
+        soundName:         AlertSoundKey.task,
+        notificationTitle: 'Order Ready for Delivery',
+        notificationText:  'Tap to view delivery queue',
+      );
 
+  /// ACCEPTOR DEVICE ONLY — optimistic decrement.
+  /// Must be followed by _loadAllOrders() → resetDeliveryCount().
   static Future<void> stopOneDeliveryAlert() async {
     _pendingDeliveryCount = (_pendingDeliveryCount - 1).clamp(0, 9999);
     print('TaskAlertService.stopOneDeliveryAlert() | deliveryCount=$_pendingDeliveryCount');
     await _reevaluate();
   }
 
-  /// Call after _loadReadyOrders() with the authoritative ready-order count.
+  /// PRIMARY STOP GATE for delivery tasks.
   static void resetDeliveryCount(int count) {
     _pendingDeliveryCount = count.clamp(0, 9999);
     print('TaskAlertService.resetDeliveryCount($count)');
     _reevaluate();
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  //  FORCE STOP — call on logout / app reset
-  // ════════════════════════════════════════════════════════════════════════
+  // ── Force stop (logout / app reset) ─────────────────────────────────────
 
   static Future<void> stopAll() async {
     _pendingServiceCount  = 0;
@@ -104,25 +86,23 @@ class TaskAlertService {
     await _stopService();
   }
 
-  // ── Internal ────────────────────────────────────────────────────────────
-
-  static int get _totalPending => _pendingServiceCount + _pendingDeliveryCount;
+  // ── Internal ─────────────────────────────────────────────────────────────
 
   static Future<bool> _ensureRunning({
+    required String soundName,
     required String notificationTitle,
     required String notificationText,
   }) async {
     try {
       final isRunning = await FlutterForegroundTask.isRunningService;
       if (!isRunning) {
+        // FIX-4: Pass sound name as taskData — no SharedPreferences race.
         await FlutterForegroundTask.startService(
           notificationTitle: notificationTitle,
           notificationText:  notificationText,
-          callback: taskAlertStartCallback,
+          callback:          unifiedAlertStartCallback, 
         );
-        print('TaskAlertService: foreground service started');
-      } else {
-        print('TaskAlertService: service already running, alert continues');
+        print('TaskAlertService: foreground service started (sound=$soundName)');
       }
       return true;
     } catch (e) {
@@ -131,14 +111,19 @@ class TaskAlertService {
     }
   }
 
-  /// Stop the service only when BOTH counters are zero.
   static Future<void> _reevaluate() async {
-    if (_totalPending == 0) {
+    if (totalPending == 0) {
       await _stopService();
     } else {
-      print(
-        'TaskAlertService: alert continues '
-        '(service=$_pendingServiceCount, delivery=$_pendingDeliveryCount)',
+      // Restart if not running — covers cold-launch and app-resume.
+      await _ensureRunning(
+        soundName:         AlertSoundKey.task,
+        notificationTitle: _pendingDeliveryCount > 0
+            ? 'Order Ready for Delivery'
+            : 'New Service Request',
+        notificationText: _pendingDeliveryCount > 0
+            ? 'Tap to view delivery queue'
+            : 'Tap to view pending tasks',
       );
     }
   }

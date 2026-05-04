@@ -56,6 +56,16 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   StreamSubscription? _wsSubscription;
   StreamSubscription? _orderSubscription;
 
+  // Tracks orders that have hit max delay locally (survives filter switches).
+  // DB `eta_locked` is the cross-device source of truth; this Set is the
+  // local optimistic complement for the device that just tapped "+".
+  final Set<String> _maxDelayReachedOrders = {};
+
+  bool _deliveredLoaded = false;
+
+  // ── Max extra ETA cap (must match SP v_MAX_EXTRA = 14) ───────────────────
+  static const int _kMaxExtraEta = 14;
+
   // ====================== WEBSOCKET ======================
   Future<void> _initializeWebSocket() async {
     final ws           = WebSocketService();
@@ -68,8 +78,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _wsSubscription = ws.stream.listen((event) {
       if (!mounted) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final type =
-            (event['type'] ?? '').toString().toUpperCase();
+        final type = (event['type'] ?? '').toString().toUpperCase();
         switch (type) {
           case 'NEW_FOOD_ORDER':
             _handleSocketNewOrder(event['data'] ?? event);
@@ -80,6 +89,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
           case 'ORDER_STATUS_UPDATED':
           case 'ORDER_CANCELLED':
             _handleSocketUpdate(event['data'] ?? event);
+            break;
+          // ── NEW: cross-device ETA sync ──────────────────────────────
+          case 'ORDER_ETA_UPDATED':
+            _handleSocketEtaUpdate(event['data'] ?? event);
             break;
         }
       });
@@ -106,6 +119,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (orderNo == null || orderNo.isEmpty) return;
     final newStatus =
         (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
+
     if (newStatus == 'DELIVERED') {
       OrderAlertService.stop();
       final index =
@@ -113,8 +127,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       if (index != -1) {
         setState(() {
           final order = foodOrders.removeAt(index);
-          order['status']                  = FoodOrderStatus.delivered.label;
-          order['raw']['order_status']     = 'DELIVERED';
+          order['status']              = FoodOrderStatus.delivered.label;
+          order['raw']['order_status'] = 'DELIVERED';
           deliveredOrders.insert(0, order);
         });
       } else {
@@ -122,29 +136,36 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       }
       return;
     }
+
     final index =
         foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
-    if (index == -1) { _loadFoodOrders(); return; }
+
     if (newStatus == 'ACCEPTED') {
-      setState(() {
-        foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
-        foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
-        foodOrders[index]['acceptedAt']          = DateTime.now();
-      });
-      OrderAlertService.stopOne();
+      if (index != -1) {
+        setState(() {
+          foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
+          foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
+          foodOrders[index]['acceptedAt']          = DateTime.now();
+        });
+      }
+      _loadFoodOrders();
       return;
     }
+
+    if (index == -1) { _loadFoodOrders(); return; }
+
     if (newStatus == 'CANCELLED') {
       setState(() {
         final order = foodOrders.removeAt(index);
-        order['status']                  = FoodOrderStatus.cancelled.label;
-        order['cancelReason']            = data['cancel_reason'];
-        order['raw']['order_status']     = 'CANCELLED';
+        order['status']              = FoodOrderStatus.cancelled.label;
+        order['cancelReason']        = data['cancel_reason'];
+        order['raw']['order_status'] = 'CANCELLED';
         cancelledOrders.insert(0, order);
       });
-      OrderAlertService.stopOne();
+      _loadFoodOrders();
       return;
     }
+
     setState(() {
       if (newStatus == 'READY') {
         foodOrders[index]['status']              = FoodOrderStatus.ready.label;
@@ -153,6 +174,29 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
         foodOrders[index]['raw']['order_status'] = 'PREPARING';
       }
+    });
+  }
+
+  // ── NEW: handle ORDER_ETA_UPDATED from WebSocket ──────────────────────────
+  // Fired by Lambda after another device successfully calls ADD_ETA.
+  // Updates etaMinutes, extraEta, and etaLocked on THIS device in real time.
+  void _handleSocketEtaUpdate(dynamic data) {
+    final orderNo  = data['order_number']?.toString();
+    final newExtra = (data['extra_eta_minutes'] as num?)?.toInt() ?? 0;
+    final locked   = data['eta_locked'] == true ||
+                     data['eta_locked'] == 1    ||
+                     data['eta_locked'] == '1';
+    if (orderNo == null) return;
+
+    final index =
+        foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
+    if (index == -1) return;
+
+    setState(() {
+      foodOrders[index]['extraEta']   = newExtra;
+      foodOrders[index]['etaMinutes'] = 15 + newExtra;
+      foodOrders[index]['etaLocked']  = locked;
+      if (locked) _maxDelayReachedOrders.add(orderNo);
     });
   }
 
@@ -202,22 +246,21 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (!mounted) return;
     if (result["success"] != true) {
       setState(() {
-        _hasError      = true;
-        _errorMessage  = result["message"] ?? "Failed to load orders";
-        _isLoading     = false;
+        _hasError     = true;
+        _errorMessage = result["message"] ?? "Failed to load orders";
+        _isLoading    = false;
       });
       return;
     }
     final mappedOrders = _groupApiOrders(result["orders"] ?? []);
     final active    = <Map<String, dynamic>>[];
-    final delivered = <Map<String, dynamic>>[];
     final cancelled = <Map<String, dynamic>>[];
+
     for (final o in mappedOrders) {
       final rawStatus =
           (o["raw"]?["order_status"] ?? "").toString().toUpperCase();
       if (rawStatus == "DELIVERED") {
-        o["status"] = FoodOrderStatus.delivered.label;
-        delivered.add(o);
+        continue;
       } else if (rawStatus == "CANCELLED") {
         o["status"]       = FoodOrderStatus.cancelled.label;
         o["cancelReason"] =
@@ -228,17 +271,17 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       }
     }
 
-    // Sort all lists: latest first
-    active.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-    delivered.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-    cancelled.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    active.sort((a, b) =>
+        (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    cancelled.sort((a, b) =>
+        (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
 
     setState(() {
       foodOrders..clear()..addAll(active);
       cancelledOrders..clear()..addAll(cancelled);
-      deliveredOrders..clear()..addAll(delivered);
       _isLoading = false;
     });
+
     final pendingCount = active
         .where((o) => o['status'] == FoodOrderStatus.pending.label)
         .length;
@@ -248,7 +291,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   void _addNewOrder(Map<String, dynamic> order) {
     setState(() {
       if (rushHourActive) {
-        final extra       = _rushExtraMinutes();
+        final extra         = _rushExtraMinutes();
         order['etaMinutes'] = (order['etaMinutes'] ?? 15) + extra;
         order['extraEta']   = extra;
       }
@@ -256,36 +299,49 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     });
   }
 
+  // ── _groupApiOrders: reads extra_eta_minutes + eta_locked from raw ────────
   List<Map<String, dynamic>> _groupApiOrders(List apiOrders) {
     final Map<String, Map<String, dynamic>> grouped = {};
     for (final o in apiOrders) {
       final orderNo     = o["orderNumber"];
       final raw         = o["raw"];
       final createdTime = raw?["order_time"] ?? raw?["delivered_time"] ?? "";
+
       if (!grouped.containsKey(orderNo)) {
+        // ── Read persisted ETA fields from DB ──────────────────────────
+        final extraEta = (o["extraEtaMinutes"] ?? 0) as int;
+        final locked   = o["etaLocked"] == true;
+
+        // If the DB says it's locked, register in local Set immediately
+        // so _isMaxDelayReached returns true without waiting for rebuild.
+        if (locked && orderNo != null) {
+          _maxDelayReachedOrders.add(orderNo.toString());
+        }
+
         grouped[orderNo] = {
-          "orderNo":      orderNo,
-          "room":         o["roomNumber"],
-          "guest":        (o["guestName"] ?? "Guest").toString(),
-          "status":       o["status"],
-          "items":        [],
-          "raw":          raw,
-          "createdAt":    _safeParseDate(createdTime),
-          "acceptedAt":   o["status"] == FoodOrderStatus.preparing.label
+          "orderNo":    orderNo,
+          "room":       o["roomNumber"],
+          "guest":      (o["guestName"] ?? "Guest").toString(),
+          "status":     o["status"],
+          "items":      [],
+          "raw":        raw,
+          "createdAt":  _safeParseDate(createdTime),
+          "acceptedAt": o["status"] == FoodOrderStatus.preparing.label
               ? _safeParseDate(createdTime)
               : null,
-          "etaMinutes":   15,
-          "extraEta":     0,
+          // etaMinutes = base 15 + whatever extra has been persisted in DB
+          "etaMinutes": 15 + extraEta,
+          "extraEta":   extraEta,
+          // etaLocked from DB — authoritative across all devices
+          "etaLocked":  locked,
           "cancelReason": o["cancelReason"] ?? raw?["cancel_reason"] ?? "",
-          // FIX: read is_veg from API
-          "isVeg":        raw?["is_veg"],
+          "isVeg":      raw?["is_veg"],
         };
       }
       grouped[orderNo]!["items"].add({
         "name":         o["foodItem"],
         "qty":          o["quantity"],
         "instructions": o["cookingInstructions"],
-        // FIX: per-item veg flag
         "isVeg":        o["raw"]?["is_veg"] ?? raw?["is_veg"],
       });
     }
@@ -303,14 +359,17 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   Future<void> _loadDeliveredOrders() async {
-    final result =
-        await _homeService.getDeliveredOrdersForRoomService();
+    final result = await _homeService.getDeliveredOrdersForRoomService();
     if (!mounted) return;
     if (result["success"] == true) {
       final grouped = _groupApiOrders(result["orders"] ?? []);
       for (final o in grouped) o["status"] = FoodOrderStatus.delivered.label;
-      grouped.sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-      setState(() => deliveredOrders..clear()..addAll(grouped));
+      grouped.sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+      setState(() {
+        deliveredOrders..clear()..addAll(grouped);
+        _deliveredLoaded = true;
+      });
     }
   }
 
@@ -326,8 +385,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _acceptController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 350));
     _shakeAnimation = Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(
-            parent: _acceptController, curve: Curves.easeOut));
+        CurvedAnimation(parent: _acceptController, curve: Curves.easeOut));
     _delayBlinkController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 800))
       ..repeat(reverse: true);
@@ -338,8 +396,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         vsync: this, duration: const Duration(milliseconds: 900))
       ..repeat(reverse: true);
     _blinkAnimation = Tween<double>(begin: 1.0, end: 0.2).animate(
-        CurvedAnimation(
-            parent: _blinkController, curve: Curves.easeInOut));
+        CurvedAnimation(parent: _blinkController, curve: Curves.easeInOut));
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       final now = DateTime.now();
@@ -450,11 +507,22 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         _remainingSeconds(order) < 0;
   }
 
+  // ── _isMaxDelayReached: DB etaLocked is authoritative ────────────────────
+  // Priority: DB lock → local Set → computed from extraEta.
+  bool _isMaxDelayReached(Map<String, dynamic> order) {
+    // 1. DB-driven lock — survives refresh on every device
+    if (order['etaLocked'] == true) return true;
+    // 2. Local optimistic Set — for the device that just tapped "+"
+    final orderNo = order['orderNo']?.toString() ?? '';
+    if (_maxDelayReachedOrders.contains(orderNo)) return true;
+    // 3. Computed fallback
+    return (order['extraEta'] ?? 0) as int >= _kMaxExtraEta;
+  }
+
   // ====================== MARK READY ======================
   Future<void> _markReady(Map<String, dynamic> order) async {
     if (order["raw"] == null) { _showError(null); return; }
-    if (!_isValidTransition(
-        order['status'], FoodOrderStatus.ready.label)) {
+    if (!_isValidTransition(order['status'], FoodOrderStatus.ready.label)) {
       _showError(null);
       return;
     }
@@ -480,7 +548,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     }
   }
 
-  // FIX: Ready confirmation as bottom sheet instead of dialog
   Future<void> _handleReadyTap(Map<String, dynamic> order) async {
     final rs = _rawStatus(order);
     if (rs == "DELIVERED" || rs == "CANCELLED") {
@@ -488,8 +555,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       await _loadFoodOrders();
       return;
     }
-    if (!_isValidTransition(
-        order['status'], FoodOrderStatus.ready.label)) {
+    if (!_isValidTransition(order['status'], FoodOrderStatus.ready.label)) {
       _showError(null);
       return;
     }
@@ -503,8 +569,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     _markReady(order);
   }
 
-  // FIX: Bottom sheet for ready confirmation
-  Future<bool?> _showReadyConfirmationSheet(Map<String, dynamic> order, int rem) {
+  Future<bool?> _showReadyConfirmationSheet(
+      Map<String, dynamic> order, int rem) {
     return showModalBottomSheet<bool>(
       context: context,
       backgroundColor: Colors.white,
@@ -519,8 +585,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             children: [
               Container(
                 margin: const EdgeInsets.only(top: 12, bottom: 16),
-                width: 36,
-                height: 4,
+                width: 36, height: 4,
                 decoration: BoxDecoration(
                   color: Colors.grey.shade300,
                   borderRadius: BorderRadius.circular(2),
@@ -611,25 +676,25 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     final pending = foodOrders
         .where((o) => o['status'] == FoodOrderStatus.pending.label)
         .toList()
-      ..sort((a, b) => (b['createdAt'] as DateTime)
-          .compareTo(a['createdAt'] as DateTime));
+      ..sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
     final preparing = foodOrders
         .where((o) => o['status'] == FoodOrderStatus.preparing.label)
         .toList()
       ..sort((a, b) =>
-          ((b['acceptedAt'] ?? b['createdAt']) as DateTime).compareTo(
-              (a['acceptedAt'] ?? a['createdAt']) as DateTime));
+          ((b['acceptedAt'] ?? b['createdAt']) as DateTime)
+              .compareTo((a['acceptedAt'] ?? a['createdAt']) as DateTime));
     final ready = foodOrders
         .where((o) => o['status'] == FoodOrderStatus.ready.label)
         .toList()
-      ..sort((a, b) => (b['createdAt'] as DateTime)
-          .compareTo(a['createdAt'] as DateTime));
+      ..sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
     final delivered = [...deliveredOrders]
-      ..sort((a, b) => (b['createdAt'] as DateTime)
-          .compareTo(a['createdAt'] as DateTime));
+      ..sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
     final cancelled = [...cancelledOrders]
-      ..sort((a, b) => (b['createdAt'] as DateTime)
-          .compareTo(a['createdAt'] as DateTime));
+      ..sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
 
     if (selectedFilter == FoodOrderStatus.pending.label)   return pending;
     if (selectedFilter == FoodOrderStatus.preparing.label) return preparing;
@@ -637,19 +702,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (selectedFilter == FoodOrderStatus.delivered.label) return delivered;
     if (selectedFilter == FoodOrderStatus.cancelled.label) return cancelled;
 
-    return [
-      ...pending,
-      ...preparing,
-      ...ready,
-      ...delivered,
-      ...cancelled,
-    ];
+    return [...pending, ...preparing, ...ready, ...delivered, ...cancelled];
   }
 
   // ====================== STATUS HELPERS ======================
-  Color _statusChipColor(String status) {
-    return AppColors.statusColor(status);
-  }
+  Color _statusChipColor(String status) => AppColors.statusColor(status);
 
   static const _pending   = 'Pending';
   static const _preparing = 'Preparing';
@@ -657,29 +714,23 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   static const _delivered = 'Delivered';
   static const _cancelled = 'Cancelled';
 
-  // FIX: is_veg from API field (1 = veg green, 0 = non-veg red)
   bool _isVeg(dynamic isVegFlag, String name) {
     if (isVegFlag != null) {
       final v = isVegFlag.toString();
       return v == '1' || v == 'true';
     }
-    // fallback to name heuristic
     return name.toLowerCase().contains('veg');
   }
 
   Widget _fssaiIcon(bool isVeg) {
     final c = isVeg ? AppColors.success : AppColors.error;
     return Container(
-      width: 14,
-      height: 14,
-      decoration: BoxDecoration(
-          border: Border.all(color: c, width: 1.5)),
+      width: 14, height: 14,
+      decoration: BoxDecoration(border: Border.all(color: c, width: 1.5)),
       child: Center(
         child: Container(
-          width: 6,
-          height: 6,
-          decoration:
-              BoxDecoration(color: c, shape: BoxShape.circle),
+          width: 6, height: 6,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle),
         ),
       ),
     );
@@ -696,21 +747,17 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   // ====================== COUNTS ======================
   int get _pendingCount =>
-      foodOrders
-          .where((o) => o['status'] == FoodOrderStatus.pending.label)
-          .length;
+      foodOrders.where((o) => o['status'] == FoodOrderStatus.pending.label).length;
   int get _preparingCount =>
-      foodOrders
-          .where((o) => o['status'] == FoodOrderStatus.preparing.label)
-          .length;
+      foodOrders.where((o) => o['status'] == FoodOrderStatus.preparing.label).length;
   int get _readyCount =>
-      foodOrders
-          .where((o) => o['status'] == FoodOrderStatus.ready.label)
-          .length;
+      foodOrders.where((o) => o['status'] == FoodOrderStatus.ready.label).length;
 
   int _countForFilter(String filter) {
     switch (filter) {
-      case 'All':       return _pendingCount + _preparingCount + _readyCount + deliveredOrders.length + cancelledOrders.length;
+      case 'All':
+        return _pendingCount + _preparingCount + _readyCount +
+               deliveredOrders.length + cancelledOrders.length;
       case _pending:    return _pendingCount;
       case _preparing:  return _preparingCount;
       case _ready:      return _readyCount;
@@ -730,22 +777,19 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         children: [
           _buildRushHourBanner(),
           _buildFilterContainers(),
-
-          // Count label
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: Row(
               children: [
                 Container(
-                  width: 8,
-                  height: 8,
+                  width: 8, height: 8,
                   decoration: const BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle),
+                      color: AppColors.primary, shape: BoxShape.circle),
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  "${_filteredOrders.isNotEmpty ? '${_filteredOrders.length} ' : 'No '}${selectedFilter == 'All' ? 'Total' : selectedFilter} Orders",
+                  "${_filteredOrders.isNotEmpty ? '${_filteredOrders.length} ' : 'No '}"
+                  "${selectedFilter == 'All' ? 'Total' : selectedFilter} Orders",
                   style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
@@ -754,13 +798,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
               ],
             ),
           ),
-
-          // List
           Expanded(
             child: _isLoading
                 ? const Center(
-                    child: CircularProgressIndicator(
-                        color: AppColors.primary))
+                    child: CircularProgressIndicator(color: AppColors.primary))
                 : _hasError
                     ? Center(
                         child: Text(
@@ -775,34 +816,29 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         onRefresh: _loadFoodOrders,
                         child: _filteredOrders.isEmpty
                             ? ListView(
-                                physics:
-                                    const AlwaysScrollableScrollPhysics(),
+                                physics: const AlwaysScrollableScrollPhysics(),
                                 children: const [
                                   SizedBox(height: 120),
                                   Center(
                                     child: Column(children: [
-                                      Icon(
-                                          Icons.room_service_rounded,
-                                          size: 48,
-                                          color: Colors.black12),
+                                      Icon(Icons.room_service_rounded,
+                                          size: 48, color: Colors.black12),
                                       SizedBox(height: 12),
                                       Text("No orders here",
                                           style: TextStyle(
-                                              color: AppColors
-                                                  .textDisabled,
+                                              color: AppColors.textDisabled,
                                               fontSize: 15)),
                                     ]),
                                   ),
                                 ],
                               )
                             : ListView.builder(
-                                physics:
-                                    const AlwaysScrollableScrollPhysics(),
-                                padding: const EdgeInsets.fromLTRB(
-                                    16, 4, 16, 16),
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 4, 16, 16),
                                 itemCount: _filteredOrders.length,
-                                itemBuilder: (_, i) => _buildOrderCard(
-                                    _filteredOrders[i], i),
+                                itemBuilder: (_, i) =>
+                                    _buildOrderCard(_filteredOrders[i], i),
                               ),
                       ),
           ),
@@ -842,8 +878,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             child: const Icon(Icons.bar_chart_rounded,
                 color: AppColors.textPrimary, size: 20),
           ),
-          onPressed: () => Navigator.push(
-              context,
+          onPressed: () => Navigator.push(context,
               MaterialPageRoute(builder: (_) => OrderHistoryPage())),
         ),
         const SizedBox(width: 4),
@@ -851,7 +886,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     );
   }
 
-  // ── RUSH HOUR BANNER — FIX: more compact ─────────────────────
+  // ── RUSH HOUR BANNER ─────────────────────────────────────────
   Widget _buildRushHourBanner() {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -922,8 +957,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 : _showRushHourOptions(),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              width: 44,
-              height: 24,
+              width: 44, height: 24,
               decoration: BoxDecoration(
                 color: rushHourActive
                     ? AppColors.error
@@ -937,8 +971,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     : Alignment.centerLeft,
                 child: Container(
                   margin: const EdgeInsets.all(3),
-                  width: 18,
-                  height: 18,
+                  width: 18, height: 18,
                   decoration: const BoxDecoration(
                       color: Colors.white, shape: BoxShape.circle),
                 ),
@@ -953,12 +986,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   // ── FILTER CONTAINERS ─────────────────────────────────────────
   Widget _buildFilterContainers() {
     final filterData = [
-      {'label': 'All',      'color': AppColors.primary,    'icon': Icons.all_inclusive_rounded},
-      {'label': _pending,   'color': AppColors.warning,    'icon': Icons.hourglass_top_rounded},
-      {'label': _preparing, 'color': AppColors.info,       'icon': Icons.restaurant_rounded},
-      {'label': _ready,     'color': AppColors.success,    'icon': Icons.check_circle_rounded},
-      {'label': _delivered, 'color': AppColors.teal,       'icon': Icons.local_shipping_rounded},
-      {'label': _cancelled, 'color': AppColors.error,      'icon': Icons.cancel_rounded},
+      {'label': 'All',      'color': AppColors.primary, 'icon': Icons.all_inclusive_rounded},
+      {'label': _pending,   'color': AppColors.warning,  'icon': Icons.hourglass_top_rounded},
+      {'label': _preparing, 'color': AppColors.info,     'icon': Icons.restaurant_rounded},
+      {'label': _ready,     'color': AppColors.success,  'icon': Icons.check_circle_rounded},
+      {'label': _delivered, 'color': AppColors.teal,     'icon': Icons.local_shipping_rounded},
+      {'label': _cancelled, 'color': AppColors.error,    'icon': Icons.cancel_rounded},
     ];
 
     return Padding(
@@ -983,8 +1016,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
                 width: 76,
-                padding: const EdgeInsets.symmetric(
-                    vertical: 10, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
                 decoration: BoxDecoration(
                   color: isSelected ? color : Colors.white,
                   borderRadius: BorderRadius.circular(16),
@@ -993,26 +1025,20 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     width: 1.5,
                   ),
                   boxShadow: isSelected
-                      ? [
-                          BoxShadow(
-                              color: color.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 3))
-                        ]
-                      : [
-                          BoxShadow(
-                              color: Colors.black.withOpacity(0.04),
-                              blurRadius: 5,
-                              offset: const Offset(0, 1))
-                        ],
+                      ? [BoxShadow(
+                            color: color.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3))]
+                      : [BoxShadow(
+                            color: Colors.black.withOpacity(0.04),
+                            blurRadius: 5,
+                            offset: const Offset(0, 1))],
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(icon,
-                        color:
-                            isSelected ? Colors.white : color,
-                        size: 17),
+                        color: isSelected ? Colors.white : color, size: 17),
                     const SizedBox(height: 3),
                     Text('$count',
                         style: TextStyle(
@@ -1056,9 +1082,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         .toSet()
         .toList();
 
-    // FIX: check max delay for + button
-    final extraEta  = (order['extraEta'] ?? 0) as int;
-    final maxDelayReached = extraEta >= 14;
+    final bool maxDelayReached = _isMaxDelayReached(order);
 
     return AnimatedBuilder(
       animation: _acceptController,
@@ -1066,8 +1090,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         final double shakeX = _acceptingIndex == index
             ? sin(_shakeAnimation.value * pi * 2) * 3
             : 0;
-        return Transform.translate(
-            offset: Offset(shakeX, 0), child: child);
+        return Transform.translate(offset: Offset(shakeX, 0), child: child);
       },
       child: Container(
         margin: const EdgeInsets.only(bottom: 14),
@@ -1088,7 +1111,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── HEADER ─────────────────────────────────
+                // Header
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1140,14 +1163,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(
-                                Icons.calendar_today_rounded,
-                                size: 11,
-                                color: AppColors.textDisabled),
+                            const Icon(Icons.calendar_today_rounded,
+                                size: 11, color: AppColors.textDisabled),
                             const SizedBox(width: 3),
                             Text(
-                              _formattedDateTime(
-                                  order['createdAt']),
+                              _formattedDateTime(order['createdAt']),
                               style: const TextStyle(
                                   fontSize: 11,
                                   color: AppColors.textSecondary),
@@ -1158,7 +1178,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
 
                 // Guest name
@@ -1171,8 +1190,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(Icons.person_rounded,
-                          size: 13,
-                          color: AppColors.textSecondary),
+                          size: 13, color: AppColors.textSecondary),
                     ),
                     const SizedBox(width: 7),
                     Flexible(
@@ -1186,15 +1204,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   ],
                 ),
 
-                const Divider(
-                    height: 16, color: AppColors.borderLight),
+                const Divider(height: 16, color: AppColors.borderLight),
 
                 // Items header
                 const Row(
                   children: [
                     Icon(Icons.restaurant_menu_rounded,
-                        size: 13,
-                        color: AppColors.textDisabled),
+                        size: 13, color: AppColors.textDisabled),
                     SizedBox(width: 5),
                     Text("Order Items",
                         style: TextStyle(
@@ -1205,7 +1221,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 ),
                 const SizedBox(height: 7),
 
-                // FIX: Items list with per-item is_veg flag
+                // Items list
                 ...items.map((i) => Padding(
                   padding: const EdgeInsets.only(bottom: 5),
                   child: Row(
@@ -1225,8 +1241,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                             horizontal: 7, vertical: 2),
                         decoration: BoxDecoration(
                           color: AppColors.surfaceAlt,
-                          borderRadius:
-                              BorderRadius.circular(7),
+                          borderRadius: BorderRadius.circular(7),
                         ),
                         child: Text('${i['qty']}',
                             style: const TextStyle(
@@ -1247,8 +1262,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     decoration: BoxDecoration(
                       color: AppColors.infoLight,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color: AppColors.info.withOpacity(0.25)),
+                      border:
+                          Border.all(color: AppColors.info.withOpacity(0.25)),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1258,8 +1273,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         const SizedBox(width: 6),
                         Expanded(
                           child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text("Cooking Instructions",
                                   style: TextStyle(
@@ -1267,11 +1281,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                       fontWeight: FontWeight.w700,
                                       color: AppColors.info)),
                               const SizedBox(height: 2),
-                              ...instructionsList.map((ins) =>
-                                  Text(ins,
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          height: 1.4))),
+                              ...instructionsList.map((ins) => Text(ins,
+                                  style: const TextStyle(
+                                      fontSize: 12, height: 1.4))),
                             ],
                           ),
                         ),
@@ -1283,8 +1295,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 // Cancel reason
                 if (status == FoodOrderStatus.cancelled.label &&
                     order['cancelReason'] != null &&
-                    (order['cancelReason'] as String)
-                        .isNotEmpty) ...[
+                    (order['cancelReason'] as String).isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Container(
                     width: double.infinity,
@@ -1293,8 +1304,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       color: AppColors.errorLight,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                          color:
-                              AppColors.error.withOpacity(0.2)),
+                          color: AppColors.error.withOpacity(0.2)),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1304,8 +1314,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         const SizedBox(width: 6),
                         Expanded(
                           child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text("Cancelled Reason",
                                   style: TextStyle(
@@ -1314,8 +1323,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                       color: AppColors.error)),
                               const SizedBox(height: 2),
                               Text(order['cancelReason'],
-                                  style: const TextStyle(
-                                      fontSize: 12)),
+                                  style: const TextStyle(fontSize: 12)),
                             ],
                           ),
                         ),
@@ -1326,7 +1334,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
                 const SizedBox(height: 12),
 
-                // ── ACTION BUTTONS ──────────────────────────
+                // ── ACTION BUTTONS ──────────────────────────────────────
                 if (status == FoodOrderStatus.pending.label &&
                     userRole == 'Food & Beverage') ...[
                   Row(
@@ -1339,8 +1347,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           onTap: () async {
                             if (_acceptingIndex != null) return;
                             final rs = _rawStatus(order);
-                            if (rs == "DELIVERED" ||
-                                rs == "CANCELLED") {
+                            if (rs == "DELIVERED" || rs == "CANCELLED") {
                               _showError(null);
                               await _loadFoodOrders();
                               return;
@@ -1352,43 +1359,33 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                             HapticFeedback.selectionClick();
                             setState(() {
                               _acceptingIndex = index;
-                              order["status"] = FoodOrderStatus
-                                  .preparing.label;
-                              order["acceptedAt"] =
-                                  DateTime.now();
+                              order["status"] = FoodOrderStatus.preparing.label;
+                              order["acceptedAt"] = DateTime.now();
                               if (rushHourActive) {
                                 final extra = _rushExtraMinutes();
                                 order['etaMinutes'] =
-                                    (order['etaMinutes'] ?? 15) +
-                                        extra;
+                                    (order['etaMinutes'] ?? 15) + extra;
                                 order['extraEta'] = extra;
                               }
                             });
-                            final result = await _foodOrderService
-                                .updateFoodOrderStatus(
+                            final result =
+                                await _foodOrderService.updateFoodOrderStatus(
                                     orderNumber: order["orderNo"],
-                                    status: FoodOrderStatus
-                                        .preparing.api);
+                                    status: FoodOrderStatus.preparing.api);
                             if (!mounted) return;
                             if (result["success"] != true) {
                               setState(() {
-                                order["status"] = FoodOrderStatus
-                                    .pending.label;
+                                order["status"] = FoodOrderStatus.pending.label;
                                 order.remove("acceptedAt");
                               });
                               _showError(result["message"]);
                             } else {
-                              final b =
-                                  result["data"]?["new_status"];
-                              if (b != null) {
-                                order["raw"]["order_status"] = b;
-                              }
+                              final b = result["data"]?["new_status"];
+                              if (b != null) order["raw"]["order_status"] = b;
                               await OrderAlertService.stopOne();
-                              AppSnackBar.show(
-                                  context, "Order accepted");
+                              AppSnackBar.show(context, "Order accepted");
                             }
-                            setState(
-                                () => _acceptingIndex = null);
+                            setState(() => _acceptingIndex = null);
                           },
                         ),
                       ),
@@ -1398,23 +1395,21 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           text: 'Cancel',
                           icon: Icons.cancel_rounded,
                           color: AppColors.error,
-                          onTap: () =>
-                              _showCancelReasons(order),
+                          onTap: () => _showCancelReasons(order),
                         ),
                       ),
                     ],
                   ),
-                ] else if (status ==
-                    FoodOrderStatus.preparing.label) ...[
+                ] else if (status == FoodOrderStatus.preparing.label) ...[
                   Row(
                     children: [
+                      // ETA / Ready button
                       Expanded(
                         child: AnimatedBuilder(
                           animation: _delayBlinkController,
                           builder: (context, _) {
-                            final opacity = isDelayed
-                                ? _delayBlinkAnimation.value
-                                : 1.0;
+                            final opacity =
+                                isDelayed ? _delayBlinkAnimation.value : 1.0;
                             return Opacity(
                               opacity: opacity,
                               child: _actionButton(
@@ -1423,27 +1418,88 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                     ? Icons.timer_rounded
                                     : Icons.warning_rounded,
                                 color: _etaColor(order),
-                                onTap: () =>
-                                    _handleReadyTap(order),
+                                onTap: () => _handleReadyTap(order),
                               ),
                             );
                           },
                         ),
                       ),
                       const SizedBox(width: 10),
-                      // FIX: hide/fade + button when max delay reached
+
+                      // ── ADD TIME button ─────────────────────────────
+                      // Permanently disabled once max is reached (DB or local).
                       AnimatedOpacity(
                         duration: const Duration(milliseconds: 200),
                         opacity: maxDelayReached ? 0.3 : 1.0,
                         child: GestureDetector(
                           onTap: maxDelayReached
-                              ? () => _showError("Maximum delay reached")
-                              : () {
+                              ? () => _showError(
+                                  "Maximum delay reached. Cannot add more time.")
+                              : () async {
+                                  final orderNo =
+                                      order['orderNo']?.toString() ?? '';
+                                  final prevExtra =
+                                      (order['extraEta'] ?? 0) as int;
+                                  final prevEta =
+                                      (order['etaMinutes'] ?? 15) as int;
+                                  const addMinutes = 2;
+
+                                  // ── Optimistic UI update ────────────
                                   setState(() {
-                                    order['etaMinutes'] += 2;
-                                    order['extraEta'] =
-                                        (order['extraEta'] ?? 0) + 2;
+                                    order['etaMinutes'] = prevEta + addMinutes;
+                                    order['extraEta']   = prevExtra + addMinutes;
+                                    if ((order['extraEta'] as int) >=
+                                        _kMaxExtraEta) {
+                                      order['etaLocked'] = true;
+                                      _maxDelayReachedOrders.add(orderNo);
+                                    }
                                   });
+
+                                  // ── Persist to DB via SP ADD_ETA branch ──
+                                  final result = await _foodOrderService
+                                      .updateFoodOrderStatus(
+                                    orderNumber: orderNo,
+                                    status:      'ADD_ETA',
+                                    addMinutes:  addMinutes,
+                                  );
+
+                                  if (!mounted) return;
+
+                                  if (result["success"] != true) {
+                                    // Rollback optimistic update
+                                    setState(() {
+                                      order['etaMinutes'] = prevEta;
+                                      order['extraEta']   = prevExtra;
+                                      order['etaLocked']  = false;
+                                      _maxDelayReachedOrders.remove(orderNo);
+                                    });
+                                    _showError(result["message"]);
+                                    return;
+                                  }
+
+                                  // ── Sync authoritative values from server ──
+                                  // Server response is the ground truth —
+                                  // handles concurrent taps from multiple devices.
+                                  final serverExtra =
+                                      (result["extraEtaMinutes"] as num?)
+                                              ?.toInt() ??
+                                          prevExtra + addMinutes;
+                                  final serverLocked =
+                                      result["etaLocked"] == 1 ||
+                                      result["etaLocked"] == true ||
+                                      result["etaLocked"] == '1';
+
+                                  setState(() {
+                                    order['extraEta']   = serverExtra;
+                                    order['etaMinutes'] = 15 + serverExtra;
+                                    order['etaLocked']  = serverLocked;
+                                    if (serverLocked) {
+                                      _maxDelayReachedOrders.add(orderNo);
+                                    }
+                                  });
+                                  // Note: Lambda broadcasts ORDER_ETA_UPDATED
+                                  // via WebSocket — other devices update via
+                                  // _handleSocketEtaUpdate automatically.
                                 },
                           child: Container(
                             padding: const EdgeInsets.all(11),
@@ -1451,8 +1507,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                               color: maxDelayReached
                                   ? AppColors.textDisabled
                                   : AppColors.textPrimary,
-                              borderRadius:
-                                  BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(12),
                             ),
                             child: Icon(
                               maxDelayReached
@@ -1478,8 +1533,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   // ── STATUS CHIP ───────────────────────────────────────────────
   Widget _buildStatusChip(String label, Color color) {
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: color.withOpacity(0.1),
         borderRadius: BorderRadius.circular(8),
@@ -1489,10 +1543,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-              width: 5,
-              height: 5,
-              decoration: BoxDecoration(
-                  color: color, shape: BoxShape.circle)),
+              width: 5, height: 5,
+              decoration:
+                  BoxDecoration(color: color, shape: BoxShape.circle)),
           const SizedBox(width: 4),
           Text(label,
               style: TextStyle(
@@ -1551,16 +1604,14 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       context: context,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-          borderRadius:
-              BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
               margin: const EdgeInsets.only(top: 12, bottom: 8),
-              width: 36,
-              height: 4,
+              width: 36, height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2),
@@ -1622,8 +1673,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       context: context,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-          borderRadius:
-              BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (_) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -1633,8 +1683,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             children: [
               Container(
                 margin: const EdgeInsets.only(bottom: 16),
-                width: 36,
-                height: 4,
+                width: 36, height: 4,
                 decoration: BoxDecoration(
                   color: Colors.grey.shade300,
                   borderRadius: BorderRadius.circular(2),
@@ -1648,8 +1697,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
               const SizedBox(height: 4),
               const Text('Select a reason',
                   style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textSecondary)),
+                      fontSize: 13, color: AppColors.textSecondary)),
               const SizedBox(height: 12),
               ...cancelReasons.map((reason) => InkWell(
                 onTap: () async {
@@ -1665,8 +1713,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   });
                   final result =
                       await _foodOrderService.updateFoodOrderStatus(
-                          orderNumber: order["orderNo"],
-                          status: FoodOrderStatus.cancelled.api,
+                          orderNumber:  order["orderNo"],
+                          status:       FoodOrderStatus.cancelled.api,
                           cancelReason: reason);
                   if (!mounted) return;
                   if (result["success"] != true) {
@@ -1682,7 +1730,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   setState(() {
                     order["raw"]["cancel_reason"] = reason;
                     foodOrders.remove(order);
-                    cancelledOrders.insert(0, order);
+                    if (!cancelledOrders
+                        .any((o) => o['orderNo'] == order['orderNo'])) {
+                      cancelledOrders.insert(0, order);
+                    }
                   });
                   await OrderAlertService.stopOne();
                   AppSnackBar.show(context, "Order cancelled");
@@ -1694,13 +1745,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       vertical: 14, horizontal: 8),
                   decoration: const BoxDecoration(
                       border: Border(
-                          bottom: BorderSide(
-                              color: AppColors.borderLight))),
+                          bottom: BorderSide(color: AppColors.borderLight))),
                   child: Row(
                     children: [
                       Container(
-                        width: 8,
-                        height: 8,
+                        width: 8, height: 8,
                         decoration: BoxDecoration(
                           color: AppColors.error.withOpacity(0.5),
                           shape: BoxShape.circle,

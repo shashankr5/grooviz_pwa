@@ -29,6 +29,12 @@ class _ProfilePageState extends State<ProfilePage> {
   List<String> departments = [];
   int userId = 0;
 
+  /// Show up to 4 departments before scrolling kicks in.
+  static const int _maxVisibleDepts = 4;
+
+  /// Approximate height per department chip (padding + text + margin).
+  static const double _chipHeight = 36.0;
+
   @override
   void initState() {
     super.initState();
@@ -36,28 +42,20 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _loadProfile() async {
-    // ✅ STEP 1: Try safe cache
     final local = await UserSessionHelper.getSafeUserProfile();
 
     if (local != null) {
       _setProfileData(local);
-
-      setState(() {
-        _isLoading = false;
-      });
-
+      setState(() => _isLoading = false);
       print("✅ Loaded profile from SAFE cache");
     }
 
-    // ✅ STEP 2: ALWAYS refresh from API
     print("🌐 Refreshing profile from API");
-
     final result = await ProfileService().getProfile();
 
     if (!mounted) return;
 
     if (!result["success"]) {
-      // ❗ Only show error if no cache
       if (local == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -70,15 +68,9 @@ class _ProfilePageState extends State<ProfilePage> {
     }
 
     final profile = result["profile"];
-
-    // ✅ Save fresh profile
     await UserSessionHelper.saveUserProfile(profile);
-
     _setProfileData(profile);
-
-    setState(() {
-      _isLoading = false;
-    });
+    setState(() => _isLoading = false);
   }
 
   void _setProfileData(Map<String, dynamic> profile) {
@@ -104,71 +96,63 @@ class _ProfilePageState extends State<ProfilePage> {
     });
   }
 
-  Future<void> _fetchFromApi() async {
-    final result = await ProfileService().getProfile();
-
-    if (!mounted) return;
-
-    if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-
-      setState(() => _isLoading = false);
-      return;
-    }
-
-    final profile = result["profile"];
-
-    _setProfileData(profile);
-
-    setState(() => _isLoading = false);
-  }
-
   Future<void> _handleLogout(BuildContext context) async {
+    // Button press animation
     setState(() => _isPressed = true);
     await Future.delayed(const Duration(milliseconds: 150));
     setState(() => _isPressed = false);
 
-    final result = await LogoutService().logout();
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
 
+    final result = await LogoutService().logout();
     await OrderAlertService.stop();
 
-    if (!mounted) return;
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
 
     if (!result["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result["message"]),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(result["message"]),
-        backgroundColor: Colors.green,
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result["message"]),
+          backgroundColor: Colors.green,
+        ),
+      );
 
-    await Future.delayed(const Duration(milliseconds: 600));
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
 
-    if (!mounted) return;
-
-    Navigator.pushReplacement(
-      context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
-        pageBuilder: (_, __, ___) => const LoginPage(),
-        transitionsBuilder: (_, animation, __, child) =>
-            FadeTransition(opacity: animation, child: child),
-      ),
-    );
+      Navigator.pushAndRemoveUntil(
+        context,
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 400),
+          pageBuilder: (_, __, ___) => const LoginPage(),
+          transitionsBuilder: (_, animation, __, child) =>
+              FadeTransition(opacity: animation, child: child),
+        ),
+        (route) => false,
+      );
+    }
   }
 
   Widget _circleIcon(IconData icon, Color iconColor, Color bgColor) {
@@ -196,11 +180,13 @@ class _ProfilePageState extends State<ProfilePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                  )),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
               const SizedBox(height: 2),
               Text(
                 value.isNotEmpty ? value : "—",
@@ -230,7 +216,7 @@ class _ProfilePageState extends State<ProfilePage> {
           Container(
             width: 6,
             height: 6,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: AppColors.primary,
               shape: BoxShape.circle,
             ),
@@ -281,6 +267,43 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  /// Builds the departments section:
+  /// - If ≤ 4 departments → column with natural height.
+  /// - If > 4 → fixed-height scrollable list showing 4 items at a time.
+  Widget _buildDepartmentsSection() {
+    if (departments.isEmpty) {
+      return const Text(
+        "—",
+        style: TextStyle(
+          fontWeight: FontWeight.w600,
+          color: AppColors.textPrimary,
+        ),
+      );
+    }
+
+    final int deptCount = departments.length;
+    final bool needsScroll = deptCount > _maxVisibleDepts;
+
+    if (needsScroll) {
+      // Fixed height showing exactly _maxVisibleDepts items, scroll for the rest
+      final double scrollHeight = _maxVisibleDepts * _chipHeight;
+      return SizedBox(
+        height: scrollHeight,
+        child: ListView.builder(
+          padding: EdgeInsets.zero,
+          itemCount: deptCount,
+          itemBuilder: (_, i) => _departmentChip(departments[i]),
+        ),
+      );
+    } else {
+      // Natural height – no scroll needed
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: departments.map(_departmentChip).toList(),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -307,7 +330,7 @@ class _ProfilePageState extends State<ProfilePage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // ------------------------ PROFILE CARD ------------------------
+            // ─────────────────── PROFILE CARD ───────────────────
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -327,136 +350,140 @@ class _ProfilePageState extends State<ProfilePage> {
                 children: [
                   // ── Avatar + Name ──
                   Stack(
-                  children: [
-                    Positioned(
-                      right: 0,
-                      top: 0,
-                      child: _dotGrid(),
-                    ),
-                    Row(
-                      children: [
-                      Container(
-                        width: 64,
-                        height: 64,
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.15),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: Text(
-                            name.isNotEmpty
-                                ? name.substring(0, 1).toUpperCase()
-                                : "?",
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 26,
-                              fontWeight: FontWeight.w700,
+                    children: [
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: _dotGrid(),
+                      ),
+                      Row(
+                        children: [
+                          Container(
+                            width: 64,
+                            height: 64,
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withOpacity(0.15),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Center(
+                              child: Text(
+                                name.isNotEmpty
+                                    ? name.substring(0, 1).toUpperCase()
+                                    : "?",
+                                style: const TextStyle(
+                                  color: AppColors.primary,
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              name,
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.textPrimary,
-                              ),
-                              overflow: TextOverflow.ellipsis,
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  designation,
+                                  style: const TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              designation,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                          ],
+                          ),
+                        ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 20),
                   Divider(color: AppColors.border),
                   const SizedBox(height: 20),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // LEFT SIDE
-                      Expanded(
-                        child: Column(
-                          children: [
-                            _infoRow(Icons.email_outlined, "Email", email),
-                            const SizedBox(height: 14),
-                            _infoRow(Icons.phone_outlined, "Phone", phone),
-                            if (role.isNotEmpty) ...[
-                              const SizedBox(height: 14),
-                              _infoRow(Icons.badge_outlined, "Role", role),
-                            ],
-                          ],
-                        ),
-                      ),
 
-                      // DIVIDER
-                      Container(
-                        width: 1,
-                        height: 180,
-                        color: AppColors.border,
-                        margin: const EdgeInsets.symmetric(horizontal: 12),
-                      ),
-
-                      // RIGHT SIDE (Departments)
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                  // ── Info + Departments (Dynamic height & divider) ──
+                  IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // LEFT: contact info
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary.withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  Icons.grid_view_rounded,
-                                  color: AppColors.primary,
-                                  size: 16,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              const Text(
-                                "Departments",
-                                style: TextStyle(
-                                  color: AppColors.textSecondary,
-                                  fontSize: 12,
-                                ),
-                              ),
+                              _infoRow(Icons.email_outlined, "Email", email),
+                              const SizedBox(height: 14),
+                              _infoRow(Icons.phone_outlined, "Phone", phone),
+                              if (role.isNotEmpty) ...[
+                                const SizedBox(height: 14),
+                                _infoRow(Icons.badge_outlined, "Role", role),
+                              ],
                             ],
                           ),
-                            const SizedBox(height: 8),
-                            if (departments.isEmpty)
-                              const Text("—")
-                            else
-                              ...departments.map((d) => _departmentChip(d)),
-                          ],
                         ),
-                      ),
-                    ],
+
+                        // VERTICAL DIVIDER – automatically matches tallest column
+                        Container(
+                          width: 1,
+                          height: double.infinity,
+                          color: AppColors.border,
+                          margin: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+
+                        // RIGHT: departments (scrollable after 4)
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(6),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Icon(
+                                      Icons.grid_view_rounded,
+                                      color: AppColors.primary,
+                                      size: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    "Departments",
+                                    style: TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              _buildDepartmentsSection(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
+
             const SizedBox(height: 20),
-            // -------------------------- SETTINGS CARD --------------------------
+
+            // ─────────────────── SETTINGS CARD ───────────────────
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -473,18 +500,24 @@ class _ProfilePageState extends State<ProfilePage> {
               child: Column(
                 children: [
                   ListTile(
-                    leading: _circleIcon(
-                      Icons.security,
-                      AppColors.textSecondary,
-                      AppColors.textSecondary,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.08),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.lock_outline_rounded,
+                        color: AppColors.primary,
+                        size: 20,
+                      ),
                     ),
                     title: const Text(
                       "Privacy",
                       style: TextStyle(
                           fontSize: 16, fontWeight: FontWeight.w600),
                     ),
-                    subtitle:
-                    const Text("Security and privacy settings"),
+                    subtitle: const Text("Security and privacy settings"),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
                       Navigator.push(
@@ -498,8 +531,10 @@ class _ProfilePageState extends State<ProfilePage> {
                 ],
               ),
             ),
+
             const SizedBox(height: 30),
-            // -------------------------- LOGOUT BUTTON --------------------------
+
+            // ─────────────────── LOGOUT BUTTON ───────────────────
             GestureDetector(
               onTap: () => _handleLogout(context),
               onTapDown: (_) => setState(() => _isPressed = true),
@@ -511,7 +546,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color: Colors.white, // ✅ ALWAYS WHITE
+                  color: Colors.white,
                   border: Border.all(
                     color: _isPressed
                         ? AppColors.primaryDark
@@ -543,6 +578,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
               ),
             ),
+
             const SizedBox(height: 20),
           ],
         ),

@@ -1,4 +1,4 @@
-//food_order_service
+//food_order_service.dart
 import 'dart:developer' as dev;
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -34,24 +34,24 @@ class FoodOrderService {
     );
   }
 
-  // GET FOOD ORDERS (F&B)
+  // ── GET FOOD ORDERS (F&B) ─────────────────────────────────────────────────
+
   Future<Map<String, dynamic>> getFoodOrders() async {
     try {
-      final int? userId = await UserSessionHelper.getUserId();
+      final int? userId       = await UserSessionHelper.getUserId();
       final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
 
       if (userId == null || userId == 0) {
         return {"success": false, "message": "User ID missing"};
       }
-
       if (enterpriseId == null || enterpriseId == 0) {
         return {"success": false, "message": "Enterprise ID missing"};
       }
 
       final payload = {
-        "user_id": userId,
+        "user_id":       userId,
         "enterprise_id": enterpriseId,
-        "stage": "dev",
+        "stage":         "dev",
       };
 
       dev.log("📤 Fetching Food Orders");
@@ -73,23 +73,21 @@ class FoodOrderService {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final statusFlag = statusList[0]["status"];
+      final statusFlag     = statusList[0]["status"];
       final responseString = statusList[0]["response"];
 
       if (statusFlag != "S" || responseString == null) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final decoded = json.decode(responseString);
-
+      final decoded  = json.decode(responseString);
       final ordersRaw = decoded["orders"] as List? ?? [];
-
-      final orders = _mapFoodOrders(ordersRaw);
+      final orders   = _mapFoodOrders(ordersRaw);
 
       return {
         "success": true,
         "message": decoded["message"] ?? "Success",
-        "orders": orders,
+        "orders":  orders,
       };
     } catch (e) {
       dev.log("❌ ERROR (getFoodOrders): $e");
@@ -97,92 +95,63 @@ class FoodOrderService {
     }
   }
 
-  // MAP API → UI FRIENDLY FORMAT
+  // ── MAP API → UI FRIENDLY FORMAT ─────────────────────────────────────────
+
   static List<Map<String, dynamic>> _mapFoodOrders(List raw) {
     return raw.map<Map<String, dynamic>>((o) {
       final m = Map<String, dynamic>.from(o);
-
       return {
-        "orderRequestId": m["order_request_id"],
-        "orderNumber": m["order_number"] ?? "-",
-
-        "roomNumber": m["room_number"] ?? "-",
-        "roomId": m["room_id"],
-
-        "guestName": m["guest_name"] ?? "Guest",
-
-        "foodItem": m["food_item"] ?? "-",
-        "quantity": m["quantity"] ?? 0,
-
+        "orderRequestId":  m["order_request_id"],
+        "orderNumber":     m["order_number"] ?? "-",
+        "roomNumber":      m["room_number"]  ?? "-",
+        "roomId":          m["room_id"],
+        "guestName":       m["guest_name"]   ?? "Guest",
+        "foodItem":        m["food_item"]    ?? "-",
+        "quantity":        m["quantity"]     ?? 0,
         "cookingInstructions": (m["cooking_instructions"] ?? "").toString().trim(),
-
-        "status": _statusText(m["order_status"]),
-        "statusColor": _statusColor(m["order_status"]),
-
-        "cancelReason": m["cancel_reason"],
-
-        "orderTime": _formatTime(m["order_time"]),
-
-        // keep raw if needed later
+        "status":          _statusText(m["order_status"]),
+        "statusColor":     _statusColor(m["order_status"]),
+        "cancelReason":    m["cancel_reason"],
+        "orderTime":       _formatTime(m["order_time"]),
+        // ── NEW: extra ETA fields from DB ──────────────────────────────
+        "extraEtaMinutes": (m["extra_eta_minutes"] ?? 0) as int,
+        "etaLocked":       (m["eta_locked"] ?? 0) == 1,
+        // ──────────────────────────────────────────────────────────────
         "raw": m,
       };
     }).toList();
   }
 
-  // STATUS HELPERS
+  // ── STATUS HELPERS ────────────────────────────────────────────────────────
+
   static String _statusText(String? s) {
-    if (s == null || s.trim().isEmpty) {
-      return FoodOrderStatus.pending.label;
-    }
-
-    final normalized = s.trim().toUpperCase();
-
-    switch (normalized) {
-      case "PENDING":
-        return FoodOrderStatus.pending.label;
-      case "PREPARING":
-        return FoodOrderStatus.preparing.label;
-      case "READY":
-        return FoodOrderStatus.ready.label;
-      case "DELIVERED":
-        return FoodOrderStatus.delivered.label;
+    if (s == null || s.trim().isEmpty) return FoodOrderStatus.pending.label;
+    switch (s.trim().toUpperCase()) {
+      case "PENDING":              return FoodOrderStatus.pending.label;
+      case "PREPARING":            return FoodOrderStatus.preparing.label;
+      case "READY":                return FoodOrderStatus.ready.label;
+      case "DELIVERED":            return FoodOrderStatus.delivered.label;
       case "CANCELLED":
-      case "CANCELED":
-        return FoodOrderStatus.cancelled.label;
-      default:
-        return FoodOrderStatus.pending.label;
+      case "CANCELED":             return FoodOrderStatus.cancelled.label;
+      default:                     return FoodOrderStatus.pending.label;
     }
   }
-
 
   static Color _statusColor(String? s) {
-    if (s == null || s.trim().isEmpty) {
-      return const Color(0xFF1976D2); // Pending - Blue
-    }
-
-    final normalized = s.trim().toUpperCase();
-
-    switch (normalized) {
-      case "PENDING":
-        return const Color(0xFF1976D2); // Blue
-      case "PREPARING":
-        return const Color(0xFFFF9800); // Orange
-      case "READY":
-        return const Color(0xFF4CAF50); // Green
-      case "DELIVERED":
-        return const Color(0xFF2E7D32); // Dark green
+    if (s == null || s.trim().isEmpty) return const Color(0xFF1976D2);
+    switch (s.trim().toUpperCase()) {
+      case "PENDING":              return const Color(0xFF1976D2);
+      case "PREPARING":            return const Color(0xFFFF9800);
+      case "READY":                return const Color(0xFF4CAF50);
+      case "DELIVERED":            return const Color(0xFF2E7D32);
       case "CANCELLED":
-      case "CANCELED":
-        return const Color(0xFFD32F2F); // Red
-      default:
-        return const Color(0xFF1976D2); // Fallback = Pending
+      case "CANCELED":             return const Color(0xFFD32F2F);
+      default:                     return const Color(0xFF1976D2);
     }
   }
 
-  // TIME FORMAT
   static String _formatTime(String? timestamp) {
     if (timestamp == null) return "-";
-
     try {
       final dt = DateTime.parse(timestamp).toLocal();
       return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} • "
@@ -192,26 +161,36 @@ class FoodOrderService {
     }
   }
 
-  // UPDATE FOOD ORDER STATUS (Pending → Preparing → Ready / Cancelled)
+  // ── UPDATE FOOD ORDER STATUS ──────────────────────────────────────────────
+  //
+  // Now accepts an optional [addMinutes] parameter.
+  // When status == 'ADD_ETA', pass addMinutes > 0.
+  // The SP handles ADD_ETA as a special branch — no status transition occurs.
+
   Future<Map<String, dynamic>> updateFoodOrderStatus({
     required String orderNumber,
     required String status,
     String? cancelReason,
+    int?    addMinutes,       // ← NEW: only used when status == 'ADD_ETA'
   }) async {
     try {
       final int? userId = await UserSessionHelper.getUserId();
-
       if (userId == null || userId == 0) {
         return {"success": false, "message": "User not logged in"};
       }
 
-      final payload = {
-        "order_number": orderNumber,
-        "status": status, // backend uppercases
+      final payload = <String, dynamic>{
+        "order_number":  orderNumber,
+        "status":        status,
         "cancel_reason": cancelReason ?? "",
-        "changed_by": userId,
-        "stage": "dev",
+        "changed_by":    userId,
+        "stage":         "dev",
       };
+
+      // Only include add_minutes when it is meaningful
+      if (addMinutes != null && addMinutes > 0) {
+        payload["add_minutes"] = addMinutes;
+      }
 
       dev.log("📤 Update Food Order Status");
       dev.log("Payload: $payload");
@@ -224,21 +203,23 @@ class FoodOrderService {
       dev.log("📥 Raw Update Response: ${response.data}");
 
       final resultList = response.data["RESULT"] as List?;
-
       if (resultList == null || resultList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final result = Map<String, dynamic>.from(resultList.first);
-
-      final flag = result["status"]; // S / F / E
+      final result  = Map<String, dynamic>.from(resultList.first);
+      final flag    = result["status"];
       final message = result["message"] ?? "Unknown error";
 
       return {
         "success": flag == "S",
         "message": message,
-        "status": flag,
-        "data": result, // optional: full backend payload
+        "status":  flag,
+        "data":    result,
+        // ── NEW: returned by ADD_ETA branch ───────────────────────────
+        "extraEtaMinutes": result["extra_eta_minutes"],
+        "etaLocked":       result["eta_locked"],
+        // ─────────────────────────────────────────────────────────────
       };
     } catch (e) {
       dev.log("❌ ERROR (updateFoodOrderStatus): $e");
@@ -246,26 +227,25 @@ class FoodOrderService {
     }
   }
 
-  // GET ORDER SUMMARY (Weekly / Daily)
+  // ── GET ORDER SUMMARY (Weekly / Daily) ───────────────────────────────────
+
   Future<Map<String, dynamic>> getOrderSummary({DateTime? date}) async {
     try {
       final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
-      final int? userId = await UserSessionHelper.getUserId();
+      final int? userId       = await UserSessionHelper.getUserId();
 
       if (enterpriseId == null || enterpriseId == 0) {
         return {"success": false, "message": "Enterprise ID missing"};
       }
-
       if (userId == null || userId == 0) {
         return {"success": false, "message": "User ID missing"};
       }
 
       final payload = {
         "enterprise_id": enterpriseId,
-        "user_id": userId,
+        "user_id":       userId,
         if (date != null)
-          "date":
-              "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}",
+          "date": "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}",
         "stage": "dev",
       };
 
@@ -288,39 +268,34 @@ class FoodOrderService {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final statusFlag = statusList[0]["status"];
+      final statusFlag     = statusList[0]["status"];
       final responseString = statusList[0]["response"];
 
       if (statusFlag != "S" || responseString == null) {
-        return {
-          "success": false,
-          "message": "Failed to fetch order summary"
-        };
+        return {"success": false, "message": "Failed to fetch order summary"};
       }
 
-      // ✅ Decode STRING response
-      final decoded = json.decode(responseString);
-
-      final summary = decoded["summary"] ?? {};
+      final decoded  = json.decode(responseString);
+      final summary  = decoded["summary"] ?? {};
       final ordersRaw = decoded["orders"] as List? ?? [];
 
       return {
         "success": true,
         "message": decoded["message"] ?? "Success",
         "summary": summary,
-        "orders": ordersRaw.map<Map<String, dynamic>>((o) {
+        "orders":  ordersRaw.map<Map<String, dynamic>>((o) {
           final m = Map<String, dynamic>.from(o);
           return {
             "orderRequestId": m["order_request_id"],
-            "orderNumber": m["order_number"],
-            "roomNumber": m["room_number"],
-            "roomId": m["room_id"],
-            "guestName": m["guest_name"] ?? "Guest",
-            "foodItem": m["food_item"],
-            "quantity": m["quantity"],
-            "status": _statusText(m["order_status"]),
-            "orderTime": _formatTime(m["order_time"]),
-            "raw": m,
+            "orderNumber":    m["order_number"],
+            "roomNumber":     m["room_number"],
+            "roomId":         m["room_id"],
+            "guestName":      m["guest_name"] ?? "Guest",
+            "foodItem":       m["food_item"],
+            "quantity":       m["quantity"],
+            "status":         _statusText(m["order_status"]),
+            "orderTime":      _formatTime(m["order_time"]),
+            "raw":            m,
           };
         }).toList(),
       };
@@ -329,5 +304,4 @@ class FoodOrderService {
       return {"success": false, "message": "Network error"};
     }
   }
-
 }

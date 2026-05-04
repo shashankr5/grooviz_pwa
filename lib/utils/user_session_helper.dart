@@ -1,4 +1,4 @@
-// user_session_helper.dart
+// lib/utils/user_session_helper.dart
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -42,8 +42,12 @@ class UserSessionHelper {
     await prefs.setString("phone", phone);
   }
 
-  // ---------- ENTERPRISE ID ----------
+  static Future<String?> getPhone() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString("phone");
+  }
 
+  // ---------- ENTERPRISE ID ----------
   static Future<void> saveEnterpriseId(int enterpriseId) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt("enterprise_id", enterpriseId);
@@ -54,15 +58,7 @@ class UserSessionHelper {
     return prefs.getInt("enterprise_id");
   }
 
-  // ----------- Phone -----------------
-
-  static Future<String?> getPhone() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString("phone");
-  }
-
   // ---------- DEPARTMENTS ----------
-
   static Future<void> saveDepartments(List<String> depts) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList("departments", depts);
@@ -71,6 +67,17 @@ class UserSessionHelper {
   static Future<List<String>> getDepartments() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getStringList("departments") ?? [];
+  }
+
+  // ---------- ROLE ----------   ← NEW
+  static Future<void> saveRole(String role) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString("user_role", role);
+  }
+
+  static Future<String?> getRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString("user_role");
   }
 
   // ---------- FULL PROFILE ----------
@@ -149,6 +156,7 @@ class UserSessionHelper {
     await prefs.remove("phone");
     await prefs.remove("enterprise_id");
     await prefs.remove("departments");
+    await prefs.remove("user_role");                // ← NEW
     await prefs.remove("user_profile");
     await prefs.remove("user_profile_user_id");
     await prefs.remove("is_logged_in");

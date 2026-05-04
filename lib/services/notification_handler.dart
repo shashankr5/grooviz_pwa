@@ -1,16 +1,18 @@
-// notification_handler.dart  (UPDATED)
+// notification_handler.dart — FINAL
 //
-// Foreground FCM handler. Routes all three alert types while the app is open.
-// Two Android notification channels are registered:
-//   high_importance_channel  → food orders  (bell_notification sound)
-//   task_alert_channel       → service tasks & delivery (task_notification sound)
+// Foreground FCM handler.
+//
+// KEY CHANGE: All NEW_* events call ensureRunning() (no counter).
+// All ACCEPTED/CANCELLED events call notify*() which triggers coordinator
+// and page reloads → resetCount(serverValue).
+// stopOne() is NEVER called here — it belongs only on the acceptor device
+// inside the page action, and even there only for service/cancel flows.
+// For food order accept, _loadFoodOrders() → resetCount() is called directly.
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
-import '../services/task_alert_service.dart';   // ← NEW
-import 'fcm_service.dart';
+import '../services/task_alert_service.dart';
 
 final FlutterLocalNotificationsPlugin localNotifications =
     FlutterLocalNotificationsPlugin();
@@ -20,41 +22,28 @@ Future<void> setupFirebaseNotifications() async {
 
   final messaging = FirebaseMessaging.instance;
 
-  String? token;
   try {
-    token = await messaging.getToken();
+    final token = await messaging.getToken();
     print('📱 FCM Token: $token');
   } catch (e) {
-    print('⚠️ FCM token fetch failed (will retry automatically): $e');
+    print('⚠️ FCM token fetch failed: $e');
   }
 
-  // FOREGROUND
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-    print('📨 Foreground message');
-    if (message.data.isEmpty && message.notification == null) {
-      print('⛔ Empty message ignored');
-      return;
-    }
+    if (message.data.isEmpty && message.notification == null) return;
     _showNotification(message);
   });
 
-  // TERMINATED → tapped notification opens app
   final initialMessage = await messaging.getInitialMessage();
-  if (initialMessage != null) {
-    print('🚀 Opened from terminated');
-    _handleMessage(initialMessage);
-  }
+  if (initialMessage != null) _handleMessage(initialMessage);
 
-  // BACKGROUND → TAP
   FirebaseMessaging.onMessageOpenedApp.listen(_handleMessage);
 }
 
 Future<void> _initializeLocalNotifications() async {
   const AndroidInitializationSettings androidSettings =
       AndroidInitializationSettings('@mipmap/ic_launcher');
-  const DarwinInitializationSettings iosSettings =
-      DarwinInitializationSettings();
-
+  const DarwinInitializationSettings iosSettings = DarwinInitializationSettings();
   await localNotifications.initialize(
     const InitializationSettings(android: androidSettings, iOS: iosSettings),
   );
@@ -64,131 +53,128 @@ Future<void> createNotificationChannel() async {
   final plugin = localNotifications
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
 
-  // Food order channel (existing)
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
-    'high_importance_channel',
-    'High Importance Notifications',
+    'high_importance_channel', 'High Importance Notifications',
     description: 'Alerts for new food orders.',
-    importance: Importance.max,
-    playSound: true,
+    importance: Importance.max, playSound: true,
     sound: RawResourceAndroidNotificationSound('bell_notification'),
   ));
-
-  // Service task & delivery channel (NEW)
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
-    'task_alert_channel',
-    'Task & Delivery Alerts',
-    description: 'Alerts for new service requests and ready delivery orders.',
-    importance: Importance.max,
-    playSound: true,
+    'task_alert_channel', 'Task & Delivery Alerts',
+    description: 'Alerts for service requests and delivery orders.',
+    importance: Importance.max, playSound: true,
     sound: RawResourceAndroidNotificationSound('task_notification'),
   ));
-
-  // Foreground service channel (existing)
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
-    'order_alert_service',
-    'Order Alert Service',
+    'order_alert_service', 'Order Alert Service',
     description: 'Foreground service for order and task alerts.',
-    importance: Importance.high,
-    playSound: false,
+    importance: Importance.high, playSound: false,
   ));
 }
 
-// ── Notification details helpers ──────────────────────────────────────────
-
 const _foodOrderDetails = NotificationDetails(
   android: AndroidNotificationDetails(
-    'high_importance_channel',
-    'High Importance Notifications',
+    'high_importance_channel', 'High Importance Notifications',
     channelDescription: 'Alerts for new food orders.',
-    importance: Importance.max,
-    priority: Priority.high,
-    playSound: true,
+    importance: Importance.max, priority: Priority.high, playSound: true,
     sound: RawResourceAndroidNotificationSound('bell_notification'),
   ),
-  iOS: DarwinNotificationDetails(
-    presentAlert: true,
-    presentBadge: true,
-    presentSound: true,
-  ),
+  iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
 
 const _taskAlertDetails = NotificationDetails(
   android: AndroidNotificationDetails(
-    'task_alert_channel',
-    'Task & Delivery Alerts',
-    channelDescription: 'Alerts for new service requests and delivery orders.',
-    importance: Importance.max,
-    priority: Priority.high,
-    playSound: true,
+    'task_alert_channel', 'Task & Delivery Alerts',
+    channelDescription: 'Alerts for service requests and delivery orders.',
+    importance: Importance.max, priority: Priority.high, playSound: true,
     sound: RawResourceAndroidNotificationSound('task_notification'),
   ),
-  iOS: DarwinNotificationDetails(
-    presentAlert: true,
-    presentBadge: true,
-    presentSound: true,
-  ),
+  iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
-
-// ── Main notification handler ─────────────────────────────────────────────
 
 Future<void> _showNotification(RemoteMessage message) async {
   final data  = message.data;
-  final title = data['title'] ?? '📢 Notification';
-  final body  = data['body'] ?? data['message'] ?? '';
+  final title = data['title'] ?? message.notification?.title ?? '📢 Notification';
+  final body  = data['body']  ?? message.notification?.body  ?? data['message'] ?? '';
   final type  = (data['type'] ?? '').toString();
 
-  print('🎯 Foreground notification | type=$type');
+  print('🎯 Foreground FCM | type=$type');
 
-  final stopAlert = (data['stop_alert'] ?? '').toString().toLowerCase();
+  bool isTaskType = false;
 
-  // Route to correct alert service
   switch (type) {
-    // Food orders
+
+    // ── Food order alerts ──────────────────────────────────────────────────
+
     case 'NEW_FOOD_ORDER':
-      await OrderAlertService.start();
+      // ensureRunning() — no counter increment. If WS already started it,
+      // this is a no-op (service already running). No double-increment.
+      await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
       break;
+
     case 'ORDER_ACCEPTED':
-      if (stopAlert == 'true') await OrderAlertService.stopOne();
+      // Do NOT call stopOne(). The acceptor device calls _loadFoodOrders()
+      // directly after accept, which calls resetCount(serverPending).
+      // Non-acceptor devices: notifyNewOrder() → coordinator + page reload
+      // → resetCount(serverPending).
+      OrderAlertService.notifyNewOrder();
       break;
+
+    case 'ORDER_CANCELLED':
+      // Same: let reload + resetCount decide whether to stop.
+      OrderAlertService.notifyNewOrder();
+      break;
+
     case 'ORDER_DELIVERED':
       await OrderAlertService.stop();
       break;
 
-    // Service tasks
+    case 'ORDER_STATUS_CHANGED':
+      // READY / PREPARING — no alert action.
+      break;
+
+    // ── Service task alerts ────────────────────────────────────────────────
+
     case 'NEW_SERVICE_TASK':
-      await TaskAlertService.startServiceAlert();
+      isTaskType = true;
+      await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
       break;
+
     case 'SERVICE_TASK_ACCEPTED':
-      if (stopAlert == 'true') await TaskAlertService.stopOneServiceAlert();
+      isTaskType = true;
+      // Do NOT call stopOneServiceAlert() on non-acceptor devices.
+      // home_page._acceptTask() calls it on the acceptor after the API call,
+      // then _loadTasks() → resetServiceCount() confirms for all.
+      TaskAlertService.notifyNewTask();
       break;
 
-    // Delivery
+    // ── Delivery alerts ────────────────────────────────────────────────────
+
     case 'NEW_DELIVERY_TASK':
-      await TaskAlertService.startDeliveryAlert();
+      isTaskType = true;
+      await TaskAlertService.ensureDeliveryRunning();
       TaskAlertService.notifyNewDelivery();
       break;
+
     case 'DELIVERY_ACCEPTED':
-      if (stopAlert == 'true') await TaskAlertService.stopOneDeliveryAlert();
+      isTaskType = true;
+      // Do NOT call stopOneDeliveryAlert() on non-acceptor devices.
+      TaskAlertService.notifyNewDelivery();
       break;
+
     case 'DELIVERY_DELIVERED':
-      await TaskAlertService.stopOneDeliveryAlert();
+      isTaskType = true;
+      TaskAlertService.notifyNewDelivery();
       break;
+
+    default:
+      print('Foreground FCM: unhandled type=$type');
   }
 
-  // Show the visible notification banner
-  final isTaskType = type == 'NEW_SERVICE_TASK'  ||
-                     type == 'SERVICE_TASK_ACCEPTED' ||
-                     type == 'NEW_DELIVERY_TASK'  ||
-                     type == 'DELIVERY_ACCEPTED'  ||
-                     type == 'DELIVERY_DELIVERED';
-
-  localNotifications.show(
-    message.hashCode,
-    title,
-    body,
+  await localNotifications.show(
+    message.hashCode, title, body,
     isTaskType ? _taskAlertDetails : _foodOrderDetails,
     payload: data.toString(),
   );
@@ -196,15 +182,19 @@ Future<void> _showNotification(RemoteMessage message) async {
 
 void _handleMessage(RemoteMessage message) {
   print('👆 Notification tapped | type=${message.data['type']}');
-
   switch (message.data['type']) {
     case 'NEW_FOOD_ORDER':
+    case 'ORDER_ACCEPTED':
+    case 'ORDER_CANCELLED':
       OrderAlertService.notifyNewOrder();
       break;
     case 'NEW_SERVICE_TASK':
+    case 'SERVICE_TASK_ACCEPTED':
       TaskAlertService.notifyNewTask();
       break;
     case 'NEW_DELIVERY_TASK':
+    case 'DELIVERY_ACCEPTED':
+    case 'DELIVERY_DELIVERED':
       TaskAlertService.notifyNewDelivery();
       break;
   }

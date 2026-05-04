@@ -25,6 +25,12 @@ class _MyContentsPageState extends State<MyContentsPage> {
     _loadContents();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadContents() async {
     setState(() {
       _isLoading = true;
@@ -54,7 +60,6 @@ class _MyContentsPageState extends State<MyContentsPage> {
           (item["fullName"] ?? "")
               .toLowerCase()
               .contains(_searchQuery.toLowerCase());
-
       return searchMatch;
     }).toList();
   }
@@ -74,7 +79,8 @@ class _MyContentsPageState extends State<MyContentsPage> {
               child: const Text("Cancel")),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text("Delete"),
+            child:
+                const Text("Delete", style: TextStyle(color: AppColors.error)),
           ),
         ],
       ),
@@ -82,15 +88,13 @@ class _MyContentsPageState extends State<MyContentsPage> {
 
     if (confirm != true) return false;
 
-    final result = await _roomsService.deleteContent(
-      contentId: id,
-    );
+    final result = await _roomsService.deleteContent(contentId: id);
 
     if (!mounted) return false;
 
     if (result["success"]) {
+      // Remove in-place — stays on MyContentsPage
       setState(() => _contents.removeWhere((e) => e["id"] == id));
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result["message"]),
@@ -109,13 +113,20 @@ class _MyContentsPageState extends State<MyContentsPage> {
     }
   }
 
+  // Triggered by ContentCard after a successful edit.
+  // Reloads the list without leaving the page.
+  void _onEditComplete() {
+    _loadContents();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         title: const Text("My Contents",
-            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+            style: TextStyle(
+                color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
         elevation: 1,
@@ -138,7 +149,8 @@ class _MyContentsPageState extends State<MyContentsPage> {
         onChanged: (v) => setState(() => _searchQuery = v),
         decoration: InputDecoration(
           hintText: "Search contents...",
-          prefixIcon: const Icon(Icons.search, color: AppColors.textSecondary),
+          prefixIcon:
+              const Icon(Icons.search, color: AppColors.textSecondary),
           filled: true,
           fillColor: AppColors.bgLight,
           border: OutlineInputBorder(
@@ -155,7 +167,9 @@ class _MyContentsPageState extends State<MyContentsPage> {
     }
 
     if (_error != null) {
-      return Center(child: Text(_error!, style: const TextStyle(color: AppColors.error)));
+      return Center(
+          child: Text(_error!,
+              style: const TextStyle(color: AppColors.error)));
     }
 
     if (_filtered.isEmpty) {
@@ -163,16 +177,11 @@ class _MyContentsPageState extends State<MyContentsPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.image_not_supported_outlined,
-              size: 56,
-              color: Colors.grey.shade300,
-            ),
+            Icon(Icons.image_not_supported_outlined,
+                size: 56, color: Colors.grey.shade300),
             const SizedBox(height: 12),
-            const Text(
-              "No content available",
-              style: TextStyle(color: Colors.grey, fontSize: 15),
-            ),
+            const Text("No content available",
+                style: TextStyle(color: Colors.grey, fontSize: 15)),
           ],
         ),
       );
@@ -185,20 +194,32 @@ class _MyContentsPageState extends State<MyContentsPage> {
         itemCount: _filtered.length,
         itemBuilder: (_, i) {
           final item = _filtered[i];
-
-          return ContentCard(content: item);
+          return ContentCard(
+            content: item,
+            onDeleteTap: () => _confirmDelete(item),
+            onEditComplete: _onEditComplete,
+          );
         },
       ),
     );
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+
 class ContentCard extends StatelessWidget {
   final Map<String, dynamic> content;
+  final Future<bool> Function() onDeleteTap;
+  final VoidCallback onEditComplete;
 
-  const ContentCard({super.key, required this.content});
+  const ContentCard({
+    super.key,
+    required this.content,
+    required this.onDeleteTap,
+    required this.onEditComplete,
+  });
 
-  void _previewImage(BuildContext context, String url, Map content) {
+  void _previewImage(BuildContext context, String url) {
     final rooms = content["rooms"] as List? ?? [];
 
     showDialog(
@@ -208,31 +229,23 @@ class ContentCard extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            /// IMAGE
             InteractiveViewer(
               child: Image.network(url, fit: BoxFit.contain),
             ),
-
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-
-                  /// ✅ Guest Name (moved inside Column)
                   Text(
                     content["fullName"] ?? "",
                     style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary,
-                    ),
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary),
                   ),
-
                   const SizedBox(height: 10),
-
-                  /// ROOMS
                   if (rooms.isNotEmpty)
                     Wrap(
                       spacing: 8,
@@ -257,7 +270,7 @@ class ContentCard extends StatelessWidget {
                     ),
                 ],
               ),
-            )
+            ),
           ],
         ),
       ),
@@ -303,11 +316,10 @@ class ContentCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-
-          /// IMAGE
+          // ── Thumbnail ───────────────────────────────────────────────
           if (url.isNotEmpty)
             GestureDetector(
-              onTap: () => _previewImage(context, url, content),
+              onTap: () => _previewImage(context, url),
               child: ClipRRect(
                 borderRadius:
                     const BorderRadius.vertical(top: Radius.circular(18)),
@@ -323,46 +335,46 @@ class ContentCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-
-                /// ACTIONS
+                // ── Action row ─────────────────────────────────────────
                 Row(
                   children: [
                     const Spacer(),
 
-                    /// DELETE
+                    // DELETE — in-place removal, no navigation
                     _iconButton(
                       icon: Icons.delete_outline,
                       color: Colors.red,
-                      onTap: () async {
-                        final state = context
-                            .findAncestorStateOfType<_MyContentsPageState>();
-                        if (state != null) {
-                          await state._confirmDelete(content);
-                        }
-                      },
+                      onTap: onDeleteTap,
                     ),
 
                     const SizedBox(width: 6),
 
-                    /// EDIT
+                    // EDIT — pushes CameraContentPage in edit mode.
+                    // .then() fires when the edit screen pops:
+                    //   refreshNeeded == true  → successful edit, reload list
+                    //   refreshNeeded == null  → user cancelled, do nothing
                     _iconButton(
                       icon: Icons.edit_outlined,
                       color: AppColors.primary,
-                      onTap: () async {
-                        await Navigator.push(
+                      onTap: () {
+                        Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (_) => CameraContentPage(
                               existingContent: content,
                             ),
                           ),
-                        );
+                        ).then((refreshNeeded) {
+                          if (refreshNeeded == true) {
+                            onEditComplete();
+                          }
+                        });
                       },
                     ),
                   ],
                 ),
 
-                /// ROOMS
+                // ── Room chips ─────────────────────────────────────────
                 if (rooms.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Wrap(
@@ -394,11 +406,5 @@ class ContentCard extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  String _shortDate(dynamic v) {
-    final d = DateTime.tryParse(v ?? "");
-    if (d == null) return "—";
-    return "${d.day}/${d.month}";
   }
 }

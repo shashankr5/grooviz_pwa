@@ -1,10 +1,26 @@
-// websocket_service.dart
+// services/websocket_service.dart
+//
+// FIXES APPLIED:
+//  FIX-3 (BLOCKER): Added connection identity guard in connect().
+//          Previously, every FoodOrdersPage.initState() called
+//          ws.connect() which closed and reopened the channel unconditionally.
+//          Tab switches, navigation pops, and app resumes all caused a
+//          reconnect storm — during the 1-5s reconnect window, FCM/WS
+//          events were silently dropped.
+//          Now connect() is a no-op if already connected with the same
+//          userId + enterpriseId. Only reconnects when credentials change
+//          (i.e. a different user logs in) or when the connection is lost.
+//
+//  FIX-5: Added disconnect() method for use on logout. Prevents the old
+//          user's WS channel from receiving events after logout.
+
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'order_alert_service.dart';
+import 'task_alert_service.dart';
 
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
@@ -30,8 +46,19 @@ class WebSocketService {
   static const String _wsUrl =
       'wss://3fj7tlzfk3.execute-api.ap-south-1.amazonaws.com/production';
 
-  // ================= CONNECT =================
+  // ── Connect ────────────────────────────────────────────────────────────
+
   void connect({String? userId, String? enterpriseId}) {
+    // FIX-3: Guard — skip reconnect if already connected with same credentials.
+    // This prevents the reconnect storm caused by FoodOrdersPage.initState()
+    // calling connect() on every tab switch / navigation / app resume.
+    final sameCredentials = userId == _userId && enterpriseId == _enterpriseId;
+    if (sameCredentials && isConnected.value) {
+      print('WebSocket: already connected for user=$_userId — skipping reconnect');
+      return;
+    }
+
+    // Update credentials if they changed (e.g. different user logging in)
     if (userId != null)       _userId       = userId;
     if (enterpriseId != null) _enterpriseId = enterpriseId;
 
@@ -47,7 +74,7 @@ class WebSocketService {
         (message) {
           if (!isConnected.value) {
             isConnected.value = true;
-            print('WebSocket connected');
+            print('WebSocket connected | user=$_userId');
           }
           _handleMessage(message);
         },
@@ -70,7 +97,24 @@ class WebSocketService {
     }
   }
 
-  // ================= SEND =================
+  // ── Disconnect (call on logout) ────────────────────────────────────────
+
+  // FIX-5: Explicit disconnect for logout. Clears credentials so the next
+  // connect() call (after new login) opens a fresh channel for the new user.
+  void disconnect() {
+    print('WebSocket: disconnecting (logout)');
+    _isDisposed = false; // allow future reconnect after new login
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close(status.normalClosure);
+    _channel = null;
+    isConnected.value = false;
+    _userId       = null;
+    _enterpriseId = null;
+  }
+
+  // ── Send ───────────────────────────────────────────────────────────────
+
   void sendMessage(Map<String, dynamic> message) {
     if (_channel == null || !isConnected.value) return;
     try {
@@ -80,66 +124,103 @@ class WebSocketService {
     }
   }
 
-  // ================= MESSAGE HANDLER =================
+  // ── Message handler ────────────────────────────────────────────────────
+
   void _handleMessage(dynamic message) {
     try {
       final data = jsonDecode(message as String);
-      print('WS Received: ${data['type'] ?? data['action']}');
+      final type = (data['type'] ?? '').toString().toUpperCase();
 
+      print('WS Received: $type');
+
+      // Broadcast to all page listeners first.
       if (!_controller.isClosed) {
         _controller.add(data);
       }
 
-      final type = (data['type'] ?? '').toString().toUpperCase();
+      // ── Food order alerts ──────────────────────────────────────────────
 
-      // NEW_FOOD_ORDER → start alert
       if (type == 'NEW_FOOD_ORDER') {
-        OrderAlertService.start();
+        OrderAlertService.ensureRunning();
         return;
       }
 
-      // FIX: Do NOT stop the alert here for ORDER_ACCEPTED.
-      // food_orders_page._handleSocketUpdate() checks whether any OTHER
-      // pending orders still exist before stopping — this is the correct
-      // place for that decision because it has the full order list.
-      //
-      // ORDER_DELIVERED → always safe to stop (no pending order concept)
+      if (type == 'ORDER_ACCEPTED' || type == 'ORDER_CANCELLED') {
+        OrderAlertService.notifyNewOrder();
+        return;
+      }
+
       if (type == 'ORDER_DELIVERED') {
         OrderAlertService.stop();
         return;
       }
 
-      // ORDER_STATUS_CHANGED (READY etc.) → do NOT stop here either.
-      // READY does not mean there are no more pending orders.
+      // ORDER_STATUS_CHANGED (READY/PREPARING) → no alert action.
+
+      // ── Service task alerts ────────────────────────────────────────────
+
+      if (type == 'NEW_SERVICE_TASK') {
+        TaskAlertService.ensureServiceRunning();
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
+      if (type == 'SERVICE_TASK_ACCEPTED') {
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
+      // ── Delivery alerts ────────────────────────────────────────────────
+
+      if (type == 'NEW_DELIVERY_TASK') {
+        TaskAlertService.ensureDeliveryRunning();
+        TaskAlertService.notifyNewDelivery();
+        return;
+      }
+
+      if (type == 'DELIVERY_ACCEPTED') {
+        TaskAlertService.notifyNewDelivery();
+        return;
+      }
+
+      if (type == 'DELIVERY_DELIVERED') {
+        TaskAlertService.notifyNewDelivery();
+        return;
+      }
 
     } catch (e) {
       print('WS Message error: $e');
     }
   }
 
-  // ================= ERROR =================
+  // ── Error / Done ───────────────────────────────────────────────────────
+
   void _onError(dynamic error) {
     print('WebSocket Error: $error');
     isConnected.value = false;
     _scheduleReconnect();
   }
 
-  // ================= DISCONNECT =================
   void _onDone() {
     print('WebSocket disconnected');
     isConnected.value = false;
-    _scheduleReconnect();
+    // Only reconnect if we still have credentials (not logged out)
+    if (_userId != null) _scheduleReconnect();
   }
 
-  // ================= RECONNECT =================
+  // ── Reconnect ──────────────────────────────────────────────────────────
+
   void _scheduleReconnect() {
-    if (_isDisposed) return;
+    if (_isDisposed || _userId == null) return;
     Future.delayed(const Duration(seconds: 5), () {
-      if (!_isDisposed) connect(userId: _userId, enterpriseId: _enterpriseId);
+      if (!_isDisposed && _userId != null) {
+        connect(userId: _userId, enterpriseId: _enterpriseId);
+      }
     });
   }
 
-  // ================= DISPOSE =================
+  // ── Dispose ────────────────────────────────────────────────────────────
+
   void dispose() {
     _isDisposed = true;
     _subscription?.cancel();
