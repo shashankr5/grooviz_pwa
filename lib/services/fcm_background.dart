@@ -1,22 +1,11 @@
 // services/fcm_background.dart
 //
-// FIXES APPLIED:
-//  FIX-1 (BLOCKER): Removed all AlertReloadCoordinator.instance calls.
-//          The background isolate is a separate Dart isolate — it has
-//          NO access to main isolate singletons. Calling them silently
-//          operated on zero-initialized copies and did nothing.
-//          Now the background handler only starts/stops the foreground
-//          service. Counts are reset by the coordinator safety poll and
-//          didChangeAppLifecycleState when the app foregrounds.
-//
-//  FIX-2: Added FlutterForegroundTask.stopService() for ORDER_DELIVERED
-//          and DELIVERY_DELIVERED — these are definitive stop signals
-//          that are safe to act on even from a background isolate.
-//
-//  FIX-3: Added immediate stop when stop_alert flag is 'true' for
-//          ORDER_ACCEPTED, ORDER_CANCELLED, SERVICE_TASK_ACCEPTED,
-//          DELIVERY_ACCEPTED. This ensures cross‑device alert silence
-//          when another staff member accepts/cancels.
+// CHANGES IN THIS VERSION:
+//  FIX-1/2/3 from previous version kept.
+//  NEW: Added PULSE case — starts service if not running (sound plays on
+//       next foreground onStart via FCM).
+//  NEW: Added ESCALATION_ALERT case — starts service (plays once on foreground).
+//  NEW: Added ACCEPTED case — stops service immediately (cross-device stop).
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -83,7 +72,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   _initForegroundTask();
 
-  final type = (message.data['type'] ?? '').toString();
+  final type      = (message.data['type'] ?? '').toString();
   final stopAlert = message.data['stop_alert'] == 'true';
   print('Background FCM | type=$type | stop_alert=$stopAlert');
 
@@ -110,7 +99,6 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       return;
 
     case 'ORDER_STATUS_CHANGED':
-      // READY / PREPARING — no alert action.
       return;
 
     // ── Service task alerts ────────────────────────────────────────────────
@@ -145,6 +133,37 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     case 'DELIVERY_DELIVERED':
       await _stopServiceIfRunning();
+      return;
+
+    // ── NEW: Lambda pulse ────────────────────────────────────────────────────
+    //
+    // Sent by EventBridge job for unaccepted tasks. In the background isolate
+    // we can only start/stop the service — the actual sound plays in onStart()
+    // when the foreground service fires.
+
+    case 'PULSE':
+      await _startServiceIfNeeded();
+      print('BG: PULSE – service started/kept running for next sound play');
+      return;
+
+    // ── NEW: Escalation alert ──────────────────────────────────────────────
+    //
+    // Sent only to the escalation recipient. Start the service — the
+    // UnifiedAlertTaskHandler will play the escalation sound once (no loop).
+
+    case 'ESCALATION_ALERT':
+      await _startServiceIfNeeded();
+      print('BG: ESCALATION_ALERT – service started for one-shot escalation sound');
+      return;
+
+    // ── NEW: Cross-device accept stop ──────────────────────────────────────
+    //
+    // Lambda broadcasts this after any device accepts a task.
+    // Stop the foreground service immediately on all other devices.
+
+    case 'ACCEPTED':
+      await _stopServiceIfRunning();
+      print('BG: ACCEPTED – foreground service stopped (cross-device)');
       return;
 
     default:

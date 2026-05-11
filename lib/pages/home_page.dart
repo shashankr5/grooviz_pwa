@@ -1,4 +1,16 @@
 // home_page.dart
+//
+// CHANGES IN THIS VERSION:
+//  • Loads userRole from UserSessionHelper.getRole() in initState
+//  • Loads escalation badge count on init + on ESCALATION_ALERT stream
+//  • Staff/Supervisor/DeptHead: Escalated filter chip shown when badge > 0
+//  • Manager/GM/Admin: Escalated filter always visible, set as default
+//  • Third summary card on Home shows live escalation count (Manager+)
+//  • Escalated filter → calls getEscalatedTasks() from HomeService
+//  • Escalated task cards: red border, red pill, overdue label, original assignee
+//  • Escalated tasks sort to top of list
+//  • acceptTask() now passes department_id + enterprise_id to Lambda
+ 
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
@@ -9,87 +21,143 @@ import 'profile_page.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/app_colors.dart';
-
+ 
+// ── Role helpers ─────────────────────────────────────────────────────────────
+ 
+const _roleHierarchy = [
+  'Staff', 'Supervisor', 'Department Head', 'Manager', 'General Manager', 'Admin',
+];
+ 
+bool _isManagerRole(String? role) {
+  if (role == null) return false;
+  return _roleHierarchy.indexOf(role) >= 3; // Manager, GM, Admin
+}
+ 
+bool _isSupervisorOrAbove(String? role) {
+  if (role == null) return false;
+  return _roleHierarchy.indexOf(role) >= 1; // Supervisor+
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+ 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
+ 
   @override
   State<HomePage> createState() => _HomePageState();
 }
-
+ 
 class _HomePageState extends State<HomePage> {
   String selectedFilter     = "All";
   String selectedDateFilter = "All Days";
   String userName           = "";
+  String userRole           = "";   // NEW
   int?   loggedInUserId;
-
-  bool  _isLoading   = true;
+ 
+  bool  _isLoading       = true;
+  bool  _deptLoaded      = false;
   String? _errorMessage;
-  bool  _deptLoaded  = false;
-
+ 
   bool isRoomServiceUser = false;
-
-  List<Map<String, dynamic>> tasks = [];
-
+ 
+  List<Map<String, dynamic>> tasks          = [];
+  List<Map<String, dynamic>> escalatedTasks = [];   // NEW
+  int  _escalationBadgeCount = 0;                   // NEW
+ 
   // Delivery counts cached from summary cards
   int _readyOrderCount     = 0;
   int _acceptedOrderCount  = 0;
   int _deliveredOrderCount = 0;
-
+ 
   // Alert stream subscriptions
   StreamSubscription<void>? _newTaskSub;
   StreamSubscription<void>? _newDeliverySub;
-
-  int get currentSectionCount => filteredTasks.length;
-
+  StreamSubscription<int>?  _escalationSub;  // NEW
+ 
+  int get currentSectionCount =>
+      selectedFilter == "Escalated" ? escalatedTasks.length : filteredTasks.length;
+ 
   @override
   void initState() {
     super.initState();
     _loadUserId();
     _loadUserName();
+    _loadUserRole();      // NEW
     _loadTasks();
     _loadUserDepartments();
     _loadDeliveryCounts();
+    _loadEscalationBadge(); // NEW
     _subscribeToAlerts();
   }
-
+ 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (loggedInUserId != null) _loadUserName();
   }
-
+ 
   // ── Subscribe to FCM-driven streams ──────────────────────────────────────
-
+ 
   void _subscribeToAlerts() {
     _newTaskSub = TaskAlertService.onNewTask.listen((_) {
-      if (mounted) _loadTasks();
+      if (mounted) {
+        _loadTasks();
+        _loadEscalationBadge();
+      }
     });
-
+ 
     _newDeliverySub = TaskAlertService.onNewDelivery.listen((_) {
       if (mounted) _loadDeliveryCounts();
     });
+ 
+    // NEW: listen to escalation stream emitted by resetEscalationCount()
+    _escalationSub = TaskAlertService.onEscalation.listen((count) {
+      if (mounted) {
+        setState(() => _escalationBadgeCount = count);
+        if (selectedFilter == "Escalated") {
+          _loadEscalatedTasks();
+        }
+      }
+    });
   }
-
+ 
   @override
   void dispose() {
     _newTaskSub?.cancel();
     _newDeliverySub?.cancel();
+    _escalationSub?.cancel();
     super.dispose();
   }
-
+ 
   // ── Loaders ───────────────────────────────────────────────────────────────
-
+ 
   Future<void> _loadUserId() async {
     loggedInUserId = await UserSessionHelper.getUserId();
     if (mounted) setState(() {});
   }
-
+ 
   Future<void> _loadUserName() async {
     final name = await UserSessionHelper.getUserName();
     if (mounted) setState(() { userName = name ?? "User"; });
   }
-
+ 
+  // NEW
+  Future<void> _loadUserRole() async {
+    final role = await UserSessionHelper.getRole();
+    if (!mounted) return;
+    setState(() {
+      userRole = role ?? "";
+      // Manager/GM/Admin: default to Escalated view
+      if (_isManagerRole(userRole)) {
+        selectedFilter = "Escalated";
+      }
+    });
+    // Load escalated tasks if default filter is Escalated
+    if (_isManagerRole(userRole)) {
+      _loadEscalatedTasks();
+    }
+  }
+ 
   Future<void> _loadUserDepartments() async {
     final depts      = await UserSessionHelper.getDepartments();
     final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
@@ -100,7 +168,26 @@ class _HomePageState extends State<HomePage> {
       _deptLoaded = true;
     });
   }
-
+ 
+  // NEW
+  Future<void> _loadEscalationBadge() async {
+    final count = await HomeService().getEscalationBadgeCount();
+    if (!mounted) return;
+    setState(() => _escalationBadgeCount = count);
+    TaskAlertService.resetEscalationCount(count);
+  }
+ 
+  // NEW
+  Future<void> _loadEscalatedTasks() async {
+    final result = await HomeService().getEscalatedTasks();
+    if (!mounted) return;
+    if (result["success"] == true) {
+      setState(() {
+        escalatedTasks = List<Map<String, dynamic>>.from(result["tasks"]);
+      });
+    }
+  }
+ 
   Future<void> _loadTasks() async {
     if (tasks.isEmpty) {
       setState(() {
@@ -108,10 +195,10 @@ class _HomePageState extends State<HomePage> {
         _errorMessage = null;
       });
     }
-
+ 
     final result = await HomeService().getTasks();
     if (!mounted) return;
-
+ 
     if (result["success"] != true) {
       setState(() {
         _errorMessage = "Unable to load tasks.";
@@ -119,10 +206,10 @@ class _HomePageState extends State<HomePage> {
       });
       return;
     }
-
+ 
     final List<Map<String, dynamic>> rawList =
         List<Map<String, dynamic>>.from(result["tasks"]);
-
+ 
     // Deduplicate by service_request_id, preferring rows with a real room
     final Map<int, Map<String, dynamic>> uniqueMap = {};
     for (final t in rawList) {
@@ -133,40 +220,34 @@ class _HomePageState extends State<HomePage> {
       } else {
         final existingRoom = uniqueMap[id]!["room"];
         final newRoom      = t["room"];
-        if ((existingRoom == null ||
-                existingRoom == "-" ||
-                existingRoom == "0") &&
-            newRoom != null &&
-            newRoom != "-" &&
-            newRoom != "0") {
+        if ((existingRoom == null || existingRoom == "-" || existingRoom == "0") &&
+            newRoom != null && newRoom != "-" && newRoom != "0") {
           uniqueMap[id] = t;
         }
       }
     }
-
+ 
     final List<Map<String, dynamic>> raw = uniqueMap.values.toList();
     raw.sort((a, b) {
       final da = _parseTimestamp(a["raw"]["created_at"] ?? a["created_at"]);
       final db = _parseTimestamp(b["raw"]["created_at"] ?? b["created_at"]);
       return db.compareTo(da);
     });
-
+ 
     setState(() {
       tasks = raw.map((t) => {
-            ...t,
-            "isAccepted":  t["status"] == "In Progress",
-            "statusColor": getStatusColor(t["status"]),
-            "assignedTo":  t["raw"]?["assigned_to_name"] ?? "-",
-          }).toList();
+        ...t,
+        "isAccepted":  t["status"] == "In Progress",
+        "statusColor": getStatusColor(t["status"]),
+        "assignedTo":  t["raw"]?["assigned_to_name"] ?? "-",
+      }).toList();
       _isLoading = false;
     });
-
+ 
     final openCount = tasks.where((t) => t["status"] == "Open").length;
     TaskAlertService.resetServiceCount(openCount);
   }
-
-  // ── Distinct order count helper ───────────────────────────────────────────
-
+ 
   int _distinctOrderCount(List<Map<String, dynamic>> orders) {
     final seen = <dynamic>{};
     for (final o in orders) {
@@ -175,62 +256,65 @@ class _HomePageState extends State<HomePage> {
     }
     return seen.length;
   }
-
+ 
   Future<void> _loadDeliveryCounts() async {
     final readyResult     = await HomeService().getReadyOrdersForRoomService();
     final acceptedResult  = await HomeService().getAcceptedOrdersForRoomService();
     final deliveredResult = await HomeService().getDeliveredOrdersForRoomService();
-
+ 
     if (!mounted) return;
-
+ 
     final readyOrders     = (readyResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
     final acceptedOrders  = (acceptedResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
     final deliveredOrders = (deliveredResult["orders"] as List?)?.cast<Map<String, dynamic>>() ?? [];
-
-    final readyCount     = _distinctOrderCount(readyOrders);
-    final acceptedCount  = _distinctOrderCount(acceptedOrders);
-    final deliveredCount = _distinctOrderCount(deliveredOrders);
-
+ 
     setState(() {
-      _readyOrderCount     = readyCount;
-      _acceptedOrderCount  = acceptedCount;
-      _deliveredOrderCount = deliveredCount;
+      _readyOrderCount     = _distinctOrderCount(readyOrders);
+      _acceptedOrderCount  = _distinctOrderCount(acceptedOrders);
+      _deliveredOrderCount = _distinctOrderCount(deliveredOrders);
     });
-
-    TaskAlertService.resetDeliveryCount(readyCount);
+ 
+    TaskAlertService.resetDeliveryCount(_readyOrderCount);
   }
-
+ 
   // ── Accept task ───────────────────────────────────────────────────────────
-
+ 
   Future<void> _acceptTask(Map<String, dynamic> task) async {
-    final taskId = task["raw"]?["service_request_id"];
+    final taskId       = task["raw"]?["service_request_id"];
+    final departmentId = task["raw"]?["department_id"] ?? task["department_id"];
+    final enterpriseId = task["raw"]?["enterprise_id"] ?? task["enterprise_id"];
     if (taskId == null) return;
-
+ 
     setState(() => _isLoading = true);
-    final result = await HomeService().acceptTask(taskId: taskId);
+ 
+    // Pass department_id + enterprise_id so Lambda can broadcast ACCEPTED
+    final result = await HomeService().acceptTask(
+      taskId:       taskId,
+      departmentId: departmentId ?? 0,
+      enterpriseId: enterpriseId ?? 0,
+    );
     if (!mounted) return;
     setState(() => _isLoading = false);
-
+ 
     if (!result["success"]) {
       _showGenericError();
       return;
     }
-
+ 
     await TaskAlertService.stopOneServiceAlert();
     await _loadTasks();
     AppSnackBar.show(context, "Task Accepted 🎉");
   }
-
+ 
   // ── Helpers ───────────────────────────────────────────────────────────────
-
+ 
   Color getStatusColor(String status) => AppColors.statusColor(status);
-
+ 
   void _showGenericError() {
     if (!mounted) return;
-    AppSnackBar.show(context, "Something went wrong. Please try again.",
-        isError: true);
+    AppSnackBar.show(context, "Something went wrong. Please try again.", isError: true);
   }
-
+ 
   DateTime _parseTimestamp(String? ts) {
     if (ts == null || ts.trim().isEmpty) return DateTime.now();
     try {
@@ -243,21 +327,19 @@ class _HomePageState extends State<HomePage> {
       return DateTime.now();
     }
   }
-
+ 
   bool isToday(DateTime date) {
     final now = DateTime.now();
-    return date.year == now.year &&
-        date.month == now.month &&
-        date.day == now.day;
+    return date.year == now.year && date.month == now.month && date.day == now.day;
   }
-
+ 
   bool isYesterday(DateTime date) {
     final yesterday = DateTime.now().subtract(const Duration(days: 1));
     return date.year == yesterday.year &&
         date.month == yesterday.month &&
         date.day == yesterday.day;
   }
-
+ 
   String formatDateTime(String ts) {
     if (ts.isEmpty) return "";
     final date   = _parseTimestamp(ts);
@@ -269,7 +351,7 @@ class _HomePageState extends State<HomePage> {
     final period = date.hour >= 12 ? "PM" : "AM";
     return "$day/$month/$year • ${hour12 == 0 ? 12 : hour12}:$minute $period";
   }
-
+ 
   Color getTaskPriorityColor(String createdAt) {
     final taskTime = _parseTimestamp(createdAt);
     final diff     = DateTime.now().difference(taskTime);
@@ -277,9 +359,9 @@ class _HomePageState extends State<HomePage> {
     if (diff.inHours < 8) return AppColors.warning;
     return AppColors.error;
   }
-
+ 
   // ── Filter ────────────────────────────────────────────────────────────────
-
+ 
   List<Map<String, dynamic>> get filteredTasks {
     List<Map<String, dynamic>> list;
     switch (selectedFilter) {
@@ -297,6 +379,9 @@ class _HomePageState extends State<HomePage> {
             return db.compareTo(da);
           });
         break;
+      case "Escalated":
+        // Handled separately — returns escalatedTasks
+        return [];
       default:
         list = tasks.where((t) => t["status"] != "Closed").toList()
           ..sort((a, b) {
@@ -309,20 +394,16 @@ class _HomePageState extends State<HomePage> {
       final createdAt = t["raw"]?["created_at"] ?? "";
       final date      = _parseTimestamp(createdAt);
       switch (selectedDateFilter) {
-        case "Today":
-          return isToday(date);
-        case "Yesterday":
-          return isYesterday(date);
-        case "Older":
-          return !isToday(date) && !isYesterday(date);
-        default:
-          return true;
+        case "Today":     return isToday(date);
+        case "Yesterday": return isYesterday(date);
+        case "Older":     return !isToday(date) && !isYesterday(date);
+        default:          return true;
       }
     }).toList();
   }
-
+ 
   // ── Date filter bottom sheet ──────────────────────────────────────────────
-
+ 
   void _showDateFilterSheet() {
     final options = ["All Days", "Today", "Yesterday", "Older"];
     showModalBottomSheet(
@@ -337,8 +418,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             Container(
               margin: const EdgeInsets.only(top: 12, bottom: 4),
-              width: 36,
-              height: 4,
+              width: 36, height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2),
@@ -348,13 +428,9 @@ class _HomePageState extends State<HomePage> {
               padding: EdgeInsets.fromLTRB(20, 12, 20, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(
-                  "Filter by Date",
-                  style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary),
-                ),
+                child: Text("Filter by Date",
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary)),
               ),
             ),
             ...options.map((opt) {
@@ -365,15 +441,10 @@ class _HomePageState extends State<HomePage> {
                   Navigator.pop(context);
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                   decoration: BoxDecoration(
-                    color: isSelected
-                        ? AppColors.primaryLight
-                        : Colors.transparent,
-                    border: const Border(
-                      bottom: BorderSide(color: AppColors.borderLight),
-                    ),
+                    color: isSelected ? AppColors.primaryLight : Colors.transparent,
+                    border: const Border(bottom: BorderSide(color: AppColors.borderLight)),
                   ),
                   child: Row(
                     children: [
@@ -381,27 +452,19 @@ class _HomePageState extends State<HomePage> {
                         isSelected
                             ? Icons.radio_button_checked_rounded
                             : Icons.radio_button_unchecked_rounded,
-                        color: isSelected
-                            ? AppColors.primary
-                            : AppColors.textDisabled,
+                        color: isSelected ? AppColors.primary : AppColors.textDisabled,
                         size: 20,
                       ),
                       const SizedBox(width: 12),
-                      Text(
-                        opt,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w500,
-                          color: isSelected
-                              ? AppColors.primary
-                              : AppColors.textPrimary,
-                        ),
-                      ),
+                      Text(opt,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                            color: isSelected ? AppColors.primary : AppColors.textPrimary,
+                          )),
                       const Spacer(),
                       if (isSelected)
-                        const Icon(Icons.check_rounded,
-                            color: AppColors.primary, size: 18),
+                        const Icon(Icons.check_rounded, color: AppColors.primary, size: 18),
                     ],
                   ),
                 ),
@@ -413,14 +476,13 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+ 
   // ── Build ─────────────────────────────────────────────────────────────────
-
+ 
   @override
   Widget build(BuildContext context) {
     if (!_deptLoaded) {
-      return const Scaffold(
-          body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -439,7 +501,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+ 
   AppBar _buildAppBar() {
     return AppBar(
       automaticallyImplyLeading: false,
@@ -449,17 +511,11 @@ class _HomePageState extends State<HomePage> {
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "Hi $userName 👋",
-            style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary),
-          ),
-          const Text(
-            "Here's your task overview",
-            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-          ),
+          Text("Hi $userName 👋",
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
+          const Text("Here's your task overview",
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
         ],
       ),
       actions: [
@@ -467,17 +523,14 @@ class _HomePageState extends State<HomePage> {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: GestureDetector(
-              onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const GuestCheckoutPage())),
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const GuestCheckoutPage())),
               child: Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   color: AppColors.warningLight,
                   borderRadius: BorderRadius.circular(12),
-                  border:
-                      Border.all(color: AppColors.warning.withOpacity(0.3)),
+                  border: Border.all(color: AppColors.warning.withOpacity(0.3)),
                 ),
                 child: Image.asset("assets/icons/checkout_report.png",
                     width: 20, height: 20, color: AppColors.textPrimary),
@@ -496,8 +549,7 @@ class _HomePageState extends State<HomePage> {
                 backgroundColor: AppColors.primary,
                 child: Text(
                   userName.isNotEmpty ? userName[0].toUpperCase() : "?",
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                 ),
               ),
             ),
@@ -506,19 +558,16 @@ class _HomePageState extends State<HomePage> {
       ],
     );
   }
-
+ 
   // ── Summary cards ─────────────────────────────────────────────────────────
-
+ 
   Widget _buildTopSummaryCards() {
     final openCount       = tasks.where((t) => t["status"] == "Open").length;
-    final inProgressCount =
-        tasks.where((t) => t["status"] == "In Progress").length;
+    final inProgressCount = tasks.where((t) => t["status"] == "In Progress").length;
     final closedCount     = tasks.where((t) => t["status"] == "Closed").length;
     final totalTaskCount  = openCount + inProgressCount + closedCount;
-
-    final totalDelivery =
-        _readyOrderCount + _acceptedOrderCount + _deliveredOrderCount;
-
+    final totalDelivery   = _readyOrderCount + _acceptedOrderCount + _deliveredOrderCount;
+ 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Row(
@@ -532,143 +581,138 @@ class _HomePageState extends State<HomePage> {
                 decoration: BoxDecoration(
                   color: AppColors.primary,
                   borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withOpacity(0.25),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
+                  boxShadow: [BoxShadow(color: AppColors.primary.withOpacity(0.25),
+                      blurRadius: 8, offset: const Offset(0, 3))],
                 ),
                 child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.checklist_rounded,
-                          color: Colors.white70, size: 20),
-                      const SizedBox(height: 4),
-                      Text(
-                        "$totalTaskCount",
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            height: 1.1),
-                      ),
-                      const SizedBox(height: 1),
-                      const Text(
-                        "Service Tasks",
-                        style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.checklist_rounded, color: Colors.white70, size: 20),
+                    const SizedBox(height: 4),
+                    Text("$totalTaskCount",
+                        style: const TextStyle(color: Colors.white, fontSize: 22,
+                            fontWeight: FontWeight.bold, height: 1.1)),
+                    const SizedBox(height: 1),
+                    const Text("Service Tasks",
+                        style: TextStyle(color: Colors.white70, fontSize: 11,
+                            fontWeight: FontWeight.w600)),
+                  ]),
                 ),
               ),
             ),
           ),
           const SizedBox(width: 12),
+ 
           // Delivery card
           Expanded(
             child: GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const DeliveryPage()),
-                ).then((_) {
-                  // Refresh delivery counts when returning from DeliveryPage
-                  if (mounted) _loadDeliveryCounts();
-                });
-              },
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const DeliveryPage())).then((_) {
+                if (mounted) _loadDeliveryCounts();
+              }),
               child: Container(
                 height: 80,
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05),
+                      blurRadius: 8, offset: const Offset(0, 3))],
                 ),
                 child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.delivery_dining_rounded,
-                          color: AppColors.orange, size: 20),
-                      const SizedBox(height: 4),
-                      Text(
-                        "$totalDelivery",
-                        style: TextStyle(
-                            color: AppColors.orange,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            height: 1.1),
-                      ),
-                      const SizedBox(height: 1),
-                      const Text(
-                        "Delivery",
-                        style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.delivery_dining_rounded, color: AppColors.orange, size: 20),
+                    const SizedBox(height: 4),
+                    Text("$totalDelivery",
+                        style: TextStyle(color: AppColors.orange, fontSize: 22,
+                            fontWeight: FontWeight.bold, height: 1.1)),
+                    const SizedBox(height: 1),
+                    const Text("Delivery",
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 11,
+                            fontWeight: FontWeight.w600)),
+                  ]),
                 ),
               ),
             ),
           ),
+ 
+          // NEW: Escalation summary card — Manager/GM/Admin only
+          if (_isManagerRole(userRole)) ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  setState(() => selectedFilter = "Escalated");
+                  _loadEscalatedTasks();
+                },
+                child: Container(
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: _escalationBadgeCount > 0
+                        ? AppColors.error
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [BoxShadow(
+                        color: (_escalationBadgeCount > 0
+                            ? AppColors.error
+                            : Colors.black).withOpacity(0.1),
+                        blurRadius: 8, offset: const Offset(0, 3))],
+                  ),
+                  child: Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.warning_amber_rounded,
+                          color: _escalationBadgeCount > 0
+                              ? Colors.white70
+                              : AppColors.error,
+                          size: 20),
+                      const SizedBox(height: 4),
+                      Text("$_escalationBadgeCount",
+                          style: TextStyle(
+                              color: _escalationBadgeCount > 0
+                                  ? Colors.white
+                                  : AppColors.error,
+                              fontSize: 22, fontWeight: FontWeight.bold, height: 1.1)),
+                      const SizedBox(height: 1),
+                      Text("Escalated",
+                          style: TextStyle(
+                              color: _escalationBadgeCount > 0
+                                  ? Colors.white70
+                                  : AppColors.textSecondary,
+                              fontSize: 11, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
-
-  // ── Filter grid ───────────────────────────────────────────────────────────
-
+ 
+  // ── Filter grid — now conditionally includes Escalated ────────────────────
+ 
   Widget _buildTaskFilterGrid() {
     final openCount       = tasks.where((t) => t["status"] == "Open").length;
-    final inProgressCount =
-        tasks.where((t) => t["status"] == "In Progress").length;
+    final inProgressCount = tasks.where((t) => t["status"] == "In Progress").length;
     final closedCount     = tasks.where((t) => t["status"] == "Closed").length;
     final allCount        = openCount + inProgressCount + closedCount;
-
+ 
+    // Decide whether to show Escalated chip
+    final showEscalated = _isManagerRole(userRole) ||
+        (_isSupervisorOrAbove(userRole) && _escalationBadgeCount > 0);
+ 
     final filters = [
-      {
-        "label": "All",
-        "count": allCount,
-        "icon": Icons.all_inclusive_rounded,
-        "color": AppColors.primary
-      },
-      {
-        "label": "Open",
-        "count": openCount,
-        "icon": Icons.radio_button_unchecked_rounded,
-        "color": AppColors.info
-      },
-      {
-        "label": "In Progress",
-        "count": inProgressCount,
-        "icon": Icons.timelapse_rounded,
-        "color": AppColors.orange
-      },
-      {
-        "label": "Closed",
-        "count": closedCount,
-        "icon": Icons.check_circle_rounded,
-        "color": AppColors.success
-      },
+      {"label": "All",         "count": allCount,               "icon": Icons.all_inclusive_rounded,        "color": AppColors.primary},
+      {"label": "Open",        "count": openCount,              "icon": Icons.radio_button_unchecked_rounded,"color": AppColors.info},
+      {"label": "In Progress", "count": inProgressCount,        "icon": Icons.timelapse_rounded,             "color": AppColors.orange},
+      {"label": "Closed",      "count": closedCount,            "icon": Icons.check_circle_rounded,          "color": AppColors.success},
+      if (showEscalated)
+        {"label": "Escalated", "count": _escalationBadgeCount,  "icon": Icons.warning_amber_rounded,        "color": AppColors.error},
     ];
-
+ 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: GridView.count(
-        crossAxisCount: 4,
+        crossAxisCount: showEscalated ? 5 : 4,
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         mainAxisSpacing: 8,
@@ -679,8 +723,10 @@ class _HomePageState extends State<HomePage> {
           final color      = f["color"] as Color;
           final count      = f["count"] as int;
           return GestureDetector(
-            onTap: () =>
-                setState(() => selectedFilter = f["label"] as String),
+            onTap: () {
+              setState(() => selectedFilter = f["label"] as String);
+              if (f["label"] == "Escalated") _loadEscalatedTasks();
+            },
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
               decoration: BoxDecoration(
@@ -688,15 +734,11 @@ class _HomePageState extends State<HomePage> {
                 borderRadius: BorderRadius.circular(14),
                 boxShadow: [
                   if (isSelected)
-                    BoxShadow(
-                        color: color.withOpacity(0.35),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3))
+                    BoxShadow(color: color.withOpacity(0.35),
+                        blurRadius: 8, offset: const Offset(0, 3))
                   else
-                    BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 6,
-                        offset: const Offset(0, 1)),
+                    BoxShadow(color: Colors.black.withOpacity(0.05),
+                        blurRadius: 6, offset: const Offset(0, 1)),
                 ],
               ),
               child: Column(
@@ -705,26 +747,16 @@ class _HomePageState extends State<HomePage> {
                   Icon(f["icon"] as IconData,
                       color: isSelected ? Colors.white : color, size: 18),
                   const SizedBox(height: 4),
-                  Text(
-                    "$count",
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected ? Colors.white : color,
-                    ),
-                  ),
-                  Text(
-                    f["label"] as String,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight:
-                          isSelected ? FontWeight.w700 : FontWeight.w600,
-                      color: isSelected
-                          ? Colors.white70
-                          : AppColors.textSecondary,
-                    ),
-                  ),
+                  Text("$count",
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : color)),
+                  Text(f["label"] as String,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                        color: isSelected ? Colors.white70 : AppColors.textSecondary,
+                      )),
                 ],
               ),
             ),
@@ -733,9 +765,9 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+ 
   // ── Error / content widgets ───────────────────────────────────────────────
-
+ 
   Widget _buildError() {
     return Center(
       child: Column(
@@ -751,8 +783,7 @@ class _HomePageState extends State<HomePage> {
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             child: const Text("Retry"),
           ),
@@ -760,7 +791,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+ 
   Widget _buildContent() {
     return SingleChildScrollView(
       child: Column(
@@ -768,8 +799,8 @@ class _HomePageState extends State<HomePage> {
         children: [
           _buildTopSummaryCards(),
           _buildTaskFilterGrid(),
-
-          // Header row: Service Requests label + date filter trigger
+ 
+          // Header row
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: Row(
@@ -778,158 +809,173 @@ class _HomePageState extends State<HomePage> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      "Service Requests",
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary),
-                    ),
+                    const Text("Service Requests",
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary)),
                     Text(
                       "$currentSectionCount ${selectedFilter == 'All' ? 'active' : selectedFilter.toLowerCase()} requests",
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textSecondary),
+                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
                     ),
                   ],
                 ),
-                GestureDetector(
-                  onTap: _showDateFilterSheet,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.calendar_today_rounded,
-                            size: 14, color: AppColors.textSecondary),
-                        const SizedBox(width: 6),
-                        Text(
-                          selectedDateFilter,
-                          style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.keyboard_arrow_down_rounded,
-                            size: 16, color: AppColors.textSecondary),
-                      ],
+                if (selectedFilter != "Escalated")
+                  GestureDetector(
+                    onTap: _showDateFilterSheet,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.calendar_today_rounded, size: 14,
+                              color: AppColors.textSecondary),
+                          const SizedBox(width: 6),
+                          Text(selectedDateFilter,
+                              style: const TextStyle(color: AppColors.textPrimary,
+                                  fontSize: 13, fontWeight: FontWeight.w600)),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.keyboard_arrow_down_rounded, size: 16,
+                              color: AppColors.textSecondary),
+                        ],
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
-
-          // Task list
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: filteredTasks.length,
-            itemBuilder: (context, index) {
-              final task = filteredTasks[index];
-              return KeyedSubtree(
-                key: ValueKey(task["raw"]["service_request_id"]),
-                child: GestureDetector(
-                  onTap: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => TicketDetailPage(
-                          task: task,
-                          onClose: () {
-                            setState(() {
-                              final idx = tasks.indexWhere((t) =>
-                                  t["raw"]["service_request_id"] ==
-                                  task["raw"]["service_request_id"]);
-                              if (idx != -1) {
-                                tasks[idx]["status"]      = "Closed";
-                                tasks[idx]["statusColor"] =
-                                    getStatusColor("Closed");
-                                tasks[idx]["isAccepted"]  = false;
-                              }
-                            });
-                          },
-                          onReassign: (updatedTask) {
-                            setState(() {
-                              final idx = tasks.indexWhere((t) =>
-                                  t["raw"]["service_request_id"] ==
-                                  updatedTask["service_request_id"]);
-                              if (idx != -1) {
-                                tasks[idx]["assignedTo"] =
-                                    updatedTask["assigned_to_name"] ?? "-";
-                                tasks[idx]["status"] =
-                                    updatedTask["status"] ??
-                                        tasks[idx]["status"];
-                                tasks[idx]["statusColor"] =
-                                    getStatusColor(tasks[idx]["status"]);
-                                tasks[idx]["isAccepted"] = true;
-                              }
-                            });
-                          },
+ 
+          // Task list — Escalated or normal
+          if (selectedFilter == "Escalated")
+            _buildEscalatedList()
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: filteredTasks.length,
+              itemBuilder: (context, index) {
+                final task = filteredTasks[index];
+                return KeyedSubtree(
+                  key: ValueKey(task["raw"]["service_request_id"]),
+                  child: GestureDetector(
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => TicketDetailPage(
+                            task:     task,
+                            userRole: userRole,
+                            onClose: () {
+                              setState(() {
+                                final idx = tasks.indexWhere((t) =>
+                                    t["raw"]["service_request_id"] ==
+                                    task["raw"]["service_request_id"]);
+                                if (idx != -1) {
+                                  tasks[idx]["status"]      = "Closed";
+                                  tasks[idx]["statusColor"] = getStatusColor("Closed");
+                                  tasks[idx]["isAccepted"]  = false;
+                                }
+                              });
+                            },
+                            onReassign: (updatedTask) {
+                              setState(() {
+                                final idx = tasks.indexWhere((t) =>
+                                    t["raw"]["service_request_id"] ==
+                                    updatedTask["service_request_id"]);
+                                if (idx != -1) {
+                                  tasks[idx]["assignedTo"] =
+                                      updatedTask["assigned_to_name"] ?? "-";
+                                  tasks[idx]["status"] =
+                                      updatedTask["status"] ?? tasks[idx]["status"];
+                                  tasks[idx]["statusColor"] =
+                                      getStatusColor(tasks[idx]["status"]);
+                                  tasks[idx]["isAccepted"] = true;
+                                }
+                              });
+                            },
+                          ),
                         ),
-                      ),
-                    );
-                    setState(() {});
-                  },
-                  child: _buildTaskCard(task),
-                ),
-              );
-            },
-          ),
+                      );
+                      setState(() {});
+                    },
+                    child: _buildTaskCard(task),
+                  ),
+                );
+              },
+            ),
           const SizedBox(height: 24),
         ],
       ),
     );
   }
-
-  // ── Task card ─────────────────────────────────────────────────────────────
-
-  Widget _buildTaskCard(Map<String, dynamic> task) {
-    final createdAt = task["raw"]["created_at"] ?? task["created_at"] ?? "";
-
-    IconData categoryIcon = Icons.build_circle_rounded;
-    Color iconBg    = AppColors.infoLight;
-    Color iconColor = AppColors.info;
-    final title = (task["title"] ?? "").toString().toLowerCase();
-    if (title.contains("clean") || title.contains("housekeep")) {
-      categoryIcon = Icons.cleaning_services_rounded;
-      iconBg    = AppColors.successLight;
-      iconColor = AppColors.success;
-    } else if (title.contains("food") ||
-        title.contains("pillow") ||
-        title.contains("towel")) {
-      categoryIcon = Icons.bed_rounded;
-      iconBg    = AppColors.primaryLight;
-      iconColor = AppColors.primary;
-    } else if (title.contains("ac") ||
-        title.contains("electric") ||
-        title.contains("light")) {
-      categoryIcon = Icons.electrical_services_rounded;
-      iconBg    = AppColors.orangeLight;
-      iconColor = AppColors.orange;
+ 
+  // ── NEW: Escalated task list ──────────────────────────────────────────────
+ 
+  Widget _buildEscalatedList() {
+    if (escalatedTasks.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(32),
+        child: Center(
+          child: Column(children: [
+            Icon(Icons.check_circle_outline_rounded, size: 48, color: AppColors.success),
+            SizedBox(height: 12),
+            Text("No escalated tasks", style: TextStyle(color: AppColors.textSecondary)),
+          ]),
+        ),
+      );
     }
-
-    final guestName = task["raw"]?["guest_name"] ?? task["guest_name"] ?? "";
-    final status    = task["status"] as String;
-    final statusClr = AppColors.statusColor(status);
-
+ 
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: escalatedTasks.length,
+      itemBuilder: (context, index) {
+        final task = escalatedTasks[index];
+        return KeyedSubtree(
+          key: ValueKey(task["service_request_id"]),
+          child: GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TicketDetailPage(
+                  task:     task,
+                  userRole: userRole,
+                  onClose:  () => _loadEscalatedTasks(),
+                ),
+              ),
+            ).then((_) => _loadEscalatedTasks()),
+            child: _buildEscalatedCard(task),
+          ),
+        );
+      },
+    );
+  }
+ 
+  // ── NEW: Escalated task card ──────────────────────────────────────────────
+ 
+  Widget _buildEscalatedCard(Map<String, dynamic> task) {
+    final overdueMins     = (task["overdue_minutes"] ?? 0) as int;
+    final originalAssignee = task["original_assignee"] as String? ?? "-";
+    final escalatedTo     = task["escalated_to"] as String? ?? "-";
+    final room            = task["room"] as String? ?? "-";
+    final title           = task["title"] as String? ?? "Service Request";
+    final guestName       = task["guest"] as String? ?? "";
+    final deptName        = task["department_name"] as String? ?? "";
+ 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.error.withOpacity(0.4), width: 1.5),
         boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2)),
+          BoxShadow(color: AppColors.error.withOpacity(0.08),
+              blurRadius: 12, offset: const Offset(0, 3)),
         ],
       ),
       child: Padding(
@@ -944,92 +990,200 @@ class _HomePageState extends State<HomePage> {
                   Container(
                     padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: iconBg,
+                      color: AppColors.errorLight,
                       borderRadius: BorderRadius.circular(9),
                     ),
-                    child: Icon(categoryIcon, size: 16, color: iconColor),
+                    child: const Icon(Icons.warning_amber_rounded,
+                        size: 16, color: AppColors.error),
                   ),
                   const SizedBox(width: 7),
-                  _pill(
-                    "Room ${task["room"]}",
-                    AppColors.warningLight,
-                    textColor: AppColors.warning,
-                  ),
+                  _pill("Room $room", AppColors.warningLight, textColor: AppColors.warning),
                 ]),
-                _statusPill(status, statusClr),
+                _escalatedPill(),
               ],
             ),
             const SizedBox(height: 8),
-            Text(
-              task["title"],
-              style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            Text(title,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+ 
             if (guestName.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 3),
-                child: Text(
-                  "👤 $guestName",
-                  style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500),
-                ),
+                child: Text("👤 $guestName",
+                    style: const TextStyle(color: AppColors.textSecondary,
+                        fontSize: 12, fontWeight: FontWeight.w500)),
               ),
-            if (task["isAccepted"] == true)
+            if (deptName.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text(
-                  "✅ ${task["assignedTo"] ?? "-"}",
-                  style: const TextStyle(
-                      color: AppColors.success,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500),
-                ),
+                padding: const EdgeInsets.only(top: 2),
+                child: Text("🏢 $deptName",
+                    style: const TextStyle(color: AppColors.textSecondary,
+                        fontSize: 12, fontWeight: FontWeight.w500)),
               ),
+ 
             const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(Icons.calendar_today_rounded,
-                    size: 12, color: AppColors.textSecondary),
-                const SizedBox(width: 4),
-                Text(
-                  formatDateTime(createdAt),
-                  style: const TextStyle(
-                      color: AppColors.textSecondary, fontSize: 12),
-                ),
-                const Spacer(),
-                if (status == "Open")
-                  ElevatedButton(
-                    onPressed: () => _acceptTask(task),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.success,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 7),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                    ),
-                    child: const Text("Accept",
-                        style: TextStyle(
-                            fontWeight: FontWeight.w700, fontSize: 13)),
-                  ),
-                if (status != "Open")
-                  const Icon(Icons.chevron_right_rounded,
-                      color: AppColors.textDisabled),
-              ],
-            ),
+            // Overdue label
+            Row(children: [
+              const Icon(Icons.timer_off_rounded, size: 13, color: AppColors.error),
+              const SizedBox(width: 4),
+              Text("$overdueMins min overdue",
+                  style: const TextStyle(color: AppColors.error,
+                      fontSize: 12, fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 4),
+            Text("Originally: $originalAssignee",
+                style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            if (escalatedTo != "-")
+              Text("Escalated to: $escalatedTo",
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            const SizedBox(height: 8),
+            const Icon(Icons.chevron_right_rounded, color: AppColors.textDisabled),
           ],
         ),
       ),
     );
   }
-
+ 
+  Widget _escalatedPill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.errorLight,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.error.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 5, height: 5,
+            decoration: const BoxDecoration(color: AppColors.error, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        const Text("Escalated",
+            style: TextStyle(color: AppColors.error, fontWeight: FontWeight.w700, fontSize: 11)),
+      ]),
+    );
+  }
+ 
+  // ── Task card (unchanged except escalation badge on card) ─────────────────
+ 
+  Widget _buildTaskCard(Map<String, dynamic> task) {
+    final createdAt  = task["raw"]["created_at"] ?? task["created_at"] ?? "";
+    final isEscalated = (task["is_escalated"] ?? task["raw"]?["is_escalated"] ?? 0) == 1;
+ 
+    IconData categoryIcon = Icons.build_circle_rounded;
+    Color iconBg    = AppColors.infoLight;
+    Color iconColor = AppColors.info;
+    final title = (task["title"] ?? "").toString().toLowerCase();
+    if (title.contains("clean") || title.contains("housekeep")) {
+      categoryIcon = Icons.cleaning_services_rounded;
+      iconBg    = AppColors.successLight;
+      iconColor = AppColors.success;
+    } else if (title.contains("food") || title.contains("pillow") || title.contains("towel")) {
+      categoryIcon = Icons.bed_rounded;
+      iconBg    = AppColors.primaryLight;
+      iconColor = AppColors.primary;
+    } else if (title.contains("ac") || title.contains("electric") || title.contains("light")) {
+      categoryIcon = Icons.electrical_services_rounded;
+      iconBg    = AppColors.orangeLight;
+      iconColor = AppColors.orange;
+    }
+ 
+    final guestName = task["raw"]?["guest_name"] ?? task["guest_name"] ?? "";
+    final status    = task["status"] as String;
+    final statusClr = isEscalated ? AppColors.error : AppColors.statusColor(status);
+ 
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: isEscalated
+            ? Border.all(color: AppColors.error.withOpacity(0.35), width: 1.5)
+            : null,
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05),
+              blurRadius: 8, offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(13),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: isEscalated ? AppColors.errorLight : iconBg,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Icon(isEscalated ? Icons.warning_amber_rounded : categoryIcon,
+                        size: 16, color: isEscalated ? AppColors.error : iconColor),
+                  ),
+                  const SizedBox(width: 7),
+                  _pill("Room ${task["room"]}", AppColors.warningLight,
+                      textColor: AppColors.warning),
+                  if (isEscalated) ...[
+                    const SizedBox(width: 6),
+                    _pill("Escalated", AppColors.errorLight, textColor: AppColors.error),
+                  ],
+                ]),
+                _statusPill(isEscalated ? "Escalated" : status, statusClr),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(task["title"],
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            if (guestName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text("👤 $guestName",
+                    style: const TextStyle(color: AppColors.textSecondary,
+                        fontSize: 12, fontWeight: FontWeight.w500)),
+              ),
+            if (task["isAccepted"] == true)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text("✅ ${task["assignedTo"] ?? "-"}",
+                    style: const TextStyle(color: AppColors.success,
+                        fontSize: 12, fontWeight: FontWeight.w500)),
+              ),
+            const SizedBox(height: 8),
+            Row(children: [
+              const Icon(Icons.calendar_today_rounded, size: 12,
+                  color: AppColors.textSecondary),
+              const SizedBox(width: 4),
+              Text(formatDateTime(createdAt),
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              const Spacer(),
+              if (status == "Open")
+                ElevatedButton(
+                  onPressed: () => _acceptTask(task),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text("Accept",
+                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                ),
+              if (status != "Open")
+                const Icon(Icons.chevron_right_rounded, color: AppColors.textDisabled),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+ 
   Widget _statusPill(String status, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
@@ -1037,64 +1191,42 @@ class _HomePageState extends State<HomePage> {
         color: color.withOpacity(0.1),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-              width: 5,
-              height: 5,
-              decoration:
-                  BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 4),
-          Text(status,
-              style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 11)),
-        ],
-      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 5, height: 5,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(status,
+            style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 11)),
+      ]),
     );
   }
-
-  Widget _pill(String text, Color bg,
-      {Color textColor = AppColors.textPrimary}) {
+ 
+  Widget _pill(String text, Color bg, {Color textColor = AppColors.textPrimary}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
       child: Text(text,
-          style: TextStyle(
-              color: textColor,
-              fontWeight: FontWeight.w600,
-              fontSize: 11)),
+          style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 11)),
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared veg/non-veg FSSAI-style indicator
-// ─────────────────────────────────────────────────────────────────────────────
-
+ 
+// ── Shared helpers (kept at bottom for DeliveryPage) ─────────────────────────
+ 
 bool resolveIsVeg(dynamic isVegFlag) {
   if (isVegFlag == null) return false;
   final v = isVegFlag.toString().trim();
   return v == '1' || v == 'true';
 }
-
+ 
 Widget vegIndicator(bool isVeg) {
   final c = isVeg ? AppColors.success : AppColors.error;
   return Container(
-    width: 14,
-    height: 14,
-    decoration: BoxDecoration(
-      border: Border.all(color: c, width: 1.5),
-    ),
+    width: 14, height: 14,
+    decoration: BoxDecoration(border: Border.all(color: c, width: 1.5)),
     child: Center(
-      child: Container(
-        width: 6,
-        height: 6,
-        decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-      ),
+      child: Container(width: 6, height: 6,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
     ),
   );
 }

@@ -26,8 +26,6 @@ class _MainNavigationState extends State<MainNavigation> {
   late final RoleChangeWatcher _roleWatcher;
 
   // ── Nav config ────────────────────────────────────────────────────────────
-  // Each entry pairs a page widget with its BottomNavigationBarItem.
-  // We build the active subset from this master list at render time.
 
   static const _allNavItems = [
     _NavEntry(
@@ -97,7 +95,6 @@ class _MainNavigationState extends State<MainNavigation> {
       return {'home', 'tasks'};
     }
 
-    // Unrecognised department → full access
     return {'home', 'food', 'tasks', 'camera'};
   }
 
@@ -111,8 +108,6 @@ class _MainNavigationState extends State<MainNavigation> {
       allowed.addAll(_tabsForDepartment(dept));
     }
 
-    // Profile tab is only for users with no home page access.
-    // Everyone else reaches profile via the home page AppBar icon.
     if (allowed.contains('home')) {
       allowed.remove('profile');
     }
@@ -134,8 +129,6 @@ class _MainNavigationState extends State<MainNavigation> {
     _loadDepartments();
     _requestPermissions();
 
-    // Auto-logout when role/department changes on the server.
-    // Fires on every app resume (foreground event).
     _roleWatcher = RoleChangeWatcher(
       onRoleChanged: _forceLogout,
     );
@@ -154,7 +147,7 @@ class _MainNavigationState extends State<MainNavigation> {
       setState(() {
         _departments = depts;
         _isLoadingDepts = false;
-        _currentIndex = 0; // reset index whenever tabs change
+        _currentIndex = 0;
       });
     }
   }
@@ -164,18 +157,27 @@ class _MainNavigationState extends State<MainNavigation> {
     await NotificationPermissionManager.requestAllNotificationPermissions();
   }
 
-  // ── Force logout (called by RoleChangeWatcher) ────────────────────────────
+  // ── Force logout ──────────────────────────────────────────────────────────
 
   void _forceLogout() {
     if (!mounted) return;
 
+    // FIX 3: Use AppColors instead of Colors.orange
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
+      SnackBar(
+        content: const Text(
           'Your role has been updated. Please log in again.',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
         ),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 4),
+        backgroundColor: AppColors.warning,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        duration: const Duration(seconds: 4),
       ),
     );
 
@@ -197,8 +199,6 @@ class _MainNavigationState extends State<MainNavigation> {
     }
 
     final entries = _activeEntries;
-
-    // Guard: clamp index in case the tab list shrank
     final safeIndex = _currentIndex.clamp(0, entries.length - 1);
 
     return Scaffold(
@@ -242,7 +242,7 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 }
 
-// ── Simple data class to pair a page with its nav item ────────────────────────
+// ── Simple data class ─────────────────────────────────────────────────────────
 
 class _NavEntry {
   final String key;

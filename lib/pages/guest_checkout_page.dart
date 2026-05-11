@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/checkout_service.dart';
 import '../utils/app_colors.dart';
@@ -16,11 +17,29 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
   final Set<int> _expandedIds = {};
   final Map<int, Future<Map<String, dynamic>>> _billFutures = {};
 
+  String _search = '';
+  String _statusFilter = 'All'; // All | Overdue | Within 1 hr | Upcoming
+
+  // Ticks every minute so live countdown strings refresh
+  Timer? _ticker;
+  int _tickCount = 0;
+
   @override
   void initState() {
     super.initState();
     _futureGuests = _loadGuests();
+    _ticker = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() => _tickCount++);
+    });
   }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   DateTime? _parseDate(String? s) {
     if (s == null || s.isEmpty) return null;
@@ -37,6 +56,20 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
     return List<Map<String, dynamic>>.from(res['guests']);
   }
 
+  /// "04/05/2026 • 2:30 PM"  — matches home_page style
+  String _formatDateTime(String? s) {
+    final d = _parseDate(s);
+    if (d == null) return '—';
+    final day    = d.day.toString().padLeft(2, '0');
+    final month  = d.month.toString().padLeft(2, '0');
+    final year   = d.year;
+    final hour12 = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
+    final minute = d.minute.toString().padLeft(2, '0');
+    final period = d.hour >= 12 ? 'PM' : 'AM';
+    return '$day/$month/$year • $hour12:$minute $period';
+  }
+
+  /// "2:30 PM"
   String _formatTime(String? s) {
     final d = _parseDate(s);
     if (d == null) return '—';
@@ -46,22 +79,53 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
     return '$h:$m $period';
   }
 
-  String _formatDate(String? s) {
-    final d = _parseDate(s);
-    if (d == null) return '—';
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${d.day} ${months[d.month - 1]} ${d.year}';
-  }
-
   Map<String, dynamic> _statusStyle(String? status) {
     switch ((status ?? '').toLowerCase()) {
       case 'overdue':
-        return {'color': AppColors.error, 'bg': AppColors.errorLight, 'icon': Icons.warning_amber_rounded};
+        return {
+          'color': AppColors.error,
+          'bg': AppColors.errorLight,
+          'icon': Icons.warning_amber_rounded,
+          'chipLabel': 'Overdue',
+          'filterKey': 'Overdue',
+        };
       case 'checkout within 1 hour':
-        return {'color': AppColors.warning, 'bg': AppColors.warningLight, 'icon': Icons.timer_rounded};
+        return {
+          'color': AppColors.warning,
+          'bg': AppColors.warningLight,
+          'icon': Icons.timer_rounded,
+          'chipLabel': '< 1 hr',
+          'filterKey': 'Within 1 hr',
+        };
       default:
-        return {'color': AppColors.info, 'bg': AppColors.infoLight, 'icon': Icons.schedule_rounded};
+        return {
+          'color': AppColors.info,
+          'bg': AppColors.infoLight,
+          'icon': Icons.schedule_rounded,
+          'chipLabel': 'Upcoming',
+          'filterKey': 'Upcoming',
+        };
     }
+  }
+
+  /// Live countdown string derived from minutes_to_checkout,
+  /// adjusted by elapsed tick count (1 tick = 1 minute).
+  String _countdownLabel(int? rawMinutes) {
+    if (rawMinutes == null) return '';
+    final adjusted = rawMinutes - _tickCount;
+    if (adjusted <= 0) return 'Overdue';
+    if (adjusted < 60) return '${adjusted}m left';
+    final h = adjusted ~/ 60;
+    final m = adjusted % 60;
+    return m == 0 ? '${h}h left' : '${h}h ${m}m left';
+  }
+
+  Color _countdownColor(int? rawMinutes) {
+    if (rawMinutes == null) return AppColors.textDisabled;
+    final adjusted = rawMinutes - _tickCount;
+    if (adjusted <= 0) return AppColors.error;
+    if (adjusted <= 60) return AppColors.warning;
+    return AppColors.success;
   }
 
   void _toggleExpand(Map<String, dynamic> guest) {
@@ -120,6 +184,40 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
       setState(() => _futureGuests = _loadGuests());
     }
   }
+
+  // ── Filter helpers ─────────────────────────────────────────────────────────
+
+  List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> all) {
+    // Active (not yet checked out)
+    List<Map<String, dynamic>> list = all
+        .where((g) => (g['raw']?['status'] ?? '').toString() != 'Checked_out')
+        .toList();
+
+    // Status chip filter
+    if (_statusFilter != 'All') {
+      list = list.where((g) {
+        final s = _statusStyle(g['checkoutStatus']);
+        return s['filterKey'] == _statusFilter;
+      }).toList();
+    }
+
+    // Search filter
+    if (_search.isNotEmpty) {
+      final q = _search.toLowerCase();
+      list = list.where((g) {
+        return (g['guestName'] ?? '').toLowerCase().contains(q) ||
+            (g['roomNumber']?.toString() ?? '').contains(q) ||
+            (g['contact'] ?? '').contains(q);
+      }).toList();
+    }
+
+    return list;
+  }
+
+  List<Map<String, dynamic>> _checkedOutToday(List<Map<String, dynamic>> all) =>
+      all.where((g) => (g['raw']?['status'] ?? '') == 'Checked_out').toList();
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -191,85 +289,273 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
             );
           }
 
-          final guests = snap.data ?? [];
-          final active = guests.where((g) => (g['raw']?['status'] ?? '') != 'Checked_out').toList();
-          final checkedOut = guests.where((g) => (g['raw']?['status'] ?? '') == 'Checked_out').toList();
+          final all = snap.data ?? [];
+          final allActive = all
+              .where((g) => (g['raw']?['status'] ?? '').toString() != 'Checked_out')
+              .toList();
+          final active     = _applyFilters(all);
+          final checkedOut = _checkedOutToday(all);
 
-          if (guests.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.hotel_rounded, size: 52, color: AppColors.textDisabled),
-                  SizedBox(height: 14),
-                  Text(
-                    'No checkouts today',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    'Guests checking out today will appear here',
-                    style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-                  ),
-                ],
-              ),
-            );
-          }
+          // Counts per status for filter chip badges
+          int _count(String filterKey) =>
+              allActive.where((g) => _statusStyle(g['checkoutStatus'])['filterKey'] == filterKey).length;
 
           return RefreshIndicator(
             color: AppColors.primary,
             onRefresh: () async => setState(() => _futureGuests = _loadGuests()),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
-              children: [
+            child: CustomScrollView(
+              slivers: [
+                // ── Search bar ────────────────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: TextField(
+                      onChanged: (v) => setState(() => _search = v),
+                      style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+                      decoration: InputDecoration(
+                        hintText: 'Search by name, room, phone…',
+                        hintStyle: const TextStyle(color: AppColors.textDisabled, fontSize: 14),
+                        prefixIcon: const Icon(Icons.search_rounded, color: AppColors.textDisabled, size: 20),
+                        filled: true,
+                        fillColor: const Color(0xFFF5F7FA),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Status filter chips ───────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _FilterChip(
+                            label: 'All',
+                            count: allActive.length,
+                            selected: _statusFilter == 'All',
+                            color: AppColors.primary,
+                            bg: AppColors.primaryLight,
+                            onTap: () => setState(() => _statusFilter = 'All'),
+                          ),
+                          const SizedBox(width: 8),
+                          _FilterChip(
+                            label: 'Overdue',
+                            count: _count('Overdue'),
+                            selected: _statusFilter == 'Overdue',
+                            color: AppColors.error,
+                            bg: AppColors.errorLight,
+                            onTap: () => setState(() => _statusFilter = 'Overdue'),
+                          ),
+                          const SizedBox(width: 8),
+                          _FilterChip(
+                            label: '< 1 hr',
+                            count: _count('Within 1 hr'),
+                            selected: _statusFilter == 'Within 1 hr',
+                            color: AppColors.warning,
+                            bg: AppColors.warningLight,
+                            onTap: () => setState(() => _statusFilter = 'Within 1 hr'),
+                          ),
+                          const SizedBox(width: 8),
+                          _FilterChip(
+                            label: 'Upcoming',
+                            count: _count('Upcoming'),
+                            selected: _statusFilter == 'Upcoming',
+                            color: AppColors.info,
+                            bg: AppColors.infoLight,
+                            onTap: () => setState(() => _statusFilter = 'Upcoming'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Empty state ───────────────────────────────────────────
+                if (all.isEmpty)
+                  SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(Icons.hotel_rounded, size: 52, color: AppColors.textDisabled),
+                          SizedBox(height: 14),
+                          Text(
+                            'No checkouts today',
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            'Guests checking out today will appear here',
+                            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // ── Active guests ─────────────────────────────────────────
                 if (active.isNotEmpty) ...[
-                  _SectionLabel(
-                    label: 'Upcoming · ${active.length}',
-                    icon: Icons.schedule_rounded,
-                    color: AppColors.textSecondary,
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                      child: _SectionLabel(
+                        label: 'Upcoming · ${active.length}',
+                        icon: Icons.schedule_rounded,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  ...active.map((g) {
-                    final id = (g['guestId'] as num?)?.toInt();
-                    return _GuestCard(
-                      guest: g,
-                      expanded: id != null && _expandedIds.contains(id),
-                      billFuture: id != null ? _billFutures[id] : null,
-                      onTap: () => _toggleExpand(g),
-                      onCheckout: () => _onManualCheckout(g),
-                      formatDate: _formatDate,
-                      formatTime: _formatTime,
-                      statusStyle: _statusStyle,
-                    );
-                  }),
+                  SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (_, i) {
+                        final g   = active[i];
+                        final id  = (g['guestId'] as num?)?.toInt();
+                        final min = (g['minutesToCheckout'] as num?)?.toInt();
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                          child: _GuestCard(
+                            guest: g,
+                            expanded: id != null && _expandedIds.contains(id),
+                            billFuture: id != null ? _billFutures[id] : null,
+                            onTap: () => _toggleExpand(g),
+                            onCheckout: () => _onManualCheckout(g),
+                            formatDateTime: _formatDateTime,
+                            formatTime: _formatTime,
+                            statusStyle: _statusStyle,
+                            countdownLabel: _countdownLabel(min),
+                            countdownColor: _countdownColor(min),
+                          ),
+                        );
+                      },
+                      childCount: active.length,
+                    ),
+                  ),
                 ],
+
+                // ── Checked out today ─────────────────────────────────────
                 if (checkedOut.isNotEmpty) ...[
-                  SizedBox(height: active.isNotEmpty ? 24 : 0),
-                  _SectionLabel(
-                    label: 'Checked Out Today · ${checkedOut.length}',
-                    icon: Icons.check_circle_outline_rounded,
-                    color: AppColors.success,
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(16, active.isNotEmpty ? 14 : 20, 16, 8),
+                      child: _SectionLabel(
+                        label: 'Checked Out Today · ${checkedOut.length}',
+                        icon: Icons.check_circle_outline_rounded,
+                        color: AppColors.success,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  ...checkedOut.map((g) {
-                    final id = (g['guestId'] as num?)?.toInt();
-                    return _GuestCard(
-                      guest: g,
-                      expanded: id != null && _expandedIds.contains(id),
-                      billFuture: id != null ? _billFutures[id] : null,
-                      onTap: () => _toggleExpand(g),
-                      onCheckout: null,
-                      formatDate: _formatDate,
-                      formatTime: _formatTime,
-                      statusStyle: _statusStyle,
-                      isCheckedOut: true,
-                    );
-                  }),
+                  SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (_, i) {
+                        final g  = checkedOut[i];
+                        final id = (g['guestId'] as num?)?.toInt();
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                          child: _GuestCard(
+                            guest: g,
+                            expanded: id != null && _expandedIds.contains(id),
+                            billFuture: id != null ? _billFutures[id] : null,
+                            onTap: () => _toggleExpand(g),
+                            onCheckout: null,
+                            formatDateTime: _formatDateTime,
+                            formatTime: _formatTime,
+                            statusStyle: _statusStyle,
+                            countdownLabel: '',
+                            countdownColor: AppColors.textDisabled,
+                            isCheckedOut: true,
+                          ),
+                        );
+                      },
+                      childCount: checkedOut.length,
+                    ),
+                  ),
                 ],
+
+                const SliverToBoxAdapter(child: SizedBox(height: 32)),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filter Chip
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final bool selected;
+  final Color color;
+  final Color bg;
+  final VoidCallback onTap;
+
+  const _FilterChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.color,
+    required this.bg,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? color : bg,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? color : color.withOpacity(0.25),
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: selected ? Colors.white : color,
+              ),
+            ),
+            const SizedBox(width: 5),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: selected ? Colors.white.withOpacity(0.25) : color.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: selected ? Colors.white : color,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -298,7 +584,7 @@ class _SectionLabel extends StatelessWidget {
             fontSize: 12,
             fontWeight: FontWeight.w600,
             color: color,
-            letterSpacing: 0.4,
+            letterSpacing: 0.3,
           ),
         ),
       ],
@@ -317,8 +603,10 @@ class _GuestCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onCheckout;
   final bool isCheckedOut;
+  final String countdownLabel;
+  final Color countdownColor;
 
-  final String Function(String?) formatDate;
+  final String Function(String?) formatDateTime;
   final String Function(String?) formatTime;
   final Map<String, dynamic> Function(String?) statusStyle;
 
@@ -328,27 +616,23 @@ class _GuestCard extends StatelessWidget {
     required this.billFuture,
     required this.onTap,
     required this.onCheckout,
-    required this.formatDate,
+    required this.formatDateTime,
     required this.formatTime,
     required this.statusStyle,
+    required this.countdownLabel,
+    required this.countdownColor,
     this.isCheckedOut = false,
   });
 
-  String _shortStatus(String s) {
-    if (s.toLowerCase().contains('within')) return '< 1 hr';
-    if (s.toLowerCase() == 'overdue') return 'Overdue';
-    if (s.toLowerCase() == 'checked out') return 'Done';
-    return 'Upcoming';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final style = statusStyle(guest['checkoutStatus']);
+    final style      = statusStyle(guest['checkoutStatus']);
     final statusColor = isCheckedOut ? AppColors.success : (style['color'] as Color);
-    final statusBg = isCheckedOut ? AppColors.successLight : (style['bg'] as Color);
-    final statusIcon = isCheckedOut ? Icons.check_circle_rounded : (style['icon'] as IconData);
-    final statusLabel = isCheckedOut ? 'Checked Out' : (guest['checkoutStatus'] ?? 'Upcoming');
-    final name = (guest['guestName'] ?? 'G').toString().trim();
+    final statusBg    = isCheckedOut ? AppColors.successLight : (style['bg'] as Color);
+    final statusIcon  = isCheckedOut ? Icons.check_circle_rounded : (style['icon'] as IconData);
+    final statusChip  = isCheckedOut ? 'Checked Out' : (style['chipLabel'] as String);
+
+    final name        = (guest['guestName'] ?? 'G').toString().trim();
     final firstLetter = name.isNotEmpty ? name[0].toUpperCase() : 'G';
 
     return GestureDetector(
@@ -356,12 +640,11 @@ class _GuestCard extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeInOut,
-        margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: expanded ? AppColors.primary.withOpacity(0.18) : AppColors.borderLight,
+            color: expanded ? AppColors.primary.withOpacity(0.2) : AppColors.borderLight,
           ),
           boxShadow: [
             BoxShadow(
@@ -375,10 +658,11 @@ class _GuestCard extends StatelessWidget {
           children: [
             // ── Collapsed Row ──────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+              padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Blue avatar
+                  // Avatar
                   Container(
                     width: 44,
                     height: 44,
@@ -398,7 +682,7 @@ class _GuestCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
 
-                  // Name + room + time
+                  // Name + room + time + countdown
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -433,50 +717,77 @@ class _GuestCard extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(width: 6),
-                            Text(
-                              isCheckedOut
-                                  ? 'Out · ${formatTime(guest['checkoutDate'])}'
-                                  : 'Checkout · ${formatTime(guest['checkoutDate'])}',
-                              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                            Flexible(
+                              child: Text(
+                                isCheckedOut
+                                    ? 'Out · ${formatTime(guest['checkoutDate'])}'
+                                    : 'Checkout · ${formatTime(guest['checkoutDate'])}',
+                                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           ],
                         ),
+                        // Live countdown timer row
+                        if (!isCheckedOut && countdownLabel.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(Icons.timer_outlined, size: 11, color: countdownColor),
+                              const SizedBox(width: 4),
+                              Text(
+                                countdownLabel,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: countdownColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
 
-                  // Status chip
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: statusBg,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(statusIcon, size: 11, color: statusColor),
-                        const SizedBox(width: 4),
-                        Text(
-                          _shortStatus(statusLabel),
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: statusColor),
+                  // Status chip + chevron
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: statusBg,
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(width: 4),
-                  AnimatedRotation(
-                    turns: expanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 200),
-                    child: const Icon(Icons.keyboard_arrow_down_rounded,
-                        size: 20, color: AppColors.textDisabled),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(statusIcon, size: 11, color: statusColor),
+                            const SizedBox(width: 4),
+                            Text(
+                              statusChip,
+                              style: TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600, color: statusColor),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      AnimatedRotation(
+                        turns: expanded ? 0.5 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        child: const Icon(Icons.keyboard_arrow_down_rounded,
+                            size: 20, color: AppColors.textDisabled),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
 
-            // ── Expanded Details ────────────────────────────────────────
+            // ── Expanded Details ───────────────────────────────────────
             if (expanded) ...[
               const Divider(height: 1, color: AppColors.borderLight),
               Padding(
@@ -484,25 +795,41 @@ class _GuestCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _DetailRow(icon: Icons.badge_outlined, label: 'Guest ID', value: '#${guest['guestId'] ?? '—'}'),
+                    _DetailRow(
+                      icon: Icons.badge_outlined,
+                      label: 'Guest ID',
+                      value: '#${guest['guestId'] ?? '—'}',
+                    ),
                     _DetailRow(
                       icon: Icons.phone_outlined,
                       label: 'Contact',
-                      value: (guest['contact']?.toString().isNotEmpty == true) ? guest['contact'] : 'Not provided',
+                      value: (guest['contact']?.toString().isNotEmpty == true)
+                          ? guest['contact']
+                          : 'Not provided',
                     ),
                     _DetailRow(
                       icon: Icons.email_outlined,
                       label: 'Email',
-                      value: (guest['email']?.toString().isNotEmpty == true) ? guest['email'] : 'Not provided',
+                      value: (guest['email']?.toString().isNotEmpty == true)
+                          ? guest['email']
+                          : 'Not provided',
                     ),
-                    _DetailRow(icon: Icons.calendar_today_outlined, label: 'Checkout', value: formatDate(guest['checkoutDate'])),
+                    _DetailRow(
+                      icon: Icons.calendar_today_outlined,
+                      label: 'Checkout',
+                      value: formatDateTime(guest['checkoutDate']),
+                    ),
                     if ((guest['raw']?['device_name'] ?? '').toString().isNotEmpty)
-                      _DetailRow(icon: Icons.devices_outlined, label: 'Devices', value: guest['raw']['device_name'].toString()),
+                      _DetailRow(
+                        icon: Icons.devices_outlined,
+                        label: 'Devices',
+                        value: guest['raw']['device_name'].toString(),
+                      ),
 
-                    // Orders
+                    // Food orders — shown immediately on expand
                     OrdersSection(billFuture: billFuture),
 
-                    // Actions
+                    // Manual checkout button
                     if (!isCheckedOut && onCheckout != null) ...[
                       const SizedBox(height: 14),
                       SizedBox(
@@ -510,14 +837,17 @@ class _GuestCard extends StatelessWidget {
                         child: ElevatedButton.icon(
                           onPressed: onCheckout,
                           icon: const Icon(Icons.logout_rounded, size: 16),
-                          label: const Text('Manual Checkout',
-                              style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: 0.1)),
+                          label: const Text(
+                            'Manual Checkout',
+                            style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: 0.1),
+                          ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.primary,
                             foregroundColor: Colors.white,
                             elevation: 0,
                             padding: const EdgeInsets.symmetric(vertical: 13),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                         ),
                       ),
@@ -539,7 +869,10 @@ class _GuestCard extends StatelessWidget {
                             SizedBox(width: 8),
                             Text(
                               'Guest has been checked out',
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.success),
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.success),
                             ),
                           ],
                         ),
@@ -628,7 +961,8 @@ class OrdersSection extends StatelessWidget {
                 const SizedBox(width: 7),
                 const Text(
                   'Food Orders',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
                 ),
                 const Spacer(),
                 Container(
@@ -639,7 +973,8 @@ class OrdersSection extends StatelessWidget {
                   ),
                   child: Text(
                     '${orders.length} order${orders.length > 1 ? 's' : ''}',
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
+                    style: const TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
                   ),
                 ),
               ],
@@ -647,7 +982,6 @@ class OrdersSection extends StatelessWidget {
 
             const SizedBox(height: 10),
 
-            // Order rows
             ...orders.map((o) => _OrderRow(order: o)),
 
             const SizedBox(height: 4),
@@ -664,7 +998,8 @@ class OrdersSection extends StatelessWidget {
                 children: [
                   const Text(
                     'Total Amount',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white70),
+                    style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white70),
                   ),
                   const Spacer(),
                   Text(
@@ -697,8 +1032,8 @@ class _OrderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = List<Map<String, dynamic>>.from(order['items'] ?? []);
-    final total = (order['total_order_price'] as num? ?? 0).toDouble();
+    final items   = List<Map<String, dynamic>>.from(order['items'] ?? []);
+    final total   = (order['total_order_price'] as num? ?? 0).toDouble();
     final orderNo = order['order_number']?.toString() ?? '—';
 
     return Container(
@@ -716,12 +1051,14 @@ class _OrderRow extends StatelessWidget {
             children: [
               Text(
                 'Order #$orderNo',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
               ),
               const Spacer(),
               Text(
                 '₹${total.toStringAsFixed(2)}',
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.primary),
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.primary),
               ),
             ],
           ),
@@ -749,7 +1086,10 @@ class _OrderRow extends StatelessWidget {
                       Expanded(
                         child: Text(
                           item['food_name']?.toString() ?? '—',
-                          style: const TextStyle(fontSize: 12, color: AppColors.textPrimary, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w500),
                         ),
                       ),
                       Text(
@@ -762,7 +1102,10 @@ class _OrderRow extends StatelessWidget {
                         child: Text(
                           '₹${(item['total_price'] as num? ?? 0).toStringAsFixed(0)}',
                           textAlign: TextAlign.end,
-                          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w600),
                         ),
                       ),
                     ],
@@ -797,12 +1140,14 @@ class _DetailRow extends StatelessWidget {
           const SizedBox(width: 10),
           SizedBox(
             width: 80,
-            child: Text(label, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+            child: Text(label,
+                style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
           ),
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
             ),
           ),
         ],

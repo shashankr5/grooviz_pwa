@@ -1,31 +1,37 @@
 // services/task_alert_service.dart
 //
-// FIXES APPLIED:
-//  FIX-4: Removed SharedPreferences sound-key write. Sound name passed
-//          directly as taskData to startService(), eliminating the
-//          write/read race condition with UnifiedAlertTaskHandler.
-//
-//  FIX-1 (from previous): _reevaluate() calls _ensureRunning() when
-//          totalPending > 0 — covers cold-launch and app-resume.
+// CHANGES IN THIS VERSION:
+//  • ensureDeliveryRunning() now uses AlertSoundKey.delivery (was .task)
+//  • Added _escalationCount + resetEscalationCount()
+//  • Added ensureEscalationRunning() — plays escalation sound once, no loop
+//  • stopAll() also resets _escalationCount
 
 import 'dart:async';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'unified_alert_foreground_task.dart';
 
 class TaskAlertService {
+  TaskAlertService._();
+
   static int _pendingServiceCount  = 0;
   static int _pendingDeliveryCount = 0;
+  static int _escalationCount      = 0;   // NEW
 
-  static int get totalPending => _pendingServiceCount + _pendingDeliveryCount;
+  static int get totalPending =>
+      _pendingServiceCount + _pendingDeliveryCount;
 
   // ── Streams ─────────────────────────────────────────────────────────────
   static final StreamController<void> _newTaskController =
       StreamController.broadcast();
   static final StreamController<void> _newDeliveryController =
       StreamController.broadcast();
+  static final StreamController<int>  _escalationController =
+      StreamController.broadcast();               // emits badge count
 
-  static Stream<void> get onNewTask     => _newTaskController.stream;
-  static Stream<void> get onNewDelivery => _newDeliveryController.stream;
+  static Stream<void> get onNewTask       => _newTaskController.stream;
+  static Stream<void> get onNewDelivery   => _newDeliveryController.stream;
+  static Stream<int>  get onEscalation    => _escalationController.stream;
 
   static void notifyNewTask()     => _newTaskController.add(null);
   static void notifyNewDelivery() => _newDeliveryController.add(null);
@@ -35,12 +41,12 @@ class TaskAlertService {
   static Future<bool> startServiceAlert()    => ensureServiceRunning();
   static Future<bool> ensureServiceRunning() => _ensureRunning(
         soundName:         AlertSoundKey.task,
+        shouldLoop:        true,
         notificationTitle: 'New Service Request',
         notificationText:  'Tap to view pending tasks',
       );
 
   /// ACCEPTOR DEVICE ONLY — optimistic decrement.
-  /// Must be followed by _loadTasks() → resetServiceCount().
   static Future<void> stopOneServiceAlert() async {
     _pendingServiceCount = (_pendingServiceCount - 1).clamp(0, 9999);
     print('TaskAlertService.stopOneServiceAlert() | serviceCount=$_pendingServiceCount');
@@ -55,16 +61,20 @@ class TaskAlertService {
   }
 
   // ── Delivery API ─────────────────────────────────────────────────────────
+  //
+  // CHANGE: now uses AlertSoundKey.delivery ('delivery_notification')
+  // instead of AlertSoundKey.task so delivery orders play their own
+  // distinct ascending-triad sound.
 
   static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
   static Future<bool> ensureDeliveryRunning() => _ensureRunning(
-        soundName:         AlertSoundKey.task,
+        soundName:         AlertSoundKey.delivery,   // CHANGED from .task
+        shouldLoop:        true,
         notificationTitle: 'Order Ready for Delivery',
         notificationText:  'Tap to view delivery queue',
       );
 
   /// ACCEPTOR DEVICE ONLY — optimistic decrement.
-  /// Must be followed by _loadAllOrders() → resetDeliveryCount().
   static Future<void> stopOneDeliveryAlert() async {
     _pendingDeliveryCount = (_pendingDeliveryCount - 1).clamp(0, 9999);
     print('TaskAlertService.stopOneDeliveryAlert() | deliveryCount=$_pendingDeliveryCount');
@@ -78,11 +88,34 @@ class TaskAlertService {
     _reevaluate();
   }
 
+  // ── Escalation API ───────────────────────────────────────────────────────
+  //
+  // NEW: plays escalation_notification.wav exactly ONCE to the escalation
+  // recipient. Does NOT loop. Service stays alive as a silent watcher so
+  // subsequent FCMs can trigger more plays if needed.
+
+  static Future<bool> ensureEscalationRunning() => _ensureRunning(
+        soundName:         AlertSoundKey.escalation,
+        shouldLoop:        false,                  // play once, no loop
+        notificationTitle: 'Task Escalated',
+        notificationText:  'A task requires your attention',
+      );
+
+  /// Called when the server reports a new escalation badge count.
+  static void resetEscalationCount(int count) {
+    _escalationCount = count.clamp(0, 9999);
+    print('TaskAlertService.resetEscalationCount($count)');
+    _escalationController.add(_escalationCount);
+  }
+
+  static int get escalationCount => _escalationCount;
+
   // ── Force stop (logout / app reset) ─────────────────────────────────────
 
   static Future<void> stopAll() async {
     _pendingServiceCount  = 0;
     _pendingDeliveryCount = 0;
+    _escalationCount      = 0;
     await _stopService();
   }
 
@@ -90,19 +123,25 @@ class TaskAlertService {
 
   static Future<bool> _ensureRunning({
     required String soundName,
+    required bool   shouldLoop,
     required String notificationTitle,
     required String notificationText,
   }) async {
     try {
+      // Write sound preference BEFORE starting service so the handler
+      // isolate can read it synchronously in onStart().
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(AlertSoundKey.prefKey, soundName);
+      await prefs.setString(AlertSoundKey.loopKey, shouldLoop ? 'true' : 'false');
+
       final isRunning = await FlutterForegroundTask.isRunningService;
       if (!isRunning) {
-        // FIX-4: Pass sound name as taskData — no SharedPreferences race.
         await FlutterForegroundTask.startService(
           notificationTitle: notificationTitle,
           notificationText:  notificationText,
-          callback:          unifiedAlertStartCallback, 
+          callback:          unifiedAlertStartCallback,
         );
-        print('TaskAlertService: foreground service started (sound=$soundName)');
+        print('TaskAlertService: foreground service started (sound=$soundName, loop=$shouldLoop)');
       }
       return true;
     } catch (e) {
@@ -117,7 +156,10 @@ class TaskAlertService {
     } else {
       // Restart if not running — covers cold-launch and app-resume.
       await _ensureRunning(
-        soundName:         AlertSoundKey.task,
+        soundName:         _pendingDeliveryCount > 0
+            ? AlertSoundKey.delivery
+            : AlertSoundKey.task,
+        shouldLoop:        true,
         notificationTitle: _pendingDeliveryCount > 0
             ? 'Order Ready for Delivery'
             : 'New Service Request',

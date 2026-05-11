@@ -22,12 +22,16 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
     _futureGuests = _loadHistory();
   }
 
+  // ── Loaders ───────────────────────────────────────────────────────────────
+
   Future<List<Map<String, dynamic>>> _loadHistory() async {
     final res = await CheckoutService().getGuestCheckoutReport();
     if (res['success'] != true) throw Exception(res['message']);
     final all = List<Map<String, dynamic>>.from(res['guests']);
     return all.where((g) => (g['raw']?['status'] ?? '') == 'Checked_out').toList();
   }
+
+  // ── Date helpers ──────────────────────────────────────────────────────────
 
   DateTime? _parseDate(String? s) {
     if (s == null || s.isEmpty) return null;
@@ -38,21 +42,24 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
     }
   }
 
+  /// "04/05/2026 • 2:30 PM"  — consistent with home_page style
   String _formatDateTime(String? s) {
     final d = _parseDate(s);
     if (d == null) return '—';
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    final h = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
-    final m = d.minute.toString().padLeft(2, '0');
+    final day    = d.day.toString().padLeft(2, '0');
+    final month  = d.month.toString().padLeft(2, '0');
+    final year   = d.year;
+    final hour12 = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
+    final minute = d.minute.toString().padLeft(2, '0');
     final period = d.hour >= 12 ? 'PM' : 'AM';
-    return '${d.day} ${months[d.month - 1]} • $h:$m $period';
+    return '$day/$month/$year • $hour12:$minute $period';
   }
 
-  String _formatCheckin(String? s) {
+  /// "04/05/2026"
+  String _formatDateOnly(String? s) {
     final d = _parseDate(s);
     if (d == null) return '—';
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${d.day} ${months[d.month - 1]} ${d.year}';
+    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
   }
 
   String _stayDuration(String? checkIn, String? checkOut) {
@@ -71,10 +78,15 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
         _expandedIds.remove(id);
       } else {
         _expandedIds.add(id);
-        _billFutures.putIfAbsent(id, () => CheckoutService().getGuestBill(guestId: id));
+        _billFutures.putIfAbsent(
+          id,
+          () => CheckoutService().getGuestBill(guestId: id),
+        );
       }
     });
   }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -85,7 +97,8 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: AppColors.textPrimary),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded,
+              size: 18, color: AppColors.textPrimary),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
@@ -127,7 +140,8 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                         elevation: 0,
                       ),
                       child: const Text('Retry'),
@@ -150,7 +164,7 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
 
           return Column(
             children: [
-              // ── Search ──────────────────────────────────────────────
+              // ── Search bar ──────────────────────────────────────────────
               Container(
                 color: Colors.white,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
@@ -160,7 +174,8 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                   decoration: InputDecoration(
                     hintText: 'Search by name, room, phone…',
                     hintStyle: const TextStyle(color: AppColors.textDisabled, fontSize: 14),
-                    prefixIcon: const Icon(Icons.search_rounded, color: AppColors.textDisabled, size: 20),
+                    prefixIcon: const Icon(Icons.search_rounded,
+                        color: AppColors.textDisabled, size: 20),
                     filled: true,
                     fillColor: const Color(0xFFF5F7FA),
                     contentPadding: const EdgeInsets.symmetric(vertical: 12),
@@ -172,7 +187,7 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                 ),
               ),
 
-              // ── Count ───────────────────────────────────────────────
+              // ── Count label ─────────────────────────────────────────────
               if (all.isNotEmpty)
                 Container(
                   width: double.infinity,
@@ -180,37 +195,44 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                   child: Text(
                     '${filtered.length} guest${filtered.length != 1 ? 's' : ''} checked out today',
-                    style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w500),
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w500),
                   ),
                 ),
 
-              // ── List ────────────────────────────────────────────────
+              // ── List ────────────────────────────────────────────────────
               Expanded(
                 child: filtered.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.history_toggle_off_rounded, size: 48, color: AppColors.textDisabled),
+                            const Icon(Icons.history_toggle_off_rounded,
+                                size: 48, color: AppColors.textDisabled),
                             const SizedBox(height: 14),
                             Text(
                               _search.isNotEmpty
                                   ? 'No results for "$_search"'
                                   : 'No checkout history today',
                               style: const TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.textPrimary),
                             ),
                           ],
                         ),
                       )
                     : RefreshIndicator(
                         color: AppColors.primary,
-                        onRefresh: () async => setState(() => _futureGuests = _loadHistory()),
+                        onRefresh: () async =>
+                            setState(() => _futureGuests = _loadHistory()),
                         child: ListView.builder(
                           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                           itemCount: filtered.length,
                           itemBuilder: (_, i) {
-                            final g = filtered[i];
+                            final g  = filtered[i];
                             final id = (g['guestId'] as num?)?.toInt();
                             return _HistoryCard(
                               guest: g,
@@ -218,7 +240,7 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                               billFuture: id != null ? _billFutures[id] : null,
                               onTap: () => _toggleExpand(g),
                               formatDateTime: _formatDateTime,
-                              formatCheckin: _formatCheckin,
+                              formatDateOnly: _formatDateOnly,
                               stayDuration: _stayDuration,
                             );
                           },
@@ -243,7 +265,7 @@ class _HistoryCard extends StatelessWidget {
   final Future<Map<String, dynamic>>? billFuture;
   final VoidCallback onTap;
   final String Function(String?) formatDateTime;
-  final String Function(String?) formatCheckin;
+  final String Function(String?) formatDateOnly;
   final String Function(String?, String?) stayDuration;
 
   const _HistoryCard({
@@ -252,18 +274,18 @@ class _HistoryCard extends StatelessWidget {
     required this.billFuture,
     required this.onTap,
     required this.formatDateTime,
-    required this.formatCheckin,
+    required this.formatDateOnly,
     required this.stayDuration,
   });
 
   @override
   Widget build(BuildContext context) {
-    final raw = guest['raw'] ?? {};
+    final raw      = guest['raw'] ?? {};
     final duration = stayDuration(
       raw['checked_in_time']?.toString(),
       raw['checked_out_time']?.toString(),
     );
-    final name = (guest['guestName'] ?? 'G').toString().trim();
+    final name        = (guest['guestName'] ?? 'G').toString().trim();
     final firstLetter = name.isNotEmpty ? name[0].toUpperCase() : 'G';
 
     return GestureDetector(
@@ -276,7 +298,9 @@ class _HistoryCard extends StatelessWidget {
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: expanded ? AppColors.primary.withOpacity(0.18) : AppColors.borderLight,
+            color: expanded
+                ? AppColors.primary.withOpacity(0.2)
+                : AppColors.borderLight,
           ),
           boxShadow: [
             BoxShadow(
@@ -290,10 +314,10 @@ class _HistoryCard extends StatelessWidget {
           children: [
             // ── Collapsed Row ──────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+              padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
               child: Row(
                 children: [
-                  // Blue avatar
+                  // Avatar
                   Container(
                     width: 44,
                     height: 44,
@@ -332,7 +356,8 @@ class _HistoryCard extends StatelessWidget {
                         Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
                               decoration: BoxDecoration(
                                 color: AppColors.primaryLight,
                                 borderRadius: BorderRadius.circular(6),
@@ -350,7 +375,8 @@ class _HistoryCard extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 'Out · ${formatDateTime(guest['checkoutDate'])}',
-                                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                                style: const TextStyle(
+                                    fontSize: 12, color: AppColors.textSecondary),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -361,38 +387,41 @@ class _HistoryCard extends StatelessWidget {
                     ),
                   ),
 
-                  // Done badge + chevron – wrapped in Flexible to avoid overflow on very narrow screens
-                  Flexible(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: AppColors.successLight,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.check_circle_rounded, size: 11, color: AppColors.success),
-                              SizedBox(width: 4),
-                              Text(
-                                'Checked Out',
-                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.success),
-                              ),
-                            ],
-                          ),
+                  // Checked Out badge + chevron
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 9, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: AppColors.successLight,
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                        const SizedBox(height: 4),
-                        AnimatedRotation(
-                          turns: expanded ? 0.5 : 0,
-                          duration: const Duration(milliseconds: 200),
-                          child: const Icon(Icons.keyboard_arrow_down_rounded,
-                              size: 20, color: AppColors.textDisabled),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.check_circle_rounded,
+                                size: 11, color: AppColors.success),
+                            SizedBox(width: 4),
+                            Text(
+                              'Checked Out',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.success),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 6),
+                      AnimatedRotation(
+                        turns: expanded ? 0.5 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        child: const Icon(Icons.keyboard_arrow_down_rounded,
+                            size: 20, color: AppColors.textDisabled),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -413,7 +442,7 @@ class _HistoryCard extends StatelessWidget {
                           child: _MiniDetail(
                             icon: Icons.login_rounded,
                             label: 'Check-in',
-                            value: formatCheckin(raw['checked_in_time']?.toString()),
+                            value: formatDateOnly(raw['checked_in_time']?.toString()),
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -446,7 +475,7 @@ class _HistoryCard extends StatelessWidget {
                         ),
                       ],
                     ),
-                    if ((guest['contact']?.toString().isNotEmpty == true)) ...[
+                    if (guest['contact']?.toString().isNotEmpty == true) ...[
                       const SizedBox(height: 10),
                       _MiniDetail(
                         icon: Icons.phone_outlined,
@@ -454,7 +483,7 @@ class _HistoryCard extends StatelessWidget {
                         value: guest['contact'],
                       ),
                     ],
-                    if ((guest['email']?.toString().isNotEmpty == true)) ...[
+                    if (guest['email']?.toString().isNotEmpty == true) ...[
                       const SizedBox(height: 10),
                       _MiniDetail(
                         icon: Icons.email_outlined,
@@ -471,7 +500,7 @@ class _HistoryCard extends StatelessWidget {
                       ),
                     ],
 
-                    // Orders
+                    // Food orders — shown immediately on expand
                     OrdersSection(billFuture: billFuture),
                   ],
                 ),
@@ -493,7 +522,8 @@ class _MiniDetail extends StatelessWidget {
   final String label;
   final String value;
 
-  const _MiniDetail({required this.icon, required this.label, required this.value});
+  const _MiniDetail(
+      {required this.icon, required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -514,12 +544,18 @@ class _MiniDetail extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  style: const TextStyle(fontSize: 10, color: AppColors.textSecondary, fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                      fontSize: 10,
+                      color: AppColors.textSecondary,
+                      fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),

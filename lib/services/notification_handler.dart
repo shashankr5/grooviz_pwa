@@ -1,13 +1,16 @@
-// notification_handler.dart — FINAL
+// notification_handler.dart
 //
-// Foreground FCM handler.
-//
-// KEY CHANGE: All NEW_* events call ensureRunning() (no counter).
-// All ACCEPTED/CANCELLED events call notify*() which triggers coordinator
-// and page reloads → resetCount(serverValue).
-// stopOne() is NEVER called here — it belongs only on the acceptor device
-// inside the page action, and even there only for service/cancel flows.
-// For food order accept, _loadFoodOrders() → resetCount() is called directly.
+// CHANGES IN THIS VERSION:
+//  • New FCM type: PULSE — reads alert_type from data, calls appropriate
+//    ensureRunning() so the play-once foreground service fires fresh audio.
+//  • New FCM type: ESCALATION_ALERT — calls ensureEscalationRunning()
+//    (plays once) + refreshes badge via TaskAlertService.resetEscalationCount.
+//  • New FCM type: ACCEPTED — reads service_request_id, calls
+//    TaskAlertService.resetServiceCount(0) for cross-device foreground
+//    service stop.
+//  • createNotificationChannel() now adds delivery_alert_channel
+//    (delivery_notification sound) and escalation_alert_channel
+//    (escalation_notification sound).
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -53,24 +56,46 @@ Future<void> createNotificationChannel() async {
   final plugin = localNotifications
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
 
+  // ── Existing channels ────────────────────────────────────────────────────
+
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'high_importance_channel', 'High Importance Notifications',
     description: 'Alerts for new food orders.',
     importance: Importance.max, playSound: true,
     sound: RawResourceAndroidNotificationSound('bell_notification'),
   ));
+
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'task_alert_channel', 'Task & Delivery Alerts',
     description: 'Alerts for service requests and delivery orders.',
     importance: Importance.max, playSound: true,
     sound: RawResourceAndroidNotificationSound('task_notification'),
   ));
+
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'order_alert_service', 'Order Alert Service',
     description: 'Foreground service for order and task alerts.',
     importance: Importance.high, playSound: false,
   ));
+
+  // ── NEW: Delivery alert channel ─────────────────────────────────────────
+  await plugin?.createNotificationChannel(const AndroidNotificationChannel(
+    'delivery_alert_channel', 'Delivery Alerts',
+    description: 'Alerts for room service delivery orders.',
+    importance: Importance.max, playSound: true,
+    sound: RawResourceAndroidNotificationSound('delivery_notification'),
+  ));
+
+  // ── NEW: Escalation alert channel ───────────────────────────────────────
+  await plugin?.createNotificationChannel(const AndroidNotificationChannel(
+    'escalation_alert_channel', 'Escalation Alerts',
+    description: 'Alerts for escalated tasks requiring immediate attention.',
+    importance: Importance.max, playSound: true,
+    sound: RawResourceAndroidNotificationSound('escalation_notification'),
+  ));
 }
+
+// ── Notification detail presets ───────────────────────────────────────────
 
 const _foodOrderDetails = NotificationDetails(
   android: AndroidNotificationDetails(
@@ -92,6 +117,30 @@ const _taskAlertDetails = NotificationDetails(
   iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
 
+// NEW
+const _deliveryAlertDetails = NotificationDetails(
+  android: AndroidNotificationDetails(
+    'delivery_alert_channel', 'Delivery Alerts',
+    channelDescription: 'Alerts for room service delivery orders.',
+    importance: Importance.max, priority: Priority.high, playSound: true,
+    sound: RawResourceAndroidNotificationSound('delivery_notification'),
+  ),
+  iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
+);
+
+// NEW
+const _escalationAlertDetails = NotificationDetails(
+  android: AndroidNotificationDetails(
+    'escalation_alert_channel', 'Escalation Alerts',
+    channelDescription: 'Alerts for escalated tasks.',
+    importance: Importance.max, priority: Priority.high, playSound: true,
+    sound: RawResourceAndroidNotificationSound('escalation_notification'),
+  ),
+  iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
+);
+
+// ── Main foreground notification handler ─────────────────────────────────
+
 Future<void> _showNotification(RemoteMessage message) async {
   final data  = message.data;
   final title = data['title'] ?? message.notification?.title ?? '📢 Notification';
@@ -100,29 +149,24 @@ Future<void> _showNotification(RemoteMessage message) async {
 
   print('🎯 Foreground FCM | type=$type');
 
-  bool isTaskType = false;
+  bool isTaskType       = false;
+  bool isDeliveryType   = false;
+  bool isEscalationType = false;
 
   switch (type) {
 
-    // ── Food order alerts ──────────────────────────────────────────────────
+    // ── Food order alerts ────────────────────────────────────────────────
 
     case 'NEW_FOOD_ORDER':
-      // ensureRunning() — no counter increment. If WS already started it,
-      // this is a no-op (service already running). No double-increment.
       await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
       break;
 
     case 'ORDER_ACCEPTED':
-      // Do NOT call stopOne(). The acceptor device calls _loadFoodOrders()
-      // directly after accept, which calls resetCount(serverPending).
-      // Non-acceptor devices: notifyNewOrder() → coordinator + page reload
-      // → resetCount(serverPending).
       OrderAlertService.notifyNewOrder();
       break;
 
     case 'ORDER_CANCELLED':
-      // Same: let reload + resetCount decide whether to stop.
       OrderAlertService.notifyNewOrder();
       break;
 
@@ -134,7 +178,7 @@ Future<void> _showNotification(RemoteMessage message) async {
       // READY / PREPARING — no alert action.
       break;
 
-    // ── Service task alerts ────────────────────────────────────────────────
+    // ── Service task alerts ──────────────────────────────────────────────
 
     case 'NEW_SERVICE_TASK':
       isTaskType = true;
@@ -144,38 +188,100 @@ Future<void> _showNotification(RemoteMessage message) async {
 
     case 'SERVICE_TASK_ACCEPTED':
       isTaskType = true;
-      // Do NOT call stopOneServiceAlert() on non-acceptor devices.
-      // home_page._acceptTask() calls it on the acceptor after the API call,
-      // then _loadTasks() → resetServiceCount() confirms for all.
       TaskAlertService.notifyNewTask();
       break;
 
-    // ── Delivery alerts ────────────────────────────────────────────────────
+    // ── Delivery alerts ──────────────────────────────────────────────────
 
     case 'NEW_DELIVERY_TASK':
-      isTaskType = true;
+      isDeliveryType = true;
       await TaskAlertService.ensureDeliveryRunning();
       TaskAlertService.notifyNewDelivery();
       break;
 
     case 'DELIVERY_ACCEPTED':
-      isTaskType = true;
-      // Do NOT call stopOneDeliveryAlert() on non-acceptor devices.
+      isDeliveryType = true;
       TaskAlertService.notifyNewDelivery();
       break;
 
     case 'DELIVERY_DELIVERED':
-      isTaskType = true;
+      isDeliveryType = true;
       TaskAlertService.notifyNewDelivery();
+      break;
+
+    // ── NEW: Lambda pulse ────────────────────────────────────────────────
+    //
+    // The Lambda EventBridge job fires this every interval to re-ring
+    // unaccepted tasks. alert_type maps to the appropriate sound.
+    // Each PULSE call replays the sound once (play-once mode).
+
+    case 'PULSE':
+      final alertType = (data['alert_type'] ?? 'service').toString();
+      switch (alertType) {
+        case 'food':
+          await OrderAlertService.ensureRunning();
+          OrderAlertService.notifyNewOrder();
+          break;
+        case 'delivery':
+          isDeliveryType = true;
+          await TaskAlertService.ensureDeliveryRunning();
+          TaskAlertService.notifyNewDelivery();
+          break;
+        case 'service':
+        default:
+          isTaskType = true;
+          await TaskAlertService.ensureServiceRunning();
+          TaskAlertService.notifyNewTask();
+          break;
+      }
+      break;
+
+    // ── NEW: Escalation alert ────────────────────────────────────────────
+    //
+    // Sent only to the escalation recipient. Plays escalation sound once.
+    // badge_count in the payload allows an immediate badge update without
+    // a separate API call.
+
+    case 'ESCALATION_ALERT':
+      isEscalationType = true;
+      await TaskAlertService.ensureEscalationRunning();
+      final badgeCount = int.tryParse(data['badge_count']?.toString() ?? '0') ?? 0;
+      TaskAlertService.resetEscalationCount(badgeCount);
+      break;
+
+    // ── NEW: Cross-device accept stop ────────────────────────────────────
+    //
+    // Lambda broadcasts this to all dept connections after any device
+    // accepts a task. Stops the foreground service on every non-acceptor.
+
+    case 'ACCEPTED':
+      isTaskType = true;
+      // Stop the alert — server has confirmed acceptance.
+      // resetServiceCount(0) stops the foreground service immediately.
+      TaskAlertService.resetServiceCount(0);
+      // Also trigger a page refresh so the task list updates.
+      TaskAlertService.notifyNewTask();
       break;
 
     default:
       print('Foreground FCM: unhandled type=$type');
   }
 
+  // Pick the right notification channel for the tray notification
+  NotificationDetails details;
+  if (isEscalationType) {
+    details = _escalationAlertDetails;
+  } else if (isDeliveryType) {
+    details = _deliveryAlertDetails;
+  } else if (isTaskType) {
+    details = _taskAlertDetails;
+  } else {
+    details = _foodOrderDetails;
+  }
+
   await localNotifications.show(
     message.hashCode, title, body,
-    isTaskType ? _taskAlertDetails : _foodOrderDetails,
+    details,
     payload: data.toString(),
   );
 }
@@ -190,12 +296,29 @@ void _handleMessage(RemoteMessage message) {
       break;
     case 'NEW_SERVICE_TASK':
     case 'SERVICE_TASK_ACCEPTED':
+    case 'ACCEPTED':
       TaskAlertService.notifyNewTask();
       break;
     case 'NEW_DELIVERY_TASK':
     case 'DELIVERY_ACCEPTED':
     case 'DELIVERY_DELIVERED':
       TaskAlertService.notifyNewDelivery();
+      break;
+    case 'ESCALATION_ALERT':
+      // Tapping the escalation notification navigates to the home page;
+      // the escalation badge is already refreshed in _showNotification.
+      TaskAlertService.notifyNewTask();
+      break;
+    case 'PULSE':
+      // Re-fire the appropriate stream so pages reload.
+      final alertType = (message.data['alert_type'] ?? 'service').toString();
+      if (alertType == 'food') {
+        OrderAlertService.notifyNewOrder();
+      } else if (alertType == 'delivery') {
+        TaskAlertService.notifyNewDelivery();
+      } else {
+        TaskAlertService.notifyNewTask();
+      }
       break;
   }
 }

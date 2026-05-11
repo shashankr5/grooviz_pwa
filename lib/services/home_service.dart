@@ -99,8 +99,13 @@ class HomeService {
                 m["assigned_to"] ??
                 "-")
             .toString(),
-        "note": m["note_text"],
-        "raw":  m,
+        "note":         m["note_text"],
+        "is_escalated": m["is_escalated"] ?? 0,
+        "escalation_time_minutes": m["escalation_time_minutes"],
+        "accepted_at":  m["accepted_at"],
+        "department_id": m["department_id"],
+        "enterprise_id": m["enterprise_id"],
+        "raw":          m,
       };
     }).toList();
   }
@@ -228,10 +233,10 @@ class HomeService {
       }
 
       final payload = {
-        "user_id":    userId,
-        "task_id":    ticketId,
+        "user_id":     userId,
+        "task_id":     ticketId,
         "reassign_to": assignedUserId,
-        "stage":      "dev",
+        "stage":       "dev",
       };
 
       final response =
@@ -372,7 +377,11 @@ class HomeService {
 
   // ── ACCEPT TASK ───────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> acceptTask({required int taskId}) async {
+  Future<Map<String, dynamic>> acceptTask({
+    required int taskId,
+    required int departmentId,   // needed by Lambda for WS broadcast
+    required int enterpriseId,   // needed by Lambda for WS broadcast
+  }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null) {
@@ -384,9 +393,11 @@ class HomeService {
       }
 
       final payload = {
-        "user_id": userId,
-        "task_id": taskId,
-        "stage":   "dev",
+        "user_id":       userId,
+        "task_id":       taskId,
+        "department_id": departmentId,  // ← NEW: Lambda uses for WS broadcast
+        "enterprise_id": enterpriseId,  // ← NEW: Lambda uses for WS broadcast
+        "stage":         "dev",
       };
 
       final response = await _dio.post(ApiConstants.acceptTask, data: payload);
@@ -432,6 +443,247 @@ class HomeService {
 
   Future<Map<String, dynamic>> getTaskDetails(task) async {
     return {"success": true, "task": task};
+  }
+
+  // ── GET ESCALATION BADGE COUNT ────────────────────────────────────────────
+
+  Future<int> getEscalationBadgeCount() async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) return 0;
+
+      final payload = {"user_id": userId, "stage": "dev"};
+
+      dev.log("📤 Fetching escalation badge count...");
+      final response = await _dio.post(
+        ApiConstants.escalationBadgeCount,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) return 0;
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null ||
+          statusList.isEmpty ||
+          statusList[0]["status"] != "S") return 0;
+
+      final resultList = response.data["RESULT"] as List?;
+      if (resultList == null || resultList.isEmpty) return 0;
+
+      return (resultList[0]["badge_count"] ?? 0) as int;
+    } catch (e) {
+      dev.log("ERROR (getEscalationBadgeCount): $e");
+      return 0; // non-fatal — badge just shows 0
+    }
+  }
+
+  // ── GET ESCALATED TASKS ───────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getEscalatedTasks({int? departmentId}) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {"success": false, "message": "User not logged in", "tasks": []};
+      }
+
+      final payload = {
+        "user_id": userId,
+        if (departmentId != null) "department_id": departmentId,
+        "stage": "dev",
+      };
+
+      dev.log("📤 Fetching escalated tasks...");
+      final response = await _dio.post(
+        ApiConstants.escalatedTasks,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error", "tasks": []};
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {"success": false, "message": "Invalid response", "tasks": []};
+      }
+
+      final flag = statusList[0]["status"];
+      final msg  = statusList[0]["message"];
+
+      if (flag != "S") {
+        return {"success": false, "message": msg ?? "Failed", "tasks": []};
+      }
+
+      final resultList = response.data["RESULT"] as List? ?? [];
+      return {
+        "success": true,
+        "message": msg,
+        "tasks": _mapEscalatedTasks(resultList),
+      };
+    } catch (e) {
+      dev.log("ERROR (getEscalatedTasks): $e");
+      return {"success": false, "message": "Network error", "tasks": []};
+    }
+  }
+
+  static List<Map<String, dynamic>> _mapEscalatedTasks(List raw) {
+    return raw.map<Map<String, dynamic>>((t) {
+      final m = Map<String, dynamic>.from(t);
+      return {
+        "service_request_id":    m["service_request_id"],
+        "room":                  (m["room_number"] ?? "-").toString(),
+        "room_id":               m["room_id"],
+        "guest":                 m["guest_name"] ?? "Unknown Guest",
+        "guest_phone":           m["guest_phone"] ?? "-",
+        "department_id":         m["department_id"],
+        "department_name":       m["department_name"] ?? "-",
+        "enterprise_id":         m["enterprise_id"],
+        "title":                 m["name"] ?? m["question"] ?? "Service Request",
+        "question":              m["question"] ?? "",
+        "status":                m["status"] ?? "Open",
+        "closed":                m["closed"] ?? 0,
+        "is_escalated":          m["is_escalated"] ?? 1,
+        "escalation_id":         m["escalation_id"],
+        "escalation_level":      m["escalation_level"],
+        "escalated_at":          m["escalated_at"],
+        "original_assignee":     m["original_assignee_name"] ?? "-",
+        "escalated_to":          m["escalated_to_name"] ?? "-",
+        "overdue_minutes":       m["overdue_minutes"] ?? 0,
+        "escalation_deadline":   m["escalation_deadline"],
+        "assigned_to":           m["assigned_to"],
+        "assigned_to_name":      m["assigned_to_name"] ?? "-",
+        "assigned_to_phone":     m["assigned_to_phone"] ?? "-",
+        "assigned_by":           m["assigned_by"],
+        "assigned_by_name":      m["assigned_by_name"] ?? "-",
+        "escalation_time_minutes": m["escalation_time_minutes"],
+        "accepted_at":           m["accepted_at"],
+        "created_at":            m["created_at"],
+        "updated_at":            m["updated_at"],
+        "note":                  m["note_text"],
+        "task_flag":             "Escalated",
+        "raw":                   m,
+      };
+    }).toList();
+  }
+
+  // ── GET TEAM PERFORMANCE ──────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getTeamPerformance({
+    int? departmentId,
+    int? targetUserId,
+    required int month,
+    required int year,
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {"success": false, "message": "User not logged in", "team": []};
+      }
+
+      final payload = {
+        "user_id": userId,
+        if (departmentId != null) "department_id": departmentId,
+        if (targetUserId  != null) "target_user_id": targetUserId,
+        "month": month,
+        "year":  year,
+        "stage": "dev",
+      };
+
+      dev.log("📤 Fetching team performance — $month/$year");
+      final response = await _dio.post(
+        ApiConstants.teamPerformance,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error", "team": []};
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {"success": false, "message": "Invalid response", "team": []};
+      }
+
+      final flag = statusList[0]["status"];
+      final msg  = statusList[0]["message"];
+
+      if (flag != "S") {
+        return {"success": false, "message": msg ?? "Failed", "team": []};
+      }
+
+      // RS1 = team list, RS2 = individual drill-down (if target_user_id sent)
+      final teamList       = response.data["RESULT"]  as List? ?? [];
+      final drillDownList  = response.data["RESULT2"] as List? ?? [];
+
+      return {
+        "success":    true,
+        "message":    msg,
+        "team":       teamList,
+        "drillDown":  drillDownList,
+      };
+    } catch (e) {
+      dev.log("ERROR (getTeamPerformance): $e");
+      return {"success": false, "message": "Network error", "team": []};
+    }
+  }
+
+  // ── GET ESCALATION REPORT ─────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getEscalationReport({
+    int? departmentId,
+    required DateTime fromDate,
+    required DateTime toDate,
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {"success": false, "message": "User not logged in"};
+      }
+
+      final payload = {
+        "user_id":   userId,
+        if (departmentId != null) "department_id": departmentId,
+        "from_date": "${fromDate.year}-${fromDate.month.toString().padLeft(2,'0')}-${fromDate.day.toString().padLeft(2,'0')}",
+        "to_date":   "${toDate.year}-${toDate.month.toString().padLeft(2,'0')}-${toDate.day.toString().padLeft(2,'0')}",
+        "stage":     "dev",
+      };
+
+      dev.log("📤 Fetching escalation report...");
+      final response = await _dio.post(
+        ApiConstants.escalationReport,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error"};
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {"success": false, "message": "Invalid response"};
+      }
+
+      final flag = statusList[0]["status"];
+      final msg  = statusList[0]["message"];
+
+      if (flag != "S") {
+        return {"success": false, "message": msg ?? "Failed"};
+      }
+
+      return {
+        "success":   true,
+        "message":   msg,
+        // RS1: summary totals
+        "summary":   response.data["RESULT"]  as List? ?? [],
+        // RS2: per-department breakdown
+        "byDept":    response.data["RESULT2"] as List? ?? [],
+        // RS3: per-task detail rows
+        "tasks":     response.data["RESULT3"] as List? ?? [],
+      };
+    } catch (e) {
+      dev.log("ERROR (getEscalationReport): $e");
+      return {"success": false, "message": "Network error"};
+    }
   }
 
   // ── GET READY ORDERS ──────────────────────────────────────────────────────
@@ -487,20 +739,6 @@ class HomeService {
   }
 
   // ── UPDATE ROOM SERVICE STATUS ────────────────────────────────────────────
-  //
-  // The API response for this endpoint is DIFFERENT from other endpoints.
-  // The STATUS array contains notification/user rows (not a status flag).
-  // A non-empty STATUS array with a 200 response == success.
-  //
-  // Sample response (Accept / Deliver):
-  //   {
-  //     "STATUS": [
-  //       { "user_id": 147, "username": "jahnavi", ...,
-  //         "old_status": "Accepted", "new_status": "DELIVERED", ... }
-  //     ]
-  //   }
-  //
-  // There is NO "status": "S" field and NO "RESULT" array in this response.
 
   Future<Map<String, dynamic>> updateRoomServiceStatus({
     required String orderNumber,
@@ -531,22 +769,15 @@ class HomeService {
 
       final body = response.data;
 
-      // ── Strategy 1: Standard STATUS flag ("status": "S") ─────────────
-      // Some env configs may return this — handle it if present.
       final statusList = body["STATUS"] as List?;
       if (statusList != null && statusList.isNotEmpty) {
         final firstRow = statusList[0] as Map?;
         if (firstRow != null && firstRow.containsKey("status")) {
-          // Standard flag-style response
           final flag = firstRow["status"];
           final msg  = firstRow["message"] ?? "Done";
           return {"success": flag == "S", "message": msg};
         }
 
-        // ── Strategy 2: Notification-style STATUS array ───────────────
-        // The STATUS rows are notification payloads (contain user_id,
-        // username, new_status, etc.) — a non-empty array on HTTP 200
-        // means the update succeeded.
         final hasNewStatus = firstRow != null &&
             (firstRow.containsKey("new_status") ||
              firstRow.containsKey("old_status") ||
@@ -556,13 +787,10 @@ class HomeService {
           return {"success": true, "message": "Status updated successfully"};
         }
 
-        // ── Strategy 3: Any non-empty STATUS on HTTP 200 ─────────────
-        // Fallback: if STATUS is non-empty and we got HTTP 200, treat as ok.
         dev.log("✅ updateRoomServiceStatus: non-empty STATUS on 200 → success");
         return {"success": true, "message": "Status updated"};
       }
 
-      // ── Strategy 4: RESULT array fallback ────────────────────────────
       final resultList = body["RESULT"] as List?;
       if (resultList != null && resultList.isNotEmpty) {
         final flag    = resultList[0]["status"];
@@ -570,7 +798,6 @@ class HomeService {
         return {"success": flag == "S", "message": message};
       }
 
-      // ── Strategy 5: Empty body but HTTP 200 ──────────────────────────
       dev.log("⚠️ updateRoomServiceStatus: empty body on 200 → treating as success");
       return {"success": true, "message": "Status updated"};
     } catch (e) {

@@ -56,14 +56,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   StreamSubscription? _wsSubscription;
   StreamSubscription? _orderSubscription;
 
-  // Tracks orders that have hit max delay locally (survives filter switches).
-  // DB `eta_locked` is the cross-device source of truth; this Set is the
-  // local optimistic complement for the device that just tapped "+".
   final Set<String> _maxDelayReachedOrders = {};
 
   bool _deliveredLoaded = false;
 
-  // ── Max extra ETA cap (must match SP v_MAX_EXTRA = 14) ───────────────────
   static const int _kMaxExtraEta = 14;
 
   // ====================== WEBSOCKET ======================
@@ -90,7 +86,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
           case 'ORDER_CANCELLED':
             _handleSocketUpdate(event['data'] ?? event);
             break;
-          // ── NEW: cross-device ETA sync ──────────────────────────────
           case 'ORDER_ETA_UPDATED':
             _handleSocketEtaUpdate(event['data'] ?? event);
             break;
@@ -177,9 +172,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     });
   }
 
-  // ── NEW: handle ORDER_ETA_UPDATED from WebSocket ──────────────────────────
-  // Fired by Lambda after another device successfully calls ADD_ETA.
-  // Updates etaMinutes, extraEta, and etaLocked on THIS device in real time.
   void _handleSocketEtaUpdate(dynamic data) {
     final orderNo  = data['order_number']?.toString();
     final newExtra = (data['extra_eta_minutes'] as num?)?.toInt() ?? 0;
@@ -252,23 +244,21 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       });
       return;
     }
-    final mappedOrders = _groupApiOrders(result["orders"] ?? []);
-    final active    = <Map<String, dynamic>>[];
-    final cancelled = <Map<String, dynamic>>[];
 
-    for (final o in mappedOrders) {
-      final rawStatus =
-          (o["raw"]?["order_status"] ?? "").toString().toUpperCase();
-      if (rawStatus == "DELIVERED") {
-        continue;
-      } else if (rawStatus == "CANCELLED") {
-        o["status"]       = FoodOrderStatus.cancelled.label;
-        o["cancelReason"] =
-            o["raw"]?["cancel_reason"] ?? o["cancelReason"] ?? "";
-        cancelled.add(o);
-      } else {
-        active.add(o);
-      }
+    // ── Active orders: SP result set 1 excludes Cancelled and Delivered.
+    // Everything in result["orders"] is Pending, Preparing, or Ready only.
+    final active = _groupApiOrders(result["orders"] ?? []);
+
+    // ── Cancelled orders: come exclusively from SP result set 2.
+    // _mapCancelledOrders in the service already sets status = Cancelled
+    // and populates cancelReason from order_status.cancel_reason.
+    final serverCancelled =
+        result["cancelledOrders"] as List<Map<String, dynamic>>? ?? [];
+    final cancelled = _groupApiOrders(serverCancelled);
+    for (final o in cancelled) {
+      o["status"]       = FoodOrderStatus.cancelled.label;
+      o["cancelReason"] = o["cancelReason"] ??
+          o["raw"]?["cancel_reason"] ?? "";
     }
 
     active.sort((a, b) =>
@@ -299,7 +289,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     });
   }
 
-  // ── _groupApiOrders: reads extra_eta_minutes + eta_locked from raw ────────
+  // ── _groupApiOrders ───────────────────────────────────────────────────────
   List<Map<String, dynamic>> _groupApiOrders(List apiOrders) {
     final Map<String, Map<String, dynamic>> grouped = {};
     for (final o in apiOrders) {
@@ -308,34 +298,29 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       final createdTime = raw?["order_time"] ?? raw?["delivered_time"] ?? "";
 
       if (!grouped.containsKey(orderNo)) {
-        // ── Read persisted ETA fields from DB ──────────────────────────
         final extraEta = (o["extraEtaMinutes"] ?? 0) as int;
         final locked   = o["etaLocked"] == true;
 
-        // If the DB says it's locked, register in local Set immediately
-        // so _isMaxDelayReached returns true without waiting for rebuild.
         if (locked && orderNo != null) {
           _maxDelayReachedOrders.add(orderNo.toString());
         }
 
         grouped[orderNo] = {
-          "orderNo":    orderNo,
-          "room":       o["roomNumber"],
-          "guest":      (o["guestName"] ?? "Guest").toString(),
-          "status":     o["status"],
-          "items":      [],
-          "raw":        raw,
-          "createdAt":  _safeParseDate(createdTime),
-          "acceptedAt": o["status"] == FoodOrderStatus.preparing.label
+          "orderNo":      orderNo,
+          "room":         o["roomNumber"],
+          "guest":        (o["guestName"] ?? "Guest").toString(),
+          "status":       o["status"],
+          "items":        [],
+          "raw":          raw,
+          "createdAt":    _safeParseDate(createdTime),
+          "acceptedAt":   o["status"] == FoodOrderStatus.preparing.label
               ? _safeParseDate(createdTime)
               : null,
-          // etaMinutes = base 15 + whatever extra has been persisted in DB
-          "etaMinutes": 15 + extraEta,
-          "extraEta":   extraEta,
-          // etaLocked from DB — authoritative across all devices
-          "etaLocked":  locked,
+          "etaMinutes":   15 + extraEta,
+          "extraEta":     extraEta,
+          "etaLocked":    locked,
           "cancelReason": o["cancelReason"] ?? raw?["cancel_reason"] ?? "",
-          "isVeg":      raw?["is_veg"],
+          "isVeg":        raw?["is_veg"],
         };
       }
       grouped[orderNo]!["items"].add({
@@ -507,15 +492,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         _remainingSeconds(order) < 0;
   }
 
-  // ── _isMaxDelayReached: DB etaLocked is authoritative ────────────────────
-  // Priority: DB lock → local Set → computed from extraEta.
   bool _isMaxDelayReached(Map<String, dynamic> order) {
-    // 1. DB-driven lock — survives refresh on every device
     if (order['etaLocked'] == true) return true;
-    // 2. Local optimistic Set — for the device that just tapped "+"
     final orderNo = order['orderNo']?.toString() ?? '';
     if (_maxDelayReachedOrders.contains(orderNo)) return true;
-    // 3. Computed fallback
     return (order['extraEta'] ?? 0) as int >= _kMaxExtraEta;
   }
 
@@ -1262,8 +1242,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                     decoration: BoxDecoration(
                       color: AppColors.infoLight,
                       borderRadius: BorderRadius.circular(10),
-                      border:
-                          Border.all(color: AppColors.info.withOpacity(0.25)),
+                      border: Border.all(
+                          color: AppColors.info.withOpacity(0.25)),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1403,7 +1383,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 ] else if (status == FoodOrderStatus.preparing.label) ...[
                   Row(
                     children: [
-                      // ETA / Ready button
                       Expanded(
                         child: AnimatedBuilder(
                           animation: _delayBlinkController,
@@ -1425,9 +1404,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         ),
                       ),
                       const SizedBox(width: 10),
-
-                      // ── ADD TIME button ─────────────────────────────
-                      // Permanently disabled once max is reached (DB or local).
                       AnimatedOpacity(
                         duration: const Duration(milliseconds: 200),
                         opacity: maxDelayReached ? 0.3 : 1.0,
@@ -1444,7 +1420,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                       (order['etaMinutes'] ?? 15) as int;
                                   const addMinutes = 2;
 
-                                  // ── Optimistic UI update ────────────
                                   setState(() {
                                     order['etaMinutes'] = prevEta + addMinutes;
                                     order['extraEta']   = prevExtra + addMinutes;
@@ -1455,7 +1430,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                     }
                                   });
 
-                                  // ── Persist to DB via SP ADD_ETA branch ──
                                   final result = await _foodOrderService
                                       .updateFoodOrderStatus(
                                     orderNumber: orderNo,
@@ -1466,7 +1440,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                   if (!mounted) return;
 
                                   if (result["success"] != true) {
-                                    // Rollback optimistic update
                                     setState(() {
                                       order['etaMinutes'] = prevEta;
                                       order['extraEta']   = prevExtra;
@@ -1477,9 +1450,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                     return;
                                   }
 
-                                  // ── Sync authoritative values from server ──
-                                  // Server response is the ground truth —
-                                  // handles concurrent taps from multiple devices.
                                   final serverExtra =
                                       (result["extraEtaMinutes"] as num?)
                                               ?.toInt() ??
@@ -1497,9 +1467,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                                       _maxDelayReachedOrders.add(orderNo);
                                     }
                                   });
-                                  // Note: Lambda broadcasts ORDER_ETA_UPDATED
-                                  // via WebSocket — other devices update via
-                                  // _handleSocketEtaUpdate automatically.
                                 },
                           child: Container(
                             padding: const EdgeInsets.all(11),
