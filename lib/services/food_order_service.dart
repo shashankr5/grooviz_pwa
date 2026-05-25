@@ -69,6 +69,7 @@ class FoodOrderService {
       }
 
       // ── Result Set 1: Active orders (Pending / Preparing / Ready) ─────────
+      // Lambda returns STATUS[0].response as a JSON string (same as get_food_orders_for_fnb)
       final statusList = response.data["STATUS"] as List?;
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
@@ -86,7 +87,6 @@ class FoodOrderService {
       final orders    = _mapFoodOrders(ordersRaw);
 
       // ── Result Set 2: Cancelled orders ────────────────────────────────────
-      // Lambda returns these as CANCELLED — plain row array from SP result set 2.
       final cancelledRaw = (response.data["CANCELLED"] ?? []) as List;
       dev.log("📥 Cancelled orders count: ${cancelledRaw.length}");
 
@@ -112,18 +112,17 @@ class FoodOrderService {
       final m = Map<String, dynamic>.from(o);
       return {
         "orderRequestId":      m["order_request_id"],
-        "orderNumber":         m["order_number"]     ?? "-",
-        "roomNumber":          m["room_number"]       ?? "-",
+        "orderNumber":         m["order_number"]          ?? "-",
+        "roomNumber":          m["room_number"]            ?? "-",
         "roomId":              m["room_id"],
-        "guestName":           m["guest_name"]        ?? "Guest",
-        "foodItem":            m["food_item"]         ?? "-",
-        "quantity":            m["quantity"]          ?? 0,
-        "cookingInstructions": (m["cooking_instructions"] ?? "").toString().trim(),
+        "guestName":           m["guest_name"]             ?? "Guest",
+        "foodItem":            m["food_item"]              ?? "-",
+        "quantity":            m["quantity"]               ?? 0,
+        "cookingInstructions": (m["cooking_instructions"]  ?? "").toString().trim(),
         "status":              _statusText(m["order_status"]),
         "statusColor":         _statusColor(m["order_status"]),
-        "cancelReason":        m["cancel_reason"]     ?? "",
+        "cancelReason":        m["cancel_reason"]          ?? "",
         "orderTime":           _formatTime(m["order_time"]),
-        // Active orders come via JSON_OBJECT in SP — eta fields are ints
         "extraEtaMinutes":     _safeInt(m["extra_eta_minutes"]),
         "etaLocked":           _safeBool(m["eta_locked"]),
         "raw":                 m,
@@ -132,27 +131,23 @@ class FoodOrderService {
   }
 
   // ── MAP CANCELLED ORDERS ──────────────────────────────────────────────────
-  // Cancelled orders come from SP Result Set 2 — plain MySQL row objects.
-  // eta_locked arrives as bool (MySQL tinyint → bool via mysql npm package).
-  // extra_eta_minutes arrives as int or null.
 
   static List<Map<String, dynamic>> _mapCancelledOrders(List raw) {
     return raw.map<Map<String, dynamic>>((o) {
       final m = Map<String, dynamic>.from(o);
       return {
         "orderRequestId":      m["order_request_id"],
-        "orderNumber":         m["order_number"]     ?? "-",
-        "roomNumber":          m["room_number"]       ?? "-",
+        "orderNumber":         m["order_number"]          ?? "-",
+        "roomNumber":          m["room_number"]            ?? "-",
         "roomId":              m["room_id"],
-        "guestName":           m["guest_name"]        ?? "Guest",
-        "foodItem":            m["food_item"]         ?? "-",
-        "quantity":            m["quantity"]          ?? 0,
-        "cookingInstructions": (m["cooking_instructions"] ?? "").toString().trim(),
+        "guestName":           m["guest_name"]             ?? "Guest",
+        "foodItem":            m["food_item"]              ?? "-",
+        "quantity":            m["quantity"]               ?? 0,
+        "cookingInstructions": (m["cooking_instructions"]  ?? "").toString().trim(),
         "status":              FoodOrderStatus.cancelled.label,
         "statusColor":         const Color(0xFFD32F2F),
-        "cancelReason":        m["cancel_reason"]     ?? "",
+        "cancelReason":        m["cancel_reason"]          ?? "",
         "orderTime":           _formatTime(m["order_time"]),
-        // Raw MySQL rows — eta_locked is bool, extra_eta_minutes is int/null
         "extraEtaMinutes":     _safeInt(m["extra_eta_minutes"]),
         "etaLocked":           _safeBool(m["eta_locked"]),
         "raw": {
@@ -165,8 +160,6 @@ class FoodOrderService {
   }
 
   // ── SAFE TYPE HELPERS ─────────────────────────────────────────────────────
-  // MySQL npm driver returns tinyint as bool and can return nulls.
-  // These helpers avoid runtime cast exceptions.
 
   static int _safeInt(dynamic v) {
     if (v == null) return 0;
@@ -176,9 +169,9 @@ class FoodOrderService {
   }
 
   static bool _safeBool(dynamic v) {
-    if (v == null)  return false;
-    if (v is bool)  return v;
-    if (v is int)   return v == 1;
+    if (v == null)   return false;
+    if (v is bool)   return v;
+    if (v is int)    return v == 1;
     if (v is String) return v == '1' || v.toLowerCase() == 'true';
     return false;
   }
@@ -225,6 +218,8 @@ class FoodOrderService {
   }
 
   // ── UPDATE FOOD ORDER STATUS ──────────────────────────────────────────────
+  // Handles: PREPARING, READY, CANCELLED, DELIVERED, ACCEPTED, ADD_ETA, RUSH_HOUR
+  // Lambda returns RESULT[0] directly (not STATUS[0].response)
 
   Future<Map<String, dynamic>> updateFoodOrderStatus({
     required String orderNumber,
@@ -284,6 +279,147 @@ class FoodOrderService {
     }
   }
 
+  // ── GET RUSH HOUR STATE ───────────────────────────────────────────────────
+  // Calls the dedicated read-only Lambda (ScreenSync_get_rush_hour_state_mobile)
+  // via ApiConstants.getRushHour.
+  // Used by FoodOrdersPage._loadRushHourState() on page load and app resume.
+  //
+  // SP OUT param is JSON → Lambda parses it and wraps fields in RESULT[0].
+  // So we read RESULT[0] directly here — same as updateFoodOrderStatus.
+
+  Future<Map<String, dynamic>> getRushHourState() async {
+    try {
+      final int? userId = await UserSessionHelper.getUserId();
+      if (userId == null || userId == 0) {
+        return {"success": false, "message": "User not logged in"};
+      }
+
+      final payload = {
+        "user_id": userId,
+        "stage":   "dev",
+      };
+
+      dev.log("📤 Get Rush Hour State");
+      dev.log("Payload: $payload");
+
+      final response = await _dio.post(
+        ApiConstants.getRushHour,   // ScreenSync_get_rush_hour_state_mobile
+        data: payload,
+      );
+
+      dev.log("📥 Raw Rush Hour State Response: ${response.data}");
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error"};
+      }
+
+      // Lambda wraps SP response in RESULT[0] — read directly
+      final resultList = response.data["RESULT"] as List?;
+      if (resultList == null || resultList.isEmpty) {
+        return {"success": false, "message": "Invalid server response"};
+      }
+
+      final result = Map<String, dynamic>.from(resultList.first);
+      final flag   = result["status"];
+
+      if (flag != "S") {
+        return {
+          "success": false,
+          "message": result["message"] ?? "Failed to get rush hour state",
+        };
+      }
+
+      return {
+        "success":             true,
+        "message":             result["message"] ?? "Success",
+        "rush_hour_active":    result["rush_hour_active"],
+        "rush_hour_ends_at":   result["rush_hour_ends_at"],
+        "rush_hour_extra_min": result["rush_hour_extra_min"],
+        "enterprise_id":       result["enterprise_id"],
+      };
+    } catch (e, stack) {
+      dev.log("❌ ERROR (getRushHourState): $e");
+      dev.log("❌ Stack: $stack");
+      return {"success": false, "message": "Network error"};
+    }
+  }
+
+  // ── SET RUSH HOUR ─────────────────────────────────────────────────────────
+  // Calls updateFoodOrderStatus Lambda with status='RUSH_HOUR' via
+  // ApiConstants.updateFoodOrderStatus (NOT a separate endpoint).
+  // Server writes to ent_dept_mapping and broadcasts RUSH_HOUR_UPDATED
+  // via WebSocket so all connected F&B devices update in real-time.
+  //
+  // active=true  → pass durationMinutes > 0 (e.g. 30, 60, 120, 240)
+  // active=false → durationMinutes is ignored; server resets the row
+
+  Future<Map<String, dynamic>> setRushHour({
+    required bool active,
+    int durationMinutes = 0,
+  }) async {
+    try {
+      final int? userId = await UserSessionHelper.getUserId();
+      if (userId == null || userId == 0) {
+        return {"success": false, "message": "User not logged in"};
+      }
+
+      if (active && durationMinutes <= 0) {
+        return {"success": false, "message": "Duration must be greater than 0"};
+      }
+
+      final payload = <String, dynamic>{
+        "status":             "RUSH_HOUR",
+        "changed_by":         userId,
+        "rush_hour_active":   active ? 1 : 0,
+        "rush_hour_duration": durationMinutes,
+        "stage":              "dev",
+      };
+
+      dev.log("📤 Set Rush Hour");
+      dev.log("Payload: $payload");
+
+      final response = await _dio.post(
+        ApiConstants.updateFoodOrderStatus, // ← same Lambda, RUSH_HOUR branch in SP
+        data: payload,
+      );
+
+      dev.log("📥 Raw Set Rush Hour Response: ${response.data}");
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error"};
+      }
+
+      // Lambda returns RESULT[0] — same as all other updateFoodOrderStatus calls
+      final resultList = response.data["RESULT"] as List?;
+      if (resultList == null || resultList.isEmpty) {
+        return {"success": false, "message": "Invalid server response"};
+      }
+
+      final result = Map<String, dynamic>.from(resultList.first);
+      final flag   = result["status"];
+
+      if (flag != "S") {
+        return {
+          "success": false,
+          "message": result["message"] ?? "Failed to update rush hour",
+        };
+      }
+
+      return {
+        "success":             true,
+        "message":             result["message"] ?? "Success",
+        "rush_hour_active":    result["rush_hour_active"],
+        "rush_hour_ends_at":   result["rush_hour_ends_at"],
+        "rush_hour_extra_min": result["rush_hour_extra_min"],
+        "enterprise_id":       result["enterprise_id"],
+      };
+    } catch (e, stack) {
+      dev.log("❌ ERROR (setRushHour): $e");
+      dev.log("❌ Stack: $stack");
+      return {"success": false, "message": "Network error"};
+    }
+  }
+
   // ── GET ORDER SUMMARY (Weekly / Daily) ───────────────────────────────────
 
   Future<Map<String, dynamic>> getOrderSummary({DateTime? date}) async {
@@ -321,6 +457,7 @@ class FoodOrderService {
         return {"success": false, "message": "Server error"};
       }
 
+      // Summary Lambda also uses STATUS[0].response pattern
       final statusList = response.data["STATUS"] as List?;
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};

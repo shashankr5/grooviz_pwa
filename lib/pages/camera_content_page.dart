@@ -337,7 +337,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
               color: AppColors.textPrimary,
               onTap: () {
                 Navigator.pop(context);
-                _showLandscapeDialog();
+                 _pickImage(ImageSource.camera);
               },
             ),
             const SizedBox(height: 12),

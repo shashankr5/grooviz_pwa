@@ -36,10 +36,14 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   late AnimationController _blinkController;
   late Animation<double> _blinkAnimation;
 
+  // ── Rush Hour state (server-backed) ─────────────────────────────────────
+  // These are derived from ent_dept_mapping and kept in sync via WebSocket.
+  // Never set rushHourActive = true locally without calling _setRushHour().
   bool rushHourActive           = false;
   int  rushExtraMinutesSelected = 0;
   Timer?    _rushTimer;
   DateTime? _rushHourEndsAt;
+  bool      _rushHourLoading = false; // prevents double-taps during API call
 
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -88,6 +92,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             break;
           case 'ORDER_ETA_UPDATED':
             _handleSocketEtaUpdate(event['data'] ?? event);
+            break;
+          // ── NEW: real-time rush hour sync across devices ────────────
+          case 'RUSH_HOUR_UPDATED':
+            _handleSocketRushHourUpdate(event['data'] ?? event);
             break;
         }
       });
@@ -192,6 +200,23 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     });
   }
 
+  // ── NEW: handle server-broadcast rush hour change ─────────────────────
+  // Called when another device toggles rush hour — keeps all devices in sync.
+  void _handleSocketRushHourUpdate(dynamic data) {
+    final active  = data['rush_hour_active'] == true ||
+                    data['rush_hour_active'] == 1    ||
+                    data['rush_hour_active'] == '1';
+    final endsAt  = data['rush_hour_ends_at']?.toString();
+    final extra   = (data['rush_hour_extra_min'] as num?)?.toInt() ?? 10;
+
+    DateTime? parsedEndsAt;
+    if (active && endsAt != null && endsAt.isNotEmpty) {
+      parsedEndsAt = _safeParseDate(endsAt);
+    }
+
+    _applyRushHourState(active: active, endsAt: parsedEndsAt, extraMin: extra);
+  }
+
   // ====================== HELPERS ======================
   bool _isValidTransition(String from, String to) {
     if (from == FoodOrderStatus.pending.label &&
@@ -229,7 +254,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     'Other',
   ];
 
-  int _rushExtraMinutes() => 10;
+  int _rushExtraMinutes() => rushExtraMinutesSelected > 0 ? rushExtraMinutesSelected : 10;
 
   // ====================== DATA LOADING ======================
   Future<void> _loadFoodOrders() async {
@@ -245,13 +270,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
       return;
     }
 
-    // ── Active orders: SP result set 1 excludes Cancelled and Delivered.
-    // Everything in result["orders"] is Pending, Preparing, or Ready only.
     final active = _groupApiOrders(result["orders"] ?? []);
 
-    // ── Cancelled orders: come exclusively from SP result set 2.
-    // _mapCancelledOrders in the service already sets status = Cancelled
-    // and populates cancelReason from order_status.cancel_reason.
     final serverCancelled =
         result["cancelledOrders"] as List<Map<String, dynamic>>? ?? [];
     final cancelled = _groupApiOrders(serverCancelled);
@@ -276,6 +296,116 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         .where((o) => o['status'] == FoodOrderStatus.pending.label)
         .length;
     OrderAlertService.resetCount(pendingCount);
+
+    // ── Load rush hour state from server after orders are loaded ──────────
+    await _loadRushHourState();
+  }
+
+  // ── NEW: fetch rush hour state from ent_dept_mapping via the service ──
+  Future<void> _loadRushHourState() async {
+    try {
+      final result = await _foodOrderService.getRushHourState();
+      if (!mounted) return;
+      if (result["success"] == true) {
+        final active  = result["rush_hour_active"] == true ||
+                        result["rush_hour_active"] == 1    ||
+                        result["rush_hour_active"] == '1';
+        final endsAt  = result["rush_hour_ends_at"]?.toString();
+        final extra   = (result["rush_hour_extra_min"] as num?)?.toInt() ?? 10;
+
+        DateTime? parsedEndsAt;
+        if (active && endsAt != null && endsAt.isNotEmpty) {
+          parsedEndsAt = _safeParseDate(endsAt);
+          // If the server says active but the time has already passed, treat as off
+          if (parsedEndsAt.isBefore(DateTime.now())) {
+            _applyRushHourState(active: false);
+            return;
+          }
+        }
+        _applyRushHourState(active: active, endsAt: parsedEndsAt, extraMin: extra);
+      }
+    } catch (_) {
+      // Non-fatal: UI stays with whatever current state is
+    }
+  }
+
+  // ── NEW: central method to apply rush hour state (from server or WS) ──
+  // Always go through this instead of setting rushHourActive directly.
+  void _applyRushHourState({
+    required bool active,
+    DateTime? endsAt,
+    int extraMin = 10,
+  }) {
+    _rushTimer?.cancel();
+
+    if (!active) {
+      if (mounted) {
+        setState(() {
+          rushHourActive           = false;
+          rushExtraMinutesSelected = 0;
+          _rushHourEndsAt          = null;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        rushHourActive           = true;
+        rushExtraMinutesSelected = extraMin;
+        _rushHourEndsAt          = endsAt;
+      });
+    }
+
+    // Auto-deactivate locally when the timer expires
+    if (endsAt != null) {
+      final remaining = endsAt.difference(DateTime.now());
+      if (!remaining.isNegative) {
+        _rushTimer = Timer(remaining, () {
+          if (mounted) {
+            // Don't call the server again — it will have already expired.
+            // Just update local UI; next _loadFoodOrders will re-confirm.
+            _applyRushHourState(active: false);
+          }
+        });
+      }
+    }
+  }
+
+  // ── NEW: tell the server to activate rush hour ────────────────────────
+  Future<void> _setRushHour({required bool active, int durationMinutes = 0}) async {
+    if (_rushHourLoading) return;
+    if (mounted) setState(() => _rushHourLoading = true);
+
+    try {
+      final result = await _foodOrderService.setRushHour(
+        active: active,
+        durationMinutes: durationMinutes,
+      );
+
+      if (!mounted) return;
+
+      if (result["success"] == true) {
+        final endsAt  = result["rush_hour_ends_at"]?.toString();
+        final extra   = (result["rush_hour_extra_min"] as num?)?.toInt() ?? 10;
+        DateTime? parsedEndsAt;
+        if (active && endsAt != null && endsAt.isNotEmpty) {
+          parsedEndsAt = _safeParseDate(endsAt);
+        }
+        _applyRushHourState(
+          active:   active,
+          endsAt:   parsedEndsAt,
+          extraMin: extra,
+        );
+        // WebSocket broadcast is done server-side; other devices update via WS.
+      } else {
+        _showError(result["message"]);
+      }
+    } catch (e) {
+      if (mounted) _showError("Failed to update rush hour. Please try again.");
+    } finally {
+      if (mounted) setState(() => _rushHourLoading = false);
+    }
   }
 
   void _addNewOrder(Map<String, dynamic> order) {
@@ -363,7 +493,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   void initState() {
     super.initState();
     _initializeWebSocket();
-    _loadFoodOrders();
+    _loadFoodOrders(); // also calls _loadRushHourState internally
     _pulseController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 900))
       ..repeat(reverse: true);
@@ -716,14 +846,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     );
   }
 
-  void _deactivateRushHour() {
-    setState(() {
-      rushHourActive           = false;
-      rushExtraMinutesSelected = 0;
-      _rushHourEndsAt          = null;
-    });
-    _rushTimer?.cancel();
-  }
+  // ── REMOVED: _deactivateRushHour() and _activateRushHour() ───────────────
+  // Both now go through _setRushHour() which calls the server first.
 
   // ====================== COUNTS ======================
   int get _pendingCount =>
@@ -923,7 +1047,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                 ),
                 if (rushHourActive)
                   Text(
-                    "+10 min ETA • ${_rushTimeLeftText()} left",
+                    "+${_rushExtraMinutes()} min ETA • ${_rushTimeLeftText()} left",
                     style: TextStyle(
                         fontSize: 11,
                         color: AppColors.error.withOpacity(0.7)),
@@ -931,33 +1055,46 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
               ],
             ),
           ),
-          GestureDetector(
-            onTap: () => rushHourActive
-                ? _deactivateRushHour()
-                : _showRushHourOptions(),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
+          // Show a small spinner while the API call is in-flight
+          if (_rushHourLoading)
+            const SizedBox(
               width: 44, height: 24,
-              decoration: BoxDecoration(
-                color: rushHourActive
-                    ? AppColors.error
-                    : Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(12),
+              child: Center(
+                child: SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: AppColors.error),
+                ),
               ),
-              child: AnimatedAlign(
+            )
+          else
+            GestureDetector(
+              onTap: () => rushHourActive
+                  ? _setRushHour(active: false)
+                  : _showRushHourOptions(),
+              child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                alignment: rushHourActive
-                    ? Alignment.centerRight
-                    : Alignment.centerLeft,
-                child: Container(
-                  margin: const EdgeInsets.all(3),
-                  width: 18, height: 18,
-                  decoration: const BoxDecoration(
-                      color: Colors.white, shape: BoxShape.circle),
+                width: 44, height: 24,
+                decoration: BoxDecoration(
+                  color: rushHourActive
+                      ? AppColors.error
+                      : Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: AnimatedAlign(
+                  duration: const Duration(milliseconds: 200),
+                  alignment: rushHourActive
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.all(3),
+                    width: 18, height: 18,
+                    decoration: const BoxDecoration(
+                        color: Colors.white, shape: BoxShape.circle),
+                  ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -1096,33 +1233,31 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
                         color: isDelayed
                             ? AppColors.error.withOpacity(0.08)
                             : Colors.indigo.shade50,
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text("Room",
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: isDelayed
-                                      ? AppColors.error
-                                      : Colors.indigo,
-                                  fontWeight: FontWeight.w600)),
+                          Text(
+                            "Room ",
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: isDelayed ? AppColors.error : Colors.indigo,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                           Text(
                             "${order["room"]}",
                             style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: isDelayed
-                                    ? AppColors.error
-                                    : Colors.indigo,
-                                height: 1.1),
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isDelayed ? AppColors.error : Colors.indigo,
+                            ),
                           ),
                         ],
                       ),
@@ -1593,9 +1728,9 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       color: AppColors.textPrimary)),
             ),
             _rushOption('30 Minutes', 30),
-            _rushOption('1 Hour', 60),
-            _rushOption('2 Hours', 120),
-            _rushOption('4 Hours', 240),
+            _rushOption('1 Hour',     60),
+            _rushOption('2 Hours',   120),
+            _rushOption('4 Hours',   240),
             const SizedBox(height: 8),
           ],
         ),
@@ -1619,21 +1754,10 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
             color: AppColors.textDisabled),
         onTap: () {
           Navigator.pop(context);
-          _activateRushHour(minutes);
+          // ── Now calls the server instead of setting state directly ──
+          _setRushHour(active: true, durationMinutes: minutes);
         },
       );
-
-  void _activateRushHour(int durationMinutes) {
-    setState(() {
-      rushHourActive           = true;
-      rushExtraMinutesSelected = 10;
-      _rushHourEndsAt =
-          DateTime.now().add(Duration(minutes: durationMinutes));
-    });
-    _rushTimer?.cancel();
-    _rushTimer = Timer(Duration(minutes: durationMinutes),
-        () { if (mounted) _deactivateRushHour(); });
-  }
 
   void _showCancelReasons(Map<String, dynamic> order) {
     showModalBottomSheet(

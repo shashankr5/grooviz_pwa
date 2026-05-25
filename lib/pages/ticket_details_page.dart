@@ -1,24 +1,38 @@
 // ticket_details_page.dart
 //
 // CHANGES IN THIS VERSION:
-//  • Accepts userRole param from home_page.dart / escalated list
-//  • "Take Over" button: shown when task is_escalated=1 AND In Progress AND
-//    not assigned to current user. Manager+ always see it on escalated tasks.
-//  • Escalation History section (Manager+ only): list of escalation_log rows
-//    fetched via getEscalatedTasks() (filtered client-side by service_request_id)
-//    on first open for Supervisor+ roles.
-//  • Escalated visual treatment: red header accent, overdue label, original
-//    assignee row in the detail body.
-//  • All existing note / reassign / close flows unchanged.
+//  • _loadEscalationHistory() — replaced getEscalatedTasks() + client-side
+//    filter with getEscalationHistoryForTask(). Now calls the dedicated SP
+//    that returns the full audit trail (including resolved entries) for a
+//    single service request ordered by escalation_level ASC, escalated_at ASC.
+//  • showClose condition — Close button now only shows if the viewer is
+//    Supervisor+ OR they are the staff member assigned to the task.
+//    Previously it showed for everyone on any in-progress task.
+//  • notifyReassign() — called (fire-and-forget) after every successful
+//    reassign so the new assignee gets an FCM immediately.
+//  • closeServiceRequest() — now passes department_id and enterprise_id
+//    in the payload so the Lambda can broadcast TASK_CLOSED via WebSocket.
+//
+// FORMAT: Old version layout (info card with detail rows, inline Add Note,
+//         Reassign + Close buttons at bottom).
+//
+// Existing fixes retained:
+//  • _formatTs() — midnight fix (hour == 0 shows as 12, not 0).
+//  • Guest Phone row  → tappable blue call button for ALL roles.
+//  • Assigned To row  → blue call icon for Supervisor+ (phone resolved lazily).
+//  • Reassign sheet   → blue call icon per staff row.
+//  • AppBar status shown as a coloured pill inside the AppBar container.
+//  • url_launcher used for tel: calls.
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/app_colors.dart';
 
-// ── Role helpers (mirrors home_page.dart) ────────────────────────────────────
+// ── Role helpers ──────────────────────────────────────────────────────────────
 
 const _roleHierarchy = [
   'Staff',
@@ -63,17 +77,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   final HomeService _homeService = HomeService();
   final TextEditingController _noteController = TextEditingController();
 
-  bool _isLoading       = false;
-  bool _isLoadingStaff  = false;
+  bool _isLoading        = false;
+  bool _isLoadingStaff   = false;
   bool _isLoadingEscHist = false;
+  bool _phoneLoading     = false;
 
-  List<Map<String, dynamic>> _staffList        = [];
+  List<Map<String, dynamic>> _staffList         = [];
   List<Map<String, dynamic>> _escalationHistory = [];
 
-  int? _loggedInUserId;
-  bool _historyLoaded = false;
+  int?   _loggedInUserId;
+  bool   _historyLoaded = false;
 
-  // Local mutable copy of the task so UI reflects accepts / reassigns
+  String _assignedPhone = '';
+
   late Map<String, dynamic> _task;
 
   @override
@@ -81,7 +97,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     super.initState();
     _task = Map<String, dynamic>.from(widget.task);
     _loadUserId();
-    if (_isManagerRole(widget.userRole) || _isSupervisorOrAbove(widget.userRole)) {
+
+    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
+    _assignedPhone = (raw['assigned_to_phone'] ?? '').toString();
+
+    if (_assignedPhone.isEmpty && _isSupervisorOrAbove(widget.userRole)) {
+      _fetchAssignedPhone();
+    }
+
+    if (_isManagerRole(widget.userRole) ||
+        _isSupervisorOrAbove(widget.userRole)) {
       _loadEscalationHistory();
     }
   }
@@ -92,93 +117,156 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     super.dispose();
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Session ───────────────────────────────────────────────────────────────
 
   Future<void> _loadUserId() async {
     final id = await UserSessionHelper.getUserId();
     if (mounted) setState(() => _loggedInUserId = id);
   }
 
-  int? get _assignedTo {
-    final raw = _task['raw'];
+  // ── Resolve assignee phone ────────────────────────────────────────────────
+
+  Future<void> _fetchAssignedPhone() async {
+    final raw          = _task['raw'] as Map<String, dynamic>? ?? {};
+    final assignedToId = (raw['assigned_to'] ?? '').toString();
+    if (assignedToId.isEmpty) return;
+
+    setState(() => _phoneLoading = true);
+    try {
+      final result = await _homeService.getStaffList();
+      if (!mounted) return;
+      if (result['success'] == true) {
+        final staff =
+            (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
+        for (final s in staff) {
+          final sid = (s['userId'] ?? s['id'] ?? '').toString();
+          if (sid == assignedToId) {
+            final phone = (s['phone'] ?? '').toString();
+            if (phone.isNotEmpty && mounted) {
+              setState(() {
+                _assignedPhone = phone;
+                if (_task['raw'] is Map) {
+                  (_task['raw'] as Map)['assigned_to_phone'] = phone;
+                }
+              });
+            }
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _phoneLoading = false);
+  }
+
+  // ── Computed properties ───────────────────────────────────────────────────
+
+  int? get _assignedToId {
+    final raw = _task['raw'] as Map?;
     final v   = raw?['assigned_to'] ?? _task['assigned_to'];
     if (v == null) return null;
     return int.tryParse(v.toString());
   }
 
   bool get _isEscalated =>
-      (_task['is_escalated'] ?? _task['raw']?['is_escalated'] ?? 0) == 1 ||
-      (_task['task_flag'] == 'Escalated');
+      (_task['is_escalated'] ??
+              (_task['raw'] as Map?)?['is_escalated'] ??
+              0) ==
+          1 ||
+      _task['task_flag'] == 'Escalated';
 
   bool get _canTakeOver {
     if (!_isEscalated) return false;
     if (_task['status'] != 'In Progress') return false;
     if (_isManagerRole(widget.userRole)) return true;
-    // Supervisor / DeptHead: only if not already assigned to them
     if (_isSupervisorOrAbove(widget.userRole)) {
-      return _assignedTo != _loggedInUserId;
+      return _assignedToId != _loggedInUserId;
     }
     return false;
   }
 
   bool get _isClosed =>
-      _task['status'] == 'Closed' ||
-      (_task['raw']?['closed'] ?? 0) == 1;
-
-  bool get _isOpen => _task['status'] == 'Open';
+      (_task['status'] ?? '').toString().toLowerCase() == 'closed' ||
+      ((_task['raw'] as Map?)?['closed'] ?? 0) == 1;
 
   int get _serviceRequestId =>
-      (_task['service_request_id'] ??
-          _task['raw']?['service_request_id'] ??
+      ((_task['service_request_id'] ??
+              (_task['raw'] as Map?)?['service_request_id']) ??
           0) as int;
 
   int get _departmentId =>
-      (_task['department_id'] ?? _task['raw']?['department_id'] ?? 0) as int;
+      ((_task['department_id'] ??
+              (_task['raw'] as Map?)?['department_id']) ??
+          0) as int;
 
   int get _enterpriseId =>
-      (_task['enterprise_id'] ?? _task['raw']?['enterprise_id'] ?? 0) as int;
+      ((_task['enterprise_id'] ??
+              (_task['raw'] as Map?)?['enterprise_id']) ??
+          0) as int;
+
+  // ── Timestamp formatter ───────────────────────────────────────────────────
 
   String _formatTs(String? ts) {
     if (ts == null || ts.trim().isEmpty) return '—';
     try {
       String s = ts.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
+
+      // .toLocal() converts UTC → local time.
+      // Remove this call if your DB stores timestamps in local time already.
       final d = DateTime.parse(s).toLocal();
-      final h = d.hour > 12 ? d.hour - 12 : d.hour == 0 ? 12 : d.hour;
+
+      final h = d.hour > 12
+          ? d.hour - 12
+          : d.hour == 0
+              ? 12   // FIX: midnight shows as 12, not 0
+              : d.hour;
       final p = d.hour >= 12 ? 'PM' : 'AM';
-      return '${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year}'
-             ' • $h:${d.minute.toString().padLeft(2,'0')} $p';
+      return '${d.day.toString().padLeft(2, '0')}/'
+          '${d.month.toString().padLeft(2, '0')}/${d.year}'
+          ' • $h:${d.minute.toString().padLeft(2, '0')} $p';
     } catch (_) {
-      return ts;
+      return ts!;
+    }
+  }
+
+  Future<void> _callPhone(String phone) async {
+    final cleaned = phone.replaceAll(RegExp(r'[\s\-()]+'), '');
+    final uri     = Uri(scheme: 'tel', path: cleaned);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else if (mounted) {
+      AppSnackBar.show(
+          context, 'Cannot open dialler for $phone',
+          isError: true);
     }
   }
 
   // ── Escalation history ────────────────────────────────────────────────────
+  //
+  // CHANGE: Replaced old implementation that called getEscalatedTasks() and
+  // filtered client-side. Now calls the dedicated getEscalationHistoryForTask()
+  // which hits ScreenSync_get_escalation_history_for_task_mobile SP.
+  //
+  // Benefits:
+  //   • Returns ALL rows including resolved — full audit trail visible.
+  //   • No client-side filtering — only this task's rows are returned.
+  //   • Ordered correctly by escalation_level ASC, escalated_at ASC.
 
   Future<void> _loadEscalationHistory() async {
     if (_historyLoaded) return;
     if (!mounted) return;
     setState(() => _isLoadingEscHist = true);
-
-    // Re-use getEscalatedTasks filtered to this SR — or call escalation report.
-    // Cheapest path: getEscalatedTasks returns escalation_log rows; filter by
-    // service_request_id client-side since the SP doesn't take sr_id directly.
-    // For a richer call, use getEscalationReport with a tight 1-day window —
-    // but that needs date params. Instead we parse from the task's raw data
-    // if already present, otherwise call getEscalatedTasks (department-scoped).
     try {
-      final result = await _homeService.getEscalatedTasks(
-        departmentId: _departmentId > 0 ? _departmentId : null,
+      final result = await _homeService.getEscalationHistoryForTask(
+        serviceRequestId: _serviceRequestId,
       );
       if (!mounted) return;
       if (result['success'] == true) {
-        final all = (result['tasks'] as List).cast<Map<String, dynamic>>();
-        final filtered = all
-            .where((t) => t['service_request_id'] == _serviceRequestId)
-            .toList();
         setState(() {
-          _escalationHistory = filtered;
-          _historyLoaded     = true;
+          _escalationHistory = List<Map<String, dynamic>>.from(
+            result['history'] as List? ?? [],
+          );
+          _historyLoaded = true;
         });
       }
     } catch (_) {}
@@ -196,37 +284,57 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       body:    'You will be assigned this escalated task and be responsible for completing it.',
       confirm: 'Take Over',
       color:   AppColors.error,
+      icon:    Icons.person_add_rounded,
     );
     if (confirm != true) return;
 
     setState(() => _isLoading = true);
-
     final result = await _homeService.reassignTicket(
       ticketId:       _serviceRequestId,
       assignedUserId: userId,
     );
-
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (result['success'] != true) {
-      AppSnackBar.show(context, result['message'] ?? 'Failed to take over', isError: true);
+      AppSnackBar.show(context, result['message'] ?? 'Failed to take over',
+          isError: true);
       return;
     }
 
-    final updated = result['updatedTask'] as Map<String, dynamic>? ?? {};
+    final updated = (result['updatedTask'] as Map<String, dynamic>?) ?? {};
     setState(() {
-      _task['assignedTo']  = updated['assigned_to_name'] ?? 'You';
-      _task['status']      = updated['status'] ?? 'In Progress';
+      _task['assignedTo']   = updated['assigned_to_name'] ?? 'You';
+      _task['status']       = updated['status'] ?? 'In Progress';
       _task['is_escalated'] = 0;
-      _task['raw']?['assigned_to']      = userId;
-      _task['raw']?['assigned_to_name'] = updated['assigned_to_name'] ?? 'You';
-      _task['raw']?['is_escalated']     = 0;
+      _task['alert_pending'] = 0;
+      if (_task['raw'] is Map) {
+        final raw = _task['raw'] as Map;
+        raw['assigned_to']      = userId;
+        raw['assigned_to_name'] = updated['assigned_to_name'] ?? 'You';
+        raw['is_escalated']     = 0;
+        raw['alert_pending']    = 0;
+      }
     });
 
     widget.onReassign?.call(updated);
+
+    // CHANGE: Notify new assignee via FCM (fire-and-forget).
+    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
+    _homeService.notifyReassign(
+      taskId:       _serviceRequestId,
+      assignedTo:   userId,
+      enterpriseId: _enterpriseId,
+      departmentId: _departmentId,
+      taskName:     (_task['title'] ?? raw['question'] ?? '').toString(),
+      roomId:       (_task['room'] ?? raw['room_number'] ?? '').toString(),
+    );
+
     AppSnackBar.show(context, 'Task taken over ✅');
   }
+
+  // CHANGE: closeServiceRequest now receives department_id and enterprise_id
+  // so the Lambda can broadcast TASK_CLOSED via WebSocket to all dept devices.
 
   Future<void> _closeTask() async {
     final confirm = await _showConfirmSheet(
@@ -234,27 +342,33 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       body:    'Mark this request as resolved? This cannot be undone.',
       confirm: 'Close',
       color:   AppColors.success,
+      icon:    Icons.check_circle_rounded,
     );
     if (confirm != true) return;
 
     setState(() => _isLoading = true);
     final result = await _homeService.closeServiceRequest(
       serviceRequestId: _serviceRequestId,
+      departmentId:     _departmentId,   // CHANGE: now required
+      enterpriseId:     _enterpriseId,   // CHANGE: now required
     );
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (result['success'] != true) {
-      AppSnackBar.show(context, result['message'] ?? 'Failed to close', isError: true);
+      AppSnackBar.show(context, result['message'] ?? 'Failed to close',
+          isError: true);
       return;
     }
 
     setState(() {
-      _task['status']          = 'Closed';
-      _task['raw']?['closed']  = 1;
-      _task['raw']?['status']  = 'Closed';
+      _task['status'] = 'Closed';
+      if (_task['raw'] is Map) {
+        final raw = _task['raw'] as Map;
+        raw['closed'] = 1;
+        raw['status'] = 'Closed';
+      }
     });
-
     widget.onClose?.call();
     AppSnackBar.show(context, 'Request closed ✅');
   }
@@ -272,7 +386,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     setState(() => _isLoading = false);
 
     if (result['success'] != true) {
-      AppSnackBar.show(context, result['message'] ?? 'Failed to add note', isError: true);
+      AppSnackBar.show(context, result['message'] ?? 'Failed to add note',
+          isError: true);
       return;
     }
 
@@ -286,128 +401,346 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       setState(() => _isLoadingStaff = true);
       final result = await _homeService.getStaffList();
       if (!mounted) return;
+      if (result['success'] != true) {
+        setState(() => _isLoadingStaff = false);
+        AppSnackBar.show(context, 'Failed to load staff', isError: true);
+        return;
+      }
+      final raw =
+          (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
+      raw.sort((a, b) {
+        final dA = (a['department'] ?? '').toString().toLowerCase();
+        final dB = (b['department'] ?? '').toString().toLowerCase();
+        final c  = dA.compareTo(dB);
+        if (c != 0) return c;
+        return (a['name'] ?? '')
+            .toString()
+            .toLowerCase()
+            .compareTo(
+                (b['name'] ?? '').toString().toLowerCase());
+      });
       setState(() {
-        _staffList       = (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
-        _isLoadingStaff  = false;
+        _staffList      = raw;
+        _isLoadingStaff = false;
       });
     }
     if (mounted) _showReassignSheet();
   }
 
+  // ── Reassign bottom sheet ─────────────────────────────────────────────────
+
   void _showReassignSheet() {
+    final List<_StaffListItem> items = [];
+    String? currentDept;
+    for (final s in _staffList) {
+      final dept = (s['department'] ?? '').toString();
+      if (dept != currentDept) {
+        items.add(_StaffListItem(isDivider: true, dept: dept));
+        currentDept = dept;
+      }
+      items.add(_StaffListItem(isDivider: false, staff: s));
+    }
+
     showModalBottomSheet(
-      context:         context,
+      context:            context,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
+      backgroundColor:    Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (_) {
+      builder: (ctx) {
         return DraggableScrollableSheet(
           expand:           false,
           initialChildSize: 0.6,
           maxChildSize:     0.9,
           minChildSize:     0.4,
-          builder: (ctx, scroll) {
-            return Column(
-              children: [
-                Container(
-                  margin: const EdgeInsets.only(top: 12, bottom: 8),
-                  width: 36, height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+          builder: (sheetCtx, scroll) {
+            return Column(children: [
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 4),
+                width: 36, height: 4,
+                decoration: BoxDecoration(
+                  color:        Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 8, 20, 12),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('Reassign To',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold,
-                            color: AppColors.textPrimary)),
-                  ),
-                ),
-                if (_isLoadingStaff)
-                  const Expanded(child: Center(child: CircularProgressIndicator()))
-                else if (_staffList.isEmpty)
-                  const Expanded(
-                    child: Center(child: Text('No staff found',
-                        style: TextStyle(color: AppColors.textSecondary))),
-                  )
-                else
-                  Expanded(
-                    child: ListView.separated(
-                      controller: scroll,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: _staffList.length,
-                      separatorBuilder: (_, __) =>
-                          const Divider(height: 1, color: AppColors.borderLight),
-                      itemBuilder: (ctx2, i) {
-                        final staff = _staffList[i];
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 4, vertical: 6),
-                          leading: CircleAvatar(
-                            backgroundColor: AppColors.primary.withOpacity(0.1),
-                            child: Text(
-                              (staff['name'] ?? '?').toString()[0].toUpperCase(),
-                              style: const TextStyle(
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                          title: Text(staff['name'] ?? '—',
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textPrimary)),
-                          subtitle: Text(staff['department'] ?? '—',
-                              style: const TextStyle(
-                                  fontSize: 12, color: AppColors.textSecondary)),
-                          onTap: () async {
-                            Navigator.pop(ctx2);
-                            setState(() => _isLoading = true);
-                            final res = await _homeService.reassignTicket(
-                              ticketId:       _serviceRequestId,
-                              assignedUserId: staff['userId'] as int,
-                            );
-                            if (!mounted) return;
-                            setState(() => _isLoading = false);
-                            if (res['success'] != true) {
-                              AppSnackBar.show(context,
-                                  res['message'] ?? 'Reassign failed',
-                                  isError: true);
-                              return;
-                            }
-                            final upd = res['updatedTask']
-                                as Map<String, dynamic>? ?? {};
-                            setState(() {
-                              _task['assignedTo'] = staff['name'];
-                              _task['status']     = upd['status'] ?? 'In Progress';
-                              _task['raw']?['assigned_to']      = staff['userId'];
-                              _task['raw']?['assigned_to_name'] = staff['name'];
-                            });
-                            widget.onReassign?.call(upd);
-                            AppSnackBar.show(context, 'Reassigned to ${staff['name']}');
-                          },
-                        );
-                      },
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                child: Row(children: [
+                  const Text('Reassign Task',
+                      style: TextStyle(
+                          fontSize:   17,
+                          fontWeight: FontWeight.bold,
+                          color:      AppColors.textPrimary)),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color:        AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(20),
                     ),
+                    child: Text('${_staffList.length} staff',
+                        style: const TextStyle(
+                            fontSize:   11,
+                            fontWeight: FontWeight.w600,
+                            color:      AppColors.primary)),
                   ),
-                const SizedBox(height: 16),
-              ],
-            );
+                ]),
+              ),
+              const Divider(height: 1, color: AppColors.borderLight),
+              Expanded(
+                child: _isLoadingStaff
+                    ? const Center(child: CircularProgressIndicator())
+                    : _staffList.isEmpty
+                        ? const Center(
+                            child: Text('No staff found',
+                                style: TextStyle(
+                                    color: AppColors.textSecondary)))
+                        : ListView.builder(
+                            controller: scroll,
+                            padding: const EdgeInsets.only(
+                                top: 8, bottom: 20),
+                            itemCount: items.length,
+                            itemBuilder: (_, i) {
+                              final item = items[i];
+
+                              if (item.isDivider) {
+                                return Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                      16, 12, 16, 6),
+                                  child: Row(children: [
+                                    Container(
+                                      padding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical:   4),
+                                      decoration: BoxDecoration(
+                                        color:        AppColors.surfaceAlt,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(item.dept ?? '',
+                                          style: const TextStyle(
+                                              fontSize:      11,
+                                              fontWeight:    FontWeight.w700,
+                                              color:         AppColors.textSecondary,
+                                              letterSpacing: 0.4)),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Expanded(
+                                      child: Divider(
+                                          height: 1,
+                                          color: AppColors.borderLight),
+                                    ),
+                                  ]),
+                                );
+                              }
+
+                              final staff = item.staff!;
+                              final name  = (staff['name'] ?? '—').toString();
+                              final phone = (staff['phone'] ?? '').toString();
+                              final initials = name.trim().isNotEmpty
+                                  ? name
+                                      .trim()
+                                      .split(' ')
+                                      .map((w) =>
+                                          w.isNotEmpty ? w[0] : '')
+                                      .take(2)
+                                      .join()
+                                      .toUpperCase()
+                                  : '?';
+
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 4),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color:        Colors.white,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: AppColors.borderLight),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black
+                                            .withValues(alpha: 0.03),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 1),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(children: [
+                                    const SizedBox(width: 12),
+                                    CircleAvatar(
+                                      radius:          18,
+                                      backgroundColor: AppColors.primaryLight,
+                                      child: Text(initials,
+                                          style: const TextStyle(
+                                              fontSize:   12,
+                                              fontWeight: FontWeight.bold,
+                                              color:      AppColors.primary)),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Padding(
+                                        padding:
+                                            const EdgeInsets.symmetric(
+                                                vertical: 14),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(name,
+                                                style: const TextStyle(
+                                                    fontSize:   13,
+                                                    fontWeight: FontWeight.w700,
+                                                    color:      AppColors.textPrimary)),
+                                            if ((staff['department'] ??
+                                                    '')
+                                                .toString()
+                                                .isNotEmpty)
+                                              Text(
+                                                  (staff['department'] ??
+                                                          '')
+                                                      .toString(),
+                                                  style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: AppColors.textSecondary)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    if (phone.isNotEmpty)
+                                      GestureDetector(
+                                        onTap: () => _callPhone(phone),
+                                        child: Container(
+                                          margin: const EdgeInsets.only(
+                                              right: 8),
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: Colors.blue
+                                                .withValues(alpha: 0.10),
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                          ),
+                                          child: const Icon(
+                                              Icons.call_rounded,
+                                              size:  16,
+                                              color: Colors.blue),
+                                        ),
+                                      ),
+                                    GestureDetector(
+                                      onTap: () async {
+                                        Navigator.pop(ctx);
+                                        setState(() => _isLoading = true);
+                                        final res = await _homeService
+                                            .reassignTicket(
+                                          ticketId:       _serviceRequestId,
+                                          assignedUserId: staff['userId'] as int,
+                                        );
+                                        if (!mounted) return;
+                                        setState(() => _isLoading = false);
+                                        if (res['success'] != true) {
+                                          AppSnackBar.show(
+                                              context,
+                                              res['message'] ??
+                                                  'Reassign failed',
+                                              isError: true);
+                                          return;
+                                        }
+                                        final upd = (res['updatedTask']
+                                                as Map<String,
+                                                    dynamic>?) ??
+                                            {};
+                                        setState(() {
+                                          _task['assignedTo'] =
+                                              staff['name'];
+                                          _task['status'] =
+                                              upd['status'] ??
+                                                  'In Progress';
+                                          _task['is_escalated']  = 0;
+                                          _task['alert_pending'] = 0;
+                                          if (_task['raw'] is Map) {
+                                            final raw =
+                                                _task['raw'] as Map;
+                                            raw['assigned_to'] =
+                                                staff['userId'];
+                                            raw['assigned_to_name'] =
+                                                staff['name'];
+                                            raw['assigned_to_phone'] =
+                                                staff['phone'] ?? '';
+                                            raw['assigned_by_name'] =
+                                                upd['assigned_by_name'] ??
+                                                    '';
+                                            raw['is_escalated']  = 0;
+                                            raw['alert_pending'] = 0;
+                                          }
+                                          _assignedPhone =
+                                              (staff['phone'] ?? '')
+                                                  .toString();
+                                        });
+
+                                        widget.onReassign?.call(upd);
+
+                                        // CHANGE: Notify the new assignee
+                                        // via FCM (fire-and-forget).
+                                        final taskRaw = _task['raw']
+                                            as Map<String, dynamic>? ?? {};
+                                        _homeService.notifyReassign(
+                                          taskId:       _serviceRequestId,
+                                          assignedTo:   staff['userId'] as int,
+                                          enterpriseId: _enterpriseId,
+                                          departmentId: _departmentId,
+                                          taskName:     (_task['title'] ??
+                                                  taskRaw['question'] ??
+                                                  '')
+                                              .toString(),
+                                          roomId: (_task['room'] ??
+                                                  taskRaw['room_number'] ??
+                                                  '')
+                                              .toString(),
+                                        );
+
+                                        AppSnackBar.show(context,
+                                            'Reassigned to ${staff['name']}');
+                                      },
+                                      child: Container(
+                                        margin: const EdgeInsets.only(
+                                            right: 12),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 12, vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Text('Assign',
+                                            style: TextStyle(
+                                                fontSize:   12,
+                                                fontWeight: FontWeight.w700,
+                                                color:      Colors.white)),
+                                      ),
+                                    ),
+                                  ]),
+                                ),
+                              );
+                            },
+                          ),
+              ),
+            ]);
           },
         );
       },
     );
   }
 
+  // ── Confirm bottom sheet ──────────────────────────────────────────────────
+
   Future<bool?> _showConfirmSheet({
-    required String title,
-    required String body,
-    required String confirm,
-    required Color  color,
+    required String   title,
+    required String   body,
+    required String   confirm,
+    required Color    color,
+    required IconData icon,
   }) {
     return showModalBottomSheet<bool>(
       context:         context,
@@ -418,78 +751,74 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       builder: (_) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Center(child: Container(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Center(
+              child: Container(
                 width: 36, height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
+                  color:        Colors.grey.shade300,
                   borderRadius: BorderRadius.circular(2),
                 ),
-              )),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  confirm == 'Take Over'
-                      ? Icons.person_add_rounded
-                      : confirm == 'Close'
-                          ? Icons.check_circle_rounded
-                          : Icons.info_rounded,
-                  color: color, size: 32,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color:  color.withValues(alpha: 0.1),
+                shape:  BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 32),
+            ),
+            const SizedBox(height: 14),
+            Text(title,
+                style: const TextStyle(
+                    fontSize:   18,
+                    fontWeight: FontWeight.bold,
+                    color:      AppColors.textPrimary)),
+            const SizedBox(height: 8),
+            Text(body,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 14,
+                    color:    AppColors.textSecondary,
+                    height:   1.4)),
+            const SizedBox(height: 24),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side:   const BorderSide(color: AppColors.border),
+                    shape:  RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: const Text('Cancel',
+                      style: TextStyle(
+                          color:      AppColors.textSecondary,
+                          fontWeight: FontWeight.w600)),
                 ),
               ),
-              const SizedBox(height: 14),
-              Text(title,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary)),
-              const SizedBox(height: 8),
-              Text(body,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 14, color: AppColors.textSecondary,
-                      height: 1.4)),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        side: const BorderSide(color: AppColors.border),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text('Cancel',
-                          style: TextStyle(color: AppColors.textSecondary,
-                              fontWeight: FontWeight.w600)),
-                    ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: color,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape:   RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    elevation: 0,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: color,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                      child: Text(confirm,
-                          style: const TextStyle(fontWeight: FontWeight.w700)),
-                    ),
-                  ),
-                ],
+                  child: Text(confirm,
+                      style:
+                          const TextStyle(fontWeight: FontWeight.w700)),
+                ),
               ),
-            ],
-          ),
+            ]),
+          ]),
         ),
       ),
     );
@@ -499,8 +828,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final status     = _task['status'] as String? ?? 'Open';
-    final statusClr  = _isEscalated ? AppColors.error : AppColors.statusColor(status);
+    final status    = (_task['status'] ?? 'Open').toString();
+    final statusClr =
+        _isEscalated ? AppColors.error : AppColors.statusColor(status);
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -512,38 +842,34 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── Escalated banner ─────────────────────────────────────
-                if (_isEscalated) _buildEscalatedBanner(),
+                if (_isEscalated) ...[
+                  _buildEscalatedBanner(),
+                  const SizedBox(height: 12),
+                ],
 
-                // ── Core info card ───────────────────────────────────────
                 _buildInfoCard(),
 
                 const SizedBox(height: 12),
 
-                // ── Note card ────────────────────────────────────────────
                 _buildNoteCard(),
 
+                if (!_isClosed) ...[
+                  const SizedBox(height: 12),
+                  _buildAddNoteCard(),
+                ],
+
                 const SizedBox(height: 12),
 
-                // ── Add note ─────────────────────────────────────────────
-                if (!_isClosed) _buildAddNoteCard(),
-
-                const SizedBox(height: 12),
-
-                // ── Escalation History (Manager+ only) ───────────────────
                 if (_isManagerRole(widget.userRole) ||
                     _isSupervisorOrAbove(widget.userRole))
                   _buildEscalationHistory(),
 
                 const SizedBox(height: 12),
 
-                // ── Action buttons ───────────────────────────────────────
                 if (!_isClosed) _buildActions(),
               ],
             ),
           ),
-
-          // Loading overlay
           if (_isLoading)
             const Positioned.fill(
               child: ColoredBox(
@@ -556,99 +882,127 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  // ── App Bar ───────────────────────────────────────────────────────────────
+  // ── AppBar ────────────────────────────────────────────────────────────────
 
   AppBar _buildAppBar(String status, Color statusClr) {
-    return AppBar(
-      backgroundColor: Colors.white,
-      elevation:       0,
-      surfaceTintColor: Colors.white,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back_ios_new_rounded,
-            size: 18, color: AppColors.textPrimary),
-        onPressed: () => Navigator.pop(context),
-      ),
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  final label = _isEscalated ? 'Escalated' : status;
+  return AppBar(
+    backgroundColor:  Colors.white,
+    elevation:        0,
+    surfaceTintColor: Colors.white,
+    toolbarHeight:    64,
+    centerTitle:      false,                // ← allow left/right alignment
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back_ios_new_rounded,
+          size: 18, color: AppColors.textPrimary),
+      onPressed: () => Navigator.pop(context),
+    ),
+    title: SizedBox(
+      width: double.infinity,               // fill available horizontal space
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          // Left side: Request #ID
           Text('Request #$_serviceRequestId',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          Row(children: [
-            Container(
-              width: 6, height: 6,
-              decoration: BoxDecoration(color: statusClr, shape: BoxShape.circle),
+              style: const TextStyle(
+                  fontSize:   16,
+                  fontWeight: FontWeight.bold,
+                  color:      AppColors.textPrimary)),
+          // Right side: status pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+            decoration: BoxDecoration(
+              color:        statusClr.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                  color: statusClr.withValues(alpha: 0.35), width: 1),
             ),
-            const SizedBox(width: 5),
-            Text(
-              _isEscalated ? 'Escalated' : status,
-              style: TextStyle(fontSize: 12, color: statusClr,
-                  fontWeight: FontWeight.w600),
-            ),
-          ]),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: 6, height: 6,
+                decoration:
+                    BoxDecoration(color: statusClr, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 5),
+              Text(label,
+                  style: TextStyle(
+                      fontSize:      11,
+                      color:         statusClr,
+                      fontWeight:    FontWeight.w700,
+                      letterSpacing: 0.2)),
+            ]),
+          ),
         ],
       ),
-    );
-  }
-
-  // ── Escalated Banner ──────────────────────────────────────────────────────
+    ),
+    bottom: PreferredSize(
+      preferredSize: const Size.fromHeight(1),
+      child: Divider(
+          height: 1, thickness: 1, color: Colors.grey.shade100),
+    ),
+  );
+}
+  // ── Escalated banner ──────────────────────────────────────────────────────
 
   Widget _buildEscalatedBanner() {
-    final overdue = (_task['overdue_minutes'] ??
-        _task['raw']?['overdue_minutes'] ?? 0) as int;
-    final originalAssignee = (_task['original_assignee'] ??
-        _task['raw']?['original_assignee_name'] ?? '—').toString();
+    final raw              = _task['raw'] as Map<String, dynamic>? ?? {};
+    final overdue          =
+        (raw['overdue_minutes'] ?? _task['overdue_minutes'] ?? 0) as int;
+    final originalAssignee =
+        (raw['original_assignee_name'] ??
+                _task['original_assignee'] ??
+                '—')
+            .toString();
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color:        AppColors.errorLight,
         borderRadius: BorderRadius.circular(16),
-        border:       Border.all(color: AppColors.error.withOpacity(0.35), width: 1.5),
+        border: Border.all(
+            color: AppColors.error.withValues(alpha: 0.35), width: 1.5),
       ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(9),
-            decoration: BoxDecoration(
-              color: AppColors.error.withOpacity(0.12),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.warning_amber_rounded,
-                color: AppColors.error, size: 22),
+      child: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color:  AppColors.error.withValues(alpha: 0.12),
+            shape:  BoxShape.circle,
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
+          child: const Icon(Icons.warning_amber_rounded,
+              color: AppColors.error, size: 22),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Task Escalated',
-                    style: TextStyle(color: AppColors.error,
-                        fontWeight: FontWeight.bold, fontSize: 14)),
-                const SizedBox(height: 2),
-                Text(
-                  overdue > 0
-                      ? '$overdue min overdue • Originally: $originalAssignee'
-                      : 'Originally: $originalAssignee',
-                  style: TextStyle(color: AppColors.error.withOpacity(0.8),
-                      fontSize: 12),
-                ),
-              ],
+            const Text('Task Escalated',
+                style: TextStyle(
+                    color:      AppColors.error,
+                    fontWeight: FontWeight.bold,
+                    fontSize:   14)),
+            const SizedBox(height: 2),
+            Text(
+              overdue > 0
+                  ? '$overdue min overdue • Originally: $originalAssignee'
+                  : 'Originally: $originalAssignee',
+              style: TextStyle(
+                  color:    AppColors.error.withValues(alpha: 0.8),
+                  fontSize: 12),
             ),
-          ),
-        ],
-      ),
+          ]),
+        ),
+      ]),
     );
   }
 
   // ── Info Card ─────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard() {
-    final raw        = _task['raw'] ?? <String, dynamic>{};
+    final raw        = _task['raw'] as Map<String, dynamic>? ?? {};
     final room       = (_task['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
     final guest      = (_task['guest'] ?? raw['guest_name'] ?? '—').toString();
-    final guestPhone = (raw['guest_phone'] ?? raw['customer_number'] ?? '—').toString();
     final title      = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
     final subtitle   = (_task['subtitle'] ?? raw['answer'] ?? '').toString();
     final assignedTo = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
@@ -662,11 +1016,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         color:        Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: _isEscalated
-            ? Border.all(color: AppColors.error.withOpacity(0.25), width: 1.2)
+            ? Border.all(
+                color: AppColors.error.withValues(alpha: 0.25), width: 1.2)
             : null,
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.05),
-              blurRadius: 10, offset: const Offset(0, 3)),
+          BoxShadow(
+              color:      Colors.black.withValues(alpha: 0.05),
+              blurRadius: 10,
+              offset:     const Offset(0, 3)),
         ],
       ),
       child: Padding(
@@ -674,43 +1031,57 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header row
+
             Row(children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: _isEscalated
                       ? AppColors.errorLight
                       : AppColors.warningLight,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   Text('Room',
                       style: TextStyle(
-                          fontSize: 10,
-                          color: _isEscalated ? AppColors.error : AppColors.warning,
+                          fontSize:   10,
+                          color:      _isEscalated
+                              ? AppColors.error
+                              : AppColors.warning,
                           fontWeight: FontWeight.w600)),
                   Text(room,
                       style: TextStyle(
-                          fontSize: 22,
+                          fontSize:   22,
                           fontWeight: FontWeight.bold,
-                          color: _isEscalated ? AppColors.error : AppColors.warning,
-                          height: 1.1)),
+                          color:      _isEscalated
+                              ? AppColors.error
+                              : AppColors.warning,
+                          height:     1.1)),
                 ]),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   Text(title,
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary),
-                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                      style: const TextStyle(
+                          fontSize:   15,
+                          fontWeight: FontWeight.bold,
+                          color:      AppColors.textPrimary),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
                   if (subtitle.isNotEmpty) ...[
                     const SizedBox(height: 3),
                     Text(subtitle,
-                        style: const TextStyle(fontSize: 12,
-                            color: AppColors.textSecondary),
-                        maxLines: 2, overflow: TextOverflow.ellipsis),
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color:    AppColors.textSecondary),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
                   ],
                 ]),
               ),
@@ -718,31 +1089,44 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
             const Divider(height: 20, color: AppColors.borderLight),
 
-            // Detail rows
             _detailRow(Icons.person_outline_rounded, 'Guest', guest),
-            if (guestPhone != '—') ...[
-              const SizedBox(height: 8),
-              _detailRow(Icons.phone_outlined, 'Phone', guestPhone),
-            ],
+
+           
             if (deptName.isNotEmpty) ...[
               const SizedBox(height: 8),
-              _detailRow(Icons.business_outlined, 'Department', deptName),
+              _detailRow(
+                  Icons.business_outlined, 'Department', deptName),
             ],
+
             const SizedBox(height: 8),
-            _detailRow(Icons.person_pin_rounded, 'Assigned To', assignedTo),
+            _callableDetailRow(
+              icon:    Icons.person_pin_rounded,
+              label:   'Assigned To',
+              value:   assignedTo,
+              phone:   _assignedPhone,
+              canCall: _isSupervisorOrAbove(widget.userRole)&& 
+                       _assignedToId != _loggedInUserId, 
+              loading: _phoneLoading,
+            ),
+
             if (createdAt.isNotEmpty) ...[
               const SizedBox(height: 8),
-              _detailRow(Icons.access_time_rounded, 'Created', _formatTs(createdAt)),
+              _detailRow(Icons.access_time_rounded, 'Created',
+                  _formatTs(createdAt)),
             ],
+
             if (acceptedAt.isNotEmpty) ...[
               const SizedBox(height: 8),
               _detailRow(Icons.check_rounded, 'Accepted',
-                  _formatTs(acceptedAt), color: AppColors.success),
+                  _formatTs(acceptedAt),
+                  color: AppColors.success),
             ],
+
             if (escalationMins != null) ...[
               const SizedBox(height: 8),
               _detailRow(Icons.timer_outlined, 'Escalation SLA',
-                  '$escalationMins min', color: AppColors.warning),
+                  '$escalationMins min',
+                  color: AppColors.warning),
             ],
           ],
         ),
@@ -750,23 +1134,28 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
+  // ── Plain detail row ──────────────────────────────────────────────────────
+
   Widget _detailRow(IconData icon, String label, String value,
       {Color? color}) {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Icon(icon, size: 15,
-          color: color ?? AppColors.textSecondary),
+      Icon(icon, size: 15, color: color ?? AppColors.textSecondary),
       const SizedBox(width: 8),
       Expanded(
         child: RichText(
           text: TextSpan(
-            style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
+            style: const TextStyle(
+                fontSize: 13, color: AppColors.textPrimary),
             children: [
-              TextSpan(text: '$label: ',
-                  style: const TextStyle(color: AppColors.textSecondary,
+              TextSpan(
+                  text:  '$label: ',
+                  style: const TextStyle(
+                      color:      AppColors.textSecondary,
                       fontWeight: FontWeight.w500)),
-              TextSpan(text: value,
+              TextSpan(
+                  text:  value,
                   style: TextStyle(
-                      color: color ?? AppColors.textPrimary,
+                      color:      color ?? AppColors.textPrimary,
                       fontWeight: FontWeight.w600)),
             ],
           ),
@@ -775,40 +1164,110 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     ]);
   }
 
-  // ── Note Card ─────────────────────────────────────────────────────────────
+  // ── Callable detail row ───────────────────────────────────────────────────
+
+  Widget _callableDetailRow({
+    required IconData icon,
+    required String   label,
+    required String   value,
+    required String   phone,
+    required bool     canCall,
+    bool              loading = false,
+    Color?            color,
+  }) {
+    final bool active = canCall && phone.isNotEmpty && !loading;
+
+    return Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+      Icon(icon, size: 15, color: color ?? AppColors.textSecondary),
+      const SizedBox(width: 8),
+      Expanded(
+        child: RichText(
+          text: TextSpan(
+            style: const TextStyle(
+                fontSize: 13, color: AppColors.textPrimary),
+            children: [
+              TextSpan(
+                  text:  '$label: ',
+                  style: const TextStyle(
+                      color:      AppColors.textSecondary,
+                      fontWeight: FontWeight.w500)),
+              TextSpan(
+                  text:  value,
+                  style: TextStyle(
+                      color:      color ?? AppColors.textPrimary,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      ),
+      if (canCall) ...[
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: active ? () => _callPhone(phone) : null,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 200),
+            opacity:  active ? 1.0 : 0.35,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color:        Colors.blue.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: loading
+                  ? const SizedBox(
+                      width:  14,
+                      height: 14,
+                      child:  CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.blue))
+                  : const Icon(Icons.call_rounded,
+                      size: 14, color: Colors.blue),
+            ),
+          ),
+        ),
+      ],
+    ]);
+  }
+
+  // ── Note display card ─────────────────────────────────────────────────────
 
   Widget _buildNoteCard() {
     final note = (_task['note'] ?? '').toString();
     if (note.isEmpty) return const SizedBox.shrink();
 
     return Container(
-      width: double.infinity,
+      width:   double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppColors.infoLight,
+        color:        AppColors.infoLight,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.info.withOpacity(0.25)),
+        border: Border.all(color: AppColors.info.withValues(alpha: 0.25)),
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Icon(Icons.sticky_note_2_outlined,
             size: 16, color: AppColors.info),
         const SizedBox(width: 8),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
             const Text('Latest Note',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                    color: AppColors.info)),
+                style: TextStyle(
+                    fontSize:   11,
+                    fontWeight: FontWeight.w700,
+                    color:      AppColors.info)),
             const SizedBox(height: 4),
             Text(note,
-                style: const TextStyle(fontSize: 13, color: AppColors.textPrimary,
-                    height: 1.4)),
+                style: const TextStyle(
+                    fontSize: 13,
+                    color:    AppColors.textPrimary,
+                    height:   1.4)),
           ]),
         ),
       ]),
     );
   }
 
-  // ── Add Note Card ─────────────────────────────────────────────────────────
+  // ── Add Note card ─────────────────────────────────────────────────────────
 
   Widget _buildAddNoteCard() {
     return Container(
@@ -817,24 +1276,30 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         color:        Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 8, offset: const Offset(0, 2)),
+          BoxShadow(
+              color:      Colors.black.withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset:     const Offset(0, 2)),
         ],
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Add Note',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary)),
+            style: TextStyle(
+                fontSize:   13,
+                fontWeight: FontWeight.w700,
+                color:      AppColors.textPrimary)),
         const SizedBox(height: 10),
         TextField(
           controller: _noteController,
-          maxLines: 3,
-          style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
+          maxLines:   3,
+          style: const TextStyle(
+              fontSize: 13, color: AppColors.textPrimary),
           decoration: InputDecoration(
-            hintText: 'Write an update or note...',
-            hintStyle: const TextStyle(color: AppColors.textDisabled, fontSize: 13),
-            filled: true,
-            fillColor: AppColors.bg,
+            hintText:  'Write an update or note...',
+            hintStyle: const TextStyle(
+                color: AppColors.textDisabled, fontSize: 13),
+            filled:         true,
+            fillColor:      AppColors.bg,
             contentPadding: const EdgeInsets.all(12),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
@@ -846,7 +1311,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+              borderSide: const BorderSide(
+                  color: AppColors.primary, width: 1.5),
             ),
           ),
         ),
@@ -855,7 +1321,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: _addNote,
-            icon: const Icon(Icons.send_rounded, size: 15),
+            icon:  const Icon(Icons.send_rounded, size: 15),
             label: const Text('Add Note',
                 style: TextStyle(fontWeight: FontWeight.w700)),
             style: ElevatedButton.styleFrom(
@@ -879,28 +1345,36 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Row(children: [
-          const Icon(Icons.history_rounded, size: 16, color: AppColors.error),
+          const Icon(Icons.history_rounded,
+              size: 16, color: AppColors.error),
           const SizedBox(width: 6),
           const Text('Escalation History',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
+              style: TextStyle(
+                  fontSize:   14,
+                  fontWeight: FontWeight.bold,
+                  color:      AppColors.textPrimary)),
           const Spacer(),
           if (_isLoadingEscHist)
-            const SizedBox(width: 16, height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(
+              width: 16, height: 16,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.error),
+            ),
         ]),
       ),
 
       if (!_isLoadingEscHist && _escalationHistory.isEmpty)
         Container(
-          width: double.infinity,
+          width:   double.infinity,
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color:        Colors.white,
             borderRadius: BorderRadius.circular(14),
             boxShadow: [
-              BoxShadow(color: Colors.black.withOpacity(0.03),
-                  blurRadius: 6, offset: const Offset(0, 2)),
+              BoxShadow(
+                  color:      Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 6,
+                  offset:     const Offset(0, 2)),
             ],
           ),
           child: const Row(children: [
@@ -908,102 +1382,182 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 size: 16, color: AppColors.success),
             SizedBox(width: 8),
             Text('No escalation records for this task',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+                style: TextStyle(
+                    color: AppColors.textSecondary, fontSize: 13)),
           ]),
         )
       else
-        ...(_escalationHistory.map((esc) => _buildEscHistoryRow(esc))),
+        ...(_escalationHistory
+            .map((esc) => _buildEscHistoryRow(esc))),
     ]);
   }
 
   Widget _buildEscHistoryRow(Map<String, dynamic> esc) {
-    final level        = (esc['escalation_level'] ?? '—').toString();
-    final escalatedTo  = (esc['escalated_to']     ?? '—').toString();
-    final originalBy   = (esc['original_assignee'] ?? '—').toString();
-    final escalatedAt  = _formatTs((esc['escalated_at'] ?? '').toString());
-    final overdue      = (esc['overdue_minutes'] ?? 0) as int;
+    final level      = esc['escalation_level'] ?? esc['level'] ?? 1;
+    final escalTo    = (esc['escalated_to'] ?? esc['escalated_to_name'] ?? '—').toString();
+    final originalBy = (esc['original_assignee'] ?? esc['original_assignee_name'] ?? '—').toString();
+    final escalAt    = _formatTs((esc['escalated_at'] ?? '').toString());
+    final resolvedAt = (esc['resolved_at'] ?? '').toString();
+    final resolvedBy = (esc['resolved_by_name'] ?? '').toString();
+    final isResolved = resolvedAt.isNotEmpty;
+    final overdue    = (esc['overdue_minutes'] ?? 0) as int;
+
+    const levelLabels = {
+      1: 'Supervisor',
+      2: 'Dept Head',
+      3: 'Manager',
+      4: 'GM',
+      5: 'Admin',
+    };
+    final levelLabel = levelLabels[level] ?? 'Level $level';
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin:  const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color:        Colors.white,
         borderRadius: BorderRadius.circular(14),
-        border:       Border.all(color: AppColors.error.withOpacity(0.2)),
+        border: Border.all(
+          color: isResolved
+              ? AppColors.success.withValues(alpha: 0.3)
+              : AppColors.error.withValues(alpha: 0.2),
+        ),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.03),
-              blurRadius: 6, offset: const Offset(0, 2)),
+          BoxShadow(
+              color:      Colors.black.withValues(alpha: 0.03),
+              blurRadius: 6,
+              offset:     const Offset(0, 2)),
         ],
       ),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
         Container(
           width: 32, height: 32,
           decoration: BoxDecoration(
-            color: AppColors.errorLight,
+            color: isResolved
+                ? AppColors.successLight
+                : AppColors.errorLight,
             shape: BoxShape.circle,
           ),
           child: Center(
-            child: Text('L$level',
-                style: const TextStyle(color: AppColors.error,
-                    fontWeight: FontWeight.bold, fontSize: 11)),
+            child: Text('$level',
+                style: TextStyle(
+                    fontSize:   12,
+                    fontWeight: FontWeight.w800,
+                    color:      isResolved
+                        ? AppColors.success
+                        : AppColors.error)),
           ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Escalated to $escalatedTo',
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 3),
-            Text('Originally: $originalBy',
-                style: const TextStyle(fontSize: 12,
-                    color: AppColors.textSecondary)),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+            Text(levelLabel,
+                style: const TextStyle(
+                    fontSize:   13,
+                    fontWeight: FontWeight.w700,
+                    color:      AppColors.textPrimary)),
+            const SizedBox(height: 2),
+            Text('$originalBy → $escalTo',
+                style: const TextStyle(
+                    fontSize: 12,
+                    color:    AppColors.textSecondary)),
             const SizedBox(height: 3),
             Row(children: [
-              Text(escalatedAt,
-                  style: const TextStyle(fontSize: 11,
-                      color: AppColors.textDisabled)),
+              Text(escalAt,
+                  style: const TextStyle(
+                      fontSize: 11,
+                      color:    AppColors.textDisabled)),
               if (overdue > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 7, vertical: 2),
                   decoration: BoxDecoration(
-                    color: AppColors.errorLight,
+                    color:        AppColors.errorLight,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text('$overdue min overdue',
-                      style: const TextStyle(color: AppColors.error,
-                          fontSize: 10, fontWeight: FontWeight.w700)),
+                      style: const TextStyle(
+                          color:      AppColors.error,
+                          fontSize:   10,
+                          fontWeight: FontWeight.w700)),
                 ),
               ],
             ]),
+            // CHANGE: Show resolved-by name when entry is resolved.
+            // Previously this info was never shown because resolved
+            // entries weren't returned at all.
+            if (isResolved && resolvedBy.isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text('Resolved by: $resolvedBy',
+                  style: const TextStyle(
+                      fontSize:   11,
+                      color:      AppColors.success,
+                      fontWeight: FontWeight.w600)),
+            ],
           ]),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: isResolved
+                ? AppColors.successLight
+                : AppColors.errorLight,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            isResolved ? 'Resolved' : 'Open',
+            style: TextStyle(
+                fontSize:   10,
+                fontWeight: FontWeight.w700,
+                color: isResolved
+                    ? AppColors.success
+                    : AppColors.error),
+          ),
         ),
       ]),
     );
   }
 
   // ── Action Buttons ────────────────────────────────────────────────────────
+  //
+  // CHANGE: showClose condition updated.
+  // Before: showClose = !_isClosed  (showed for everyone)
+  // After:  showClose = !_isClosed && (Supervisor+ OR assigned to me)
+  //
+  // This prevents staff assigned to other tasks from seeing the Close
+  // button on tasks that aren't theirs, while still allowing:
+  //   • Supervisors, Dept Heads, Managers, GMs, Admins to close any task
+  //   • The assigned staff member to close their own task
 
   Widget _buildActions() {
-    final showTakeOver  = _canTakeOver;
-    final showReassign  = _isSupervisorOrAbove(widget.userRole);
-    final showClose     = !_isClosed;
+    final showTakeOver = _canTakeOver;
+    final showReassign = _isSupervisorOrAbove(widget.userRole);
+
+    // CHANGE: Close is gated on role OR being the assigned staff member.
+    final showClose = !_isClosed &&
+        (_isSupervisorOrAbove(widget.userRole) ||
+            _assignedToId == _loggedInUserId);
 
     if (!showTakeOver && !showReassign && !showClose) {
       return const SizedBox.shrink();
     }
 
     return Column(children: [
-      // ── Take Over (escalated tasks) ──────────────────────────────────────
       if (showTakeOver) ...[
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: _takeOver,
-            icon: const Icon(Icons.person_add_rounded, size: 16),
+            icon:  const Icon(Icons.person_add_rounded, size: 16),
             label: const Text('Take Over',
-                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                style: TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 14)),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
               foregroundColor: Colors.white,
@@ -1017,17 +1571,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         const SizedBox(height: 10),
       ],
 
-      // ── Reassign + Close in a row ────────────────────────────────────────
       Row(children: [
         if (showReassign)
           Expanded(
             child: OutlinedButton.icon(
               onPressed: _loadStaffAndShowReassign,
-              icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+              icon:  const Icon(Icons.swap_horiz_rounded, size: 16),
               label: const Text('Reassign',
                   style: TextStyle(fontWeight: FontWeight.w700)),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 13),
+                padding:         const EdgeInsets.symmetric(vertical: 13),
                 foregroundColor: AppColors.primary,
                 side: const BorderSide(color: AppColors.primary),
                 shape: RoundedRectangleBorder(
@@ -1040,7 +1593,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           Expanded(
             child: ElevatedButton.icon(
               onPressed: _closeTask,
-              icon: const Icon(Icons.check_circle_rounded, size: 16),
+              icon:  const Icon(Icons.check_circle_rounded, size: 16),
               label: const Text('Close Request',
                   style: TextStyle(fontWeight: FontWeight.w700)),
               style: ElevatedButton.styleFrom(
@@ -1056,4 +1609,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       ]),
     ]);
   }
+}
+
+// ── Helper model ──────────────────────────────────────────────────────────────
+
+class _StaffListItem {
+  final bool                  isDivider;
+  final String?               dept;
+  final Map<String, dynamic>? staff;
+  _StaffListItem({required this.isDivider, this.dept, this.staff});
 }

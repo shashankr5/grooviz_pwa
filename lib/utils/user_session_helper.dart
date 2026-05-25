@@ -69,7 +69,7 @@ class UserSessionHelper {
     return prefs.getStringList("departments") ?? [];
   }
 
-  // ---------- ROLE ----------   ← NEW
+  // ---------- ROLE (string name) ----------
   static Future<void> saveRole(String role) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("user_role", role);
@@ -78,6 +78,45 @@ class UserSessionHelper {
   static Future<String?> getRole() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString("user_role");
+  }
+
+  // ---------- ROLE ID (numeric, from DB roles table) ----------
+  // Role ID mapping (must match DB):
+  //   1 = Admin
+  //   2 = General Manager
+  //   3 = Manager
+  //   4 = Department Head
+  //   5 = Supervisor
+  //   6 = Staff
+  static Future<void> saveRoleId(int roleId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt("user_role_id", roleId);
+  }
+
+  static Future<int?> getRoleId() async {
+    final prefs = await SharedPreferences.getInstance();
+    // Prefer the stored numeric role_id.
+    final stored = prefs.getInt("user_role_id");
+    if (stored != null) return stored;
+
+    // Fallback: derive role_id from the stored role name string.
+    final roleName = prefs.getString("user_role");
+    return _roleNameToId(roleName);
+  }
+
+  /// Maps the role name string (as stored at login) to the numeric role_id.
+  /// Returns null if the name is unrecognised.
+  static int? _roleNameToId(String? name) {
+    if (name == null) return null;
+    switch (name.trim().toLowerCase()) {
+      case 'admin':           return 1;
+      case 'general manager': return 2;
+      case 'manager':         return 3;
+      case 'department head': return 4;
+      case 'supervisor':      return 5;
+      case 'staff':           return 6;
+      default:                return null;
+    }
   }
 
   // ---------- FULL PROFILE ----------
@@ -92,6 +131,12 @@ class UserSessionHelper {
       await prefs.setInt("user_profile_user_id", profileUserId);
     } else {
       await prefs.remove("user_profile_user_id");
+    }
+
+    // Also persist role_id from the profile if present.
+    final roleId = _readInt(profileCopy["role_id"]);
+    if (roleId != null && roleId != 0) {
+      await prefs.setInt("user_role_id", roleId);
     }
 
     await prefs.setString("user_profile", jsonEncode(profileCopy));
@@ -146,23 +191,20 @@ class UserSessionHelper {
     final prefs = await SharedPreferences.getInstance();
 
     // Preserve installation_id (device identity)
-    final installationId = prefs.getString("installation_id");
+    final installationId   = prefs.getString("installation_id");
     final deviceIdentifier = prefs.getString("device_identifier");
 
-    // Clear ONLY user-related data
     await prefs.remove("user_id");
     await prefs.remove("user_name");
     await prefs.remove("email");
     await prefs.remove("phone");
     await prefs.remove("enterprise_id");
     await prefs.remove("departments");
-    await prefs.remove("user_role");                // ← NEW
+    await prefs.remove("user_role");
+    await prefs.remove("user_role_id");        // ← NEW
     await prefs.remove("user_profile");
     await prefs.remove("user_profile_user_id");
     await prefs.remove("is_logged_in");
-
-    await prefs.remove("user_profile");
-    await prefs.remove("enterprise_id");
 
     // Restore installation ID and device identifier
     if (installationId != null) {
@@ -190,7 +232,6 @@ class UserSessionHelper {
     final profile = jsonDecode(data);
     final currentUserId = prefs.getInt("user_id");
 
-    // 🚨 If mismatch → clear corrupted cache
     if (profile["user_id"] != currentUserId) {
       await prefs.remove("user_profile");
       return null;

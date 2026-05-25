@@ -1,18 +1,17 @@
 // services/websocket_service.dart
 //
-// FIXES APPLIED:
-//  FIX-3 (BLOCKER): Added connection identity guard in connect().
-//          Previously, every FoodOrdersPage.initState() called
-//          ws.connect() which closed and reopened the channel unconditionally.
-//          Tab switches, navigation pops, and app resumes all caused a
-//          reconnect storm — during the 1-5s reconnect window, FCM/WS
-//          events were silently dropped.
-//          Now connect() is a no-op if already connected with the same
-//          userId + enterpriseId. Only reconnects when credentials change
-//          (i.e. a different user logs in) or when the connection is lost.
+// CHANGES IN THIS VERSION:
+//  • RUSH_HOUR_UPDATED — broadcast to all page listeners so FoodOrdersPage
+//    can update rush hour state in real-time across all devices without
+//    a manual reload. No sound or alert side-effects needed for this type.
 //
-//  FIX-5: Added disconnect() method for use on logout. Prevents the old
-//          user's WS channel from receiving events after logout.
+// Previous changes retained:
+//  • ESCALATION_ALERT — calls TaskAlertService.notifyEscalation()
+//  • PULSE            — re-rings task alert sound
+//  • ACCEPTED         — another device accepted a task; refreshes task list
+//  • TASK_CLOSED      — task closed from another device; refreshes task list
+//  FIX-3: Connection identity guard in connect()
+//  FIX-5: disconnect() for use on logout
 
 import 'dart:async';
 import 'dart:convert';
@@ -50,15 +49,12 @@ class WebSocketService {
 
   void connect({String? userId, String? enterpriseId}) {
     // FIX-3: Guard — skip reconnect if already connected with same credentials.
-    // This prevents the reconnect storm caused by FoodOrdersPage.initState()
-    // calling connect() on every tab switch / navigation / app resume.
     final sameCredentials = userId == _userId && enterpriseId == _enterpriseId;
     if (sameCredentials && isConnected.value) {
       print('WebSocket: already connected for user=$_userId — skipping reconnect');
       return;
     }
 
-    // Update credentials if they changed (e.g. different user logging in)
     if (userId != null)       _userId       = userId;
     if (enterpriseId != null) _enterpriseId = enterpriseId;
 
@@ -99,11 +95,9 @@ class WebSocketService {
 
   // ── Disconnect (call on logout) ────────────────────────────────────────
 
-  // FIX-5: Explicit disconnect for logout. Clears credentials so the next
-  // connect() call (after new login) opens a fresh channel for the new user.
   void disconnect() {
     print('WebSocket: disconnecting (logout)');
-    _isDisposed = false; // allow future reconnect after new login
+    _isDisposed = false;
     _subscription?.cancel();
     _subscription = null;
     _channel?.sink.close(status.normalClosure);
@@ -133,7 +127,9 @@ class WebSocketService {
 
       print('WS Received: $type');
 
-      // Broadcast to all page listeners first.
+      // Broadcast to all page listeners first so any page-level
+      // StreamBuilder or stream.listen() receives the raw event
+      // before we act on side-effects below.
       if (!_controller.isClosed) {
         _controller.add(data);
       }
@@ -156,6 +152,35 @@ class WebSocketService {
       }
 
       // ORDER_STATUS_CHANGED (READY/PREPARING) → no alert action.
+
+      // ── ETA update ────────────────────────────────────────────────────
+      // ORDER_ETA_UPDATED is already broadcast to stream listeners above.
+      // FoodOrdersPage._handleSocketEtaUpdate() handles it directly.
+      // No side-effect needed here.
+
+      // ── Rush Hour sync ─────────────────────────────────────────────────
+      //
+      // Sent by the update_food_order_status Lambda when any device
+      // activates or deactivates rush hour. All F&B devices in the same
+      // enterprise receive this and update their local UI state via
+      // FoodOrdersPage._handleSocketRushHourUpdate().
+      //
+      // Payload shape:
+      //   {
+      //     type:                 'RUSH_HOUR_UPDATED',
+      //     rush_hour_active:     1 | 0,
+      //     rush_hour_ends_at:    '2026-05-23 14:30:00' | null,
+      //     rush_hour_extra_min:  10,
+      //     enterprise_id:        '42'
+      //   }
+      //
+      // No sound or badge side-effect required — the stream broadcast
+      // above is sufficient; FoodOrdersPage listens and reacts.
+      if (type == 'RUSH_HOUR_UPDATED') {
+        // No side-effect beyond the stream broadcast above.
+        // FoodOrdersPage._handleSocketRushHourUpdate() handles it.
+        return;
+      }
 
       // ── Service task alerts ────────────────────────────────────────────
 
@@ -188,6 +213,40 @@ class WebSocketService {
         return;
       }
 
+      // ── Escalation alert ───────────────────────────────────────────────
+
+      if (type == 'ESCALATION_ALERT') {
+        final badgeCount = int.tryParse(
+              (data['badge_count'] ?? '').toString(),
+            ) ??
+            0;
+        TaskAlertService.notifyEscalation(badgeCount);
+        return;
+      }
+
+      // ── Pulse ──────────────────────────────────────────────────────────
+
+      if (type == 'PULSE') {
+        TaskAlertService.ensureServiceRunning();
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
+      // ── Accepted ───────────────────────────────────────────────────────
+
+      if (type == 'ACCEPTED') {
+        TaskAlertService.stopOneServiceAlert();
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
+      // ── Task closed ────────────────────────────────────────────────────
+
+      if (type == 'TASK_CLOSED') {
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
     } catch (e) {
       print('WS Message error: $e');
     }
@@ -204,7 +263,6 @@ class WebSocketService {
   void _onDone() {
     print('WebSocket disconnected');
     isConnected.value = false;
-    // Only reconnect if we still have credentials (not logged out)
     if (_userId != null) _scheduleReconnect();
   }
 

@@ -3,6 +3,7 @@
 // CHANGES IN THIS VERSION:
 //  • ensureDeliveryRunning() now uses AlertSoundKey.delivery (was .task)
 //  • Added _escalationCount + resetEscalationCount()
+//  • Added notifyEscalation() – called by WebSocket ESCALATION_ALERT handler
 //  • Added ensureEscalationRunning() — plays escalation sound once, no loop
 //  • stopAll() also resets _escalationCount
 
@@ -106,6 +107,19 @@ class TaskAlertService {
     _escalationCount = count.clamp(0, 9999);
     print('TaskAlertService.resetEscalationCount($count)');
     _escalationController.add(_escalationCount);
+  }
+
+  // ── NEW: Called by WebSocket ESCALATION_ALERT handler ────────────────────
+  //
+  // Emits the server-provided badge_count on the onEscalation stream so
+  // HomePage and TasksPage update their badge counts and escalated task
+  // lists in real time without a manual reload.
+  static void notifyEscalation(int badgeCount) {
+    _escalationCount = badgeCount.clamp(0, 9999);
+    if (!_escalationController.isClosed) {
+      _escalationController.add(badgeCount);
+    }
+    print('TaskAlertService.notifyEscalation($badgeCount)');
   }
 
   static int get escalationCount => _escalationCount;

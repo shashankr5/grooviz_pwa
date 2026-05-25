@@ -1,14 +1,18 @@
 // tasks_page.dart
 //
 // CHANGES IN THIS VERSION:
-//  • Loads userRole from UserSessionHelper.getRole() in initState
-//  • Staff: month picker (Jan–Dec) + 4th stat card (Escalated) wired to
-//    HomeService.getTeamPerformance(targetUserId=self, month, year)
-//  • Supervisor / Dept Head / Manager / GM / Admin: team performance list
-//    above the recent activity section — staff rows with metrics.
-//    Month picker + dept filter chips (Manager+).
-//    Tap staff row → _StaffDrillDownPage (inline page in this file).
-//  • All existing stat cards and recent activity widgets kept below.
+//  • _deriveRoleId() — new helper that maps role name → numeric role_id.
+//    Called in _init() when UserSessionHelper.getRoleId() returns null
+//    (old sessions that pre-date role_id storage). Prevents the entire
+//    team section from being invisible due to a null _userRoleId.
+//  • userRole string passed to _StaffDrillDownPage — needed so the
+//    drill-down page can gate navigation to TicketDetailPage on role.
+//  • _StaffDrillDownPage._buildTaskRow() — wrapped in GestureDetector
+//    that navigates to TicketDetailPage when the viewer is Supervisor+.
+//    Staff-level viewers see the row but it's not tappable.
+//
+// All existing role-based hierarchy, dept filter, month picker, stat
+// cards, team table, recent activity, and motivation banner unchanged.
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -16,21 +20,27 @@ import '../services/home_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_colors.dart';
+import 'ticket_details_page.dart';
 
-// ── Role helpers ─────────────────────────────────────────────────────────────
+// ── Role helpers ──────────────────────────────────────────────────────────────
 
-const _roleHierarchy = [
-  'Staff', 'Supervisor', 'Department Head', 'Manager', 'General Manager', 'Admin',
-];
+bool _isGmOrAdmin(int? roleId)         => roleId != null && (roleId == 1 || roleId == 2);
+bool _isManager(int? roleId)           => roleId == 3;
+bool _isDeptHead(int? roleId)          => roleId == 4;
+bool _isSupervisor(int? roleId)        => roleId == 5;
+bool _isStaff(int? roleId)             => roleId == 6;
+bool _isManagementOnly(int? roleId)    => roleId != null && roleId <= 3;
+bool _isSupervisorOrAbove(int? roleId) => roleId != null && roleId <= 5;
+bool _isDeptScopedRole(int? roleId)    => roleId == 4 || roleId == 5;
 
-bool _isManagerRole(String? role) {
+// Role name → bool helpers (used inside _StaffDrillDownPage which receives
+// the role as a string).
+bool _isSupervisorOrAboveByName(String? role) {
   if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 3;
-}
-
-bool _isSupervisorOrAbove(String? role) {
-  if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 1;
+  const hierarchy = [
+    'Staff', 'Supervisor', 'Department Head', 'Manager', 'General Manager', 'Admin',
+  ];
+  return hierarchy.indexOf(role) >= 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,34 +55,42 @@ class TasksPage extends StatefulWidget {
 class _TasksPageState extends State<TasksPage> {
   final HomeService _homeService = HomeService();
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  String  _userRole  = '';
-  int?    _userId;
+  // ── Session ───────────────────────────────────────────────────────────────
+  String       _userRole   = '';
+  int?         _userId;
+  int?         _userRoleId;
+  List<String> _myDepts    = [];
 
-  // ── Month / filter ────────────────────────────────────────────────────────
-  int  _selectedMonth = DateTime.now().month;
-  int  _selectedYear  = DateTime.now().year;
-  int? _selectedDeptId;  // Manager+ dept filter
+  // ── Month / dept filter ───────────────────────────────────────────────────
+  int     _selectedMonth = DateTime.now().month;
+  int     _selectedYear  = DateTime.now().year;
+  String? _selectedDept;
 
-  // ── My stats (all roles) ──────────────────────────────────────────────────
-  bool  _statsLoading   = true;
-  int   totalTasks      = 0;
-  int   completedTasks  = 0;
-  int   inProgressTasks = 0;
-  int   escalatedTasks  = 0;
+  // ── Available dept options for the filter dropdown ────────────────────────
+  List<String> _availableFilterDepts = [];
+
+  // ── Personal stats ────────────────────────────────────────────────────────
+  bool _statsLoading   = true;
+  int  totalTasks      = 0;
+  int  completedTasks  = 0;
+  int  inProgressTasks = 0;
+  int  escalatedTasks  = 0;
   List<dynamic> _recentTasks = [];
 
-  // ── Team performance (Supervisor+) ───────────────────────────────────────
-  bool  _teamLoading = false;
-  List<Map<String, dynamic>> _teamRows = [];
+  // ── Team performance ──────────────────────────────────────────────────────
+  bool                       _teamLoading = false;
+  List<Map<String, dynamic>> _teamRowsAll = [];
+  List<Map<String, dynamic>> _teamRows    = [];
 
   // ── Escalation stream ─────────────────────────────────────────────────────
   StreamSubscription<int>? _escSub;
 
-  static const List<String> _monthNames = [
+  static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -93,26 +111,59 @@ class _TasksPageState extends State<TasksPage> {
 
   Future<void> _init() async {
     final role   = await UserSessionHelper.getRole();
+    final roleId = await UserSessionHelper.getRoleId();
     final userId = await UserSessionHelper.getUserId();
+    final depts  = await UserSessionHelper.getDepartments();
     if (!mounted) return;
+
     setState(() {
       _userRole = role ?? '';
-      _userId   = userId;
+      // CHANGE: If getRoleId() returns null (old session without stored
+      // role_id), derive the numeric id from the role name string so the
+      // team section and stat cards render correctly.
+      _userRoleId = roleId ?? _deriveRoleId(role);
+      _userId     = userId;
+      _myDepts    = depts;
+
+      if (_isDeptScopedRole(_userRoleId)) {
+        _availableFilterDepts = List.from(depts)..sort();
+        if (_availableFilterDepts.length == 1) {
+          _selectedDept = _availableFilterDepts.first;
+        }
+      }
     });
+
     await Future.wait([
       _loadMyStats(),
-      if (_isSupervisorOrAbove(_userRole)) _loadTeamPerformance(),
+      if (_isSupervisorOrAbove(_userRoleId)) _loadTeamPerformance(),
     ]);
   }
 
-  // ── My stats ──────────────────────────────────────────────────────────────
+  // CHANGE: Maps role name → numeric role_id.
+  // Used as a fallback when UserSessionHelper.getRoleId() returns null.
+  int? _deriveRoleId(String? role) {
+    switch (role) {
+      case 'Admin':            return 1;
+      case 'General Manager':  return 2;
+      case 'Manager':          return 3;
+      case 'Department Head':  return 4;
+      case 'Supervisor':       return 5;
+      case 'Staff':            return 6;
+      default:                 return null;
+    }
+  }
+
+  // ── Personal stats ────────────────────────────────────────────────────────
 
   Future<void> _loadMyStats() async {
     if (!mounted) return;
     setState(() => _statsLoading = true);
 
-    // Use getTeamPerformance with targetUserId = self to get month-filtered data.
-    // Falls back to existing task summary for staff without team performance SP.
+    if (_isManagementOnly(_userRoleId)) {
+      setState(() => _statsLoading = false);
+      return;
+    }
+
     final result = await _homeService.getTeamPerformance(
       targetUserId: _userId,
       month: _selectedMonth,
@@ -122,27 +173,33 @@ class _TasksPageState extends State<TasksPage> {
     if (!mounted) return;
 
     if (result['success'] == true) {
-      // RS1 = self row (for Staff the SP returns one row for the caller)
-      final teamList  = (result['team']     as List? ?? []);
+      final teamList  = (result['team']      as List? ?? []);
       final drillDown = (result['drillDown'] as List? ?? []);
 
-      // Self row is in RS1 if staff, or we compute from RS2 drill-down
       final selfRow = teamList.isNotEmpty
           ? Map<String, dynamic>.from(teamList.first)
           : <String, dynamic>{};
 
+      List<dynamic> recentTasksResult = drillDown.take(10).toList();
+
+      if (recentTasksResult.isEmpty && _isStaff(_userRoleId)) {
+        final tasksResult = await _homeService.getTasks();
+        if (tasksResult['success'] == true) {
+          recentTasksResult =
+              ((tasksResult['tasks'] as List?) ?? []).take(10).toList();
+        }
+      }
+
       setState(() {
-        totalTasks      = (selfRow['total_assigned'] ?? 0) as int;
-        completedTasks  = (selfRow['total_closed']    ?? 0) as int;
-        escalatedTasks  = (selfRow['total_escalated'] ?? 0) as int;
+        totalTasks      = (selfRow['total_assigned']  as int?) ?? 0;
+        completedTasks  = (selfRow['total_closed']    as int?) ?? 0;
+        escalatedTasks  = (selfRow['total_escalated'] as int?) ?? escalatedTasks;
         inProgressTasks = (totalTasks - completedTasks).clamp(0, 9999);
-        _recentTasks    = drillDown.take(10).toList();
+        _recentTasks    = recentTasksResult;
         _statsLoading   = false;
       });
     } else {
-      // Fallback: hit old task summary endpoint
-      if (!mounted) return;
-      setState(() => _statsLoading = false);
+      if (mounted) setState(() => _statsLoading = false);
     }
   }
 
@@ -153,43 +210,159 @@ class _TasksPageState extends State<TasksPage> {
     setState(() => _teamLoading = true);
 
     final result = await _homeService.getTeamPerformance(
-      departmentId: _selectedDeptId,
       month: _selectedMonth,
       year:  _selectedYear,
+      departmentId: _isManagementOnly(_userRoleId) && _selectedDept != null
+          ? _deptIdForName(_selectedDept!)
+          : null,
     );
 
     if (!mounted) return;
-    setState(() {
-      if (result['success'] == true) {
-        _teamRows = (result['team'] as List? ?? [])
-            .cast<Map<String, dynamic>>();
+
+    if (result['success'] == true) {
+      final rows = (result['team'] as List? ?? [])
+          .cast<Map<String, dynamic>>();
+
+      if (_isManagementOnly(_userRoleId)) {
+        int totAssigned = 0, totClosed = 0, totEscalated = 0;
+        for (final r in rows) {
+          totAssigned  += (r['total_assigned']  as int?) ?? 0;
+          totClosed    += (r['total_closed']    as int?) ?? 0;
+          totEscalated += (r['total_escalated'] as int?) ?? 0;
+        }
+        setState(() {
+          totalTasks      = totAssigned;
+          completedTasks  = totClosed;
+          escalatedTasks  = totEscalated;
+          inProgressTasks = (totAssigned - totClosed).clamp(0, 9999);
+        });
       }
-      _teamLoading = false;
+
+      if (!_isDeptScopedRole(_userRoleId)) {
+        final allDepts = rows
+            .map((r) => (r['department_name'] ?? '').toString())
+            .where((d) => d.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+        setState(() => _availableFilterDepts = allDepts);
+      }
+
+      setState(() {
+        _teamRowsAll = rows;
+        _teamRows    = _applyDeptFilter(rows);
+        _teamLoading = false;
+      });
+    } else {
+      if (mounted) setState(() => _teamLoading = false);
+    }
+  }
+
+  // ── Dept filter helpers ───────────────────────────────────────────────────
+
+  List<Map<String, dynamic>> _applyDeptFilter(
+      List<Map<String, dynamic>> rows) {
+    if (_selectedDept == null) return rows;
+    return rows.where((r) {
+      return (r['department_name'] ?? '').toString() == _selectedDept;
+    }).toList();
+  }
+
+  int? _deptIdForName(String name) {
+    for (final r in _teamRowsAll) {
+      if ((r['department_name'] ?? '').toString() == name) {
+        return r['department_id'] as int?;
+      }
+    }
+    return null;
+  }
+
+  void _onDeptSelected(String? dept) {
+    if (_selectedDept == dept) return;
+    setState(() {
+      _selectedDept = dept;
+      if (_isManagementOnly(_userRoleId)) {
+        _teamRows = [];
+        _loadTeamPerformance();
+      } else {
+        _teamRows = _applyDeptFilter(_teamRowsAll);
+      }
     });
   }
 
-  // ── Pull refresh ──────────────────────────────────────────────────────────
+  // ── Refresh ───────────────────────────────────────────────────────────────
 
   Future<void> _onRefresh() async {
     await Future.wait([
       _loadMyStats(),
-      if (_isSupervisorOrAbove(_userRole)) _loadTeamPerformance(),
+      if (_isSupervisorOrAbove(_userRoleId)) _loadTeamPerformance(),
     ]);
   }
 
-  // ── Month / filter changes ────────────────────────────────────────────────
+  // ── Month / year change ───────────────────────────────────────────────────
 
   void _onMonthChanged(int month) {
     if (_selectedMonth == month) return;
     setState(() => _selectedMonth = month);
     _loadMyStats();
-    if (_isSupervisorOrAbove(_userRole)) _loadTeamPerformance();
+    if (_isSupervisorOrAbove(_userRoleId)) _loadTeamPerformance();
+  }
+
+  void _onYearChanged(int year) {
+    if (_selectedYear == year) return;
+    setState(() => _selectedYear = year);
+    _loadMyStats();
+    if (_isSupervisorOrAbove(_userRoleId)) _loadTeamPerformance();
+  }
+
+  // ── Bottom sheets ─────────────────────────────────────────────────────────
+
+  void _showMonthPickerSheet() {
+    final now = DateTime.now();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _MonthPickerSheet(
+        initialMonth: _selectedMonth,
+        initialYear:  _selectedYear,
+        maxYear:      now.year,
+        onMonthSelected: (month) {
+          _onMonthChanged(month);
+          Navigator.pop(context);
+        },
+        onYearChanged: (year) {
+          _onYearChanged(year);
+          setState(() {});
+        },
+      ),
+    );
+  }
+
+  void _showDeptFilterSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _DeptFilterSheet(
+        selectedDept:  _selectedDept,
+        departments:   _availableFilterDepts,
+        showAllOption: !_isDeptScopedRole(_userRoleId),
+        onSelected: (dept) {
+          _onDeptSelected(dept);
+          Navigator.pop(context);
+        },
+      ),
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final showDeptButton = _isSupervisorOrAbove(_userRoleId) &&
+        _availableFilterDepts.length > 1;
+
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: _buildAppBar(),
@@ -202,21 +375,26 @@ class _TasksPageState extends State<TasksPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Month picker — all roles
-                    _buildMonthPicker(),
-
-                    // My stat cards
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: Row(
+                        children: [
+                          Expanded(child: _buildMonthTile()),
+                          if (showDeptButton) ...[
+                            const SizedBox(width: 10),
+                            Expanded(child: _buildDeptTile()),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                     _buildStatCards(),
-
-                    // Team performance — Supervisor+ only
-                    if (_isSupervisorOrAbove(_userRole)) ...[
+                    if (_isSupervisorOrAbove(_userRoleId)) ...[
                       _buildTeamSectionHeader(),
                       _buildTeamList(),
                     ],
-
-                    // Recent activity
-                    _buildRecentActivity(),
-
+                    if (!_isManagementOnly(_userRoleId))
+                      _buildRecentActivity(),
                     _buildMotivationBanner(),
                     const SizedBox(height: 24),
                   ],
@@ -229,7 +407,7 @@ class _TasksPageState extends State<TasksPage> {
   // ── App Bar ───────────────────────────────────────────────────────────────
 
   AppBar _buildAppBar() {
-    final subtitle = _isSupervisorOrAbove(_userRole) && _userRole.isNotEmpty
+    final subtitle = _isSupervisorOrAbove(_userRoleId) && _userRole.isNotEmpty
         ? '$_userRole — ${_monthNames[_selectedMonth]} $_selectedYear'
         : 'Your performance overview';
 
@@ -241,70 +419,85 @@ class _TasksPageState extends State<TasksPage> {
               style: TextStyle(color: AppColors.textPrimary,
                   fontWeight: FontWeight.bold, fontSize: 22)),
           Text(subtitle,
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
         ],
       ),
-      elevation: 0,
+      elevation:       0,
       backgroundColor: Colors.white,
       iconTheme: const IconThemeData(color: Colors.black),
     );
   }
 
-  // ── Month Picker ──────────────────────────────────────────────────────────
+  // ── Month Tile ────────────────────────────────────────────────────────────
 
-  Widget _buildMonthPicker() {
-    return SizedBox(
-      height: 42,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        itemCount: 12,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (ctx, i) {
-          final month      = i + 1;
-          final isSelected = _selectedMonth == month;
-          final isFuture   = month > DateTime.now().month &&
-              _selectedYear == DateTime.now().year;
-
-          return GestureDetector(
-            onTap: isFuture ? null : () => _onMonthChanged(month),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? AppColors.primary
-                    : isFuture
-                        ? AppColors.surfaceAlt
-                        : Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: isSelected
-                      ? AppColors.primary
-                      : isFuture
-                          ? AppColors.borderLight
-                          : AppColors.border,
-                ),
-                boxShadow: isSelected
-                    ? [BoxShadow(color: AppColors.primary.withOpacity(0.25),
-                          blurRadius: 6, offset: const Offset(0, 2))]
-                    : [],
-              ),
-              child: Text(
-                _monthNames[month],
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                  color: isSelected
-                      ? Colors.white
-                      : isFuture
-                          ? AppColors.textDisabled
-                          : AppColors.textPrimary,
-                ),
-              ),
+  Widget _buildMonthTile() {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: _showMonthPickerSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.border),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+              blurRadius: 6, offset: const Offset(0, 2))],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.calendar_month_outlined, size: 18,
+                color: AppColors.textSecondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('${_monthNames[_selectedMonth]} $_selectedYear',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary),
+                  overflow: TextOverflow.ellipsis),
             ),
-          );
-        },
+            const SizedBox(width: 4),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 18,
+                color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Dept Tile ─────────────────────────────────────────────────────────────
+
+  Widget _buildDeptTile() {
+    final label = _selectedDept ?? 'All Departments';
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: _showDeptFilterSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.border),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+              blurRadius: 6, offset: const Offset(0, 2))],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.business_outlined, size: 18,
+                color: AppColors.textSecondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(label,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary),
+                  overflow: TextOverflow.ellipsis),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 18,
+                color: AppColors.textSecondary),
+          ],
+        ),
       ),
     );
   }
@@ -312,40 +505,43 @@ class _TasksPageState extends State<TasksPage> {
   // ── Stat Cards ────────────────────────────────────────────────────────────
 
   Widget _buildStatCards() {
+    final showEscalated =
+        escalatedTasks > 0 || _isManagementOnly(_userRoleId);
+
     final cards = [
       _StatCardData(
-        count: '$totalTasks',
-        label: 'Total Tasks',
-        icon:  Icons.assignment_outlined,
-        iconBg: AppColors.primary.withOpacity(0.1),
-        iconColor: AppColors.primary,
+        count:       '$totalTasks',
+        label:       _isManagementOnly(_userRoleId) ? 'Team Total' : 'Total Tasks',
+        icon:        Icons.assignment_outlined,
+        iconBg:      AppColors.primary.withOpacity(0.1),
+        iconColor:   AppColors.primary,
         accentColor: AppColors.primary,
       ),
       _StatCardData(
-        count: '$completedTasks',
-        label: 'Completed',
-        icon:  Icons.check_circle_outline,
-        iconBg: AppColors.successLight,
-        iconColor: AppColors.success,
+        count:       '$completedTasks',
+        label:       'Completed',
+        icon:        Icons.check_circle_outline,
+        iconBg:      AppColors.successLight,
+        iconColor:   AppColors.success,
         accentColor: AppColors.success,
       ),
       _StatCardData(
-        count: '$inProgressTasks',
-        label: 'In Progress',
-        icon:  Icons.timelapse_outlined,
-        iconBg: const Color(0xFFF0F1FF),
-        iconColor: AppColors.primary,
+        count:       '$inProgressTasks',
+        label:       'In Progress',
+        icon:        Icons.timelapse_outlined,
+        iconBg:      const Color(0xFFF0F1FF),
+        iconColor:   AppColors.primary,
         accentColor: AppColors.primary,
       ),
-      if (escalatedTasks > 0 || _isManagerRole(_userRole))
+      if (showEscalated)
         _StatCardData(
-          count: '$escalatedTasks',
-          label: 'Escalated',
-          icon:  Icons.warning_amber_rounded,
-          iconBg: AppColors.errorLight,
-          iconColor: AppColors.error,
+          count:       '$escalatedTasks',
+          label:       'Escalated',
+          icon:        Icons.warning_amber_rounded,
+          iconBg:      AppColors.errorLight,
+          iconColor:   AppColors.error,
           accentColor: AppColors.error,
-          highlight: escalatedTasks > 0,
+          highlight:   escalatedTasks > 0,
         ),
     ];
 
@@ -353,11 +549,10 @@ class _TasksPageState extends State<TasksPage> {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: Row(
         children: cards.asMap().entries.map((e) {
-          final card = e.value;
           return Expanded(
             child: Padding(
               padding: EdgeInsets.only(left: e.key == 0 ? 0 : 8),
-              child: _buildStatCard(card),
+              child: _buildStatCard(e.value),
             ),
           );
         }).toList(),
@@ -394,8 +589,7 @@ class _TasksPageState extends State<TasksPage> {
           const SizedBox(height: 2),
           Text(d.label,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 10,
-                  color: AppColors.textSecondary),
+              style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
               maxLines: 2, overflow: TextOverflow.ellipsis),
         ],
       ),
@@ -405,19 +599,41 @@ class _TasksPageState extends State<TasksPage> {
   // ── Team Section Header ───────────────────────────────────────────────────
 
   Widget _buildTeamSectionHeader() {
+    String baseTitle;
+    if (_isGmOrAdmin(_userRoleId) || _isManager(_userRoleId)) {
+      baseTitle = 'All Departments';
+    } else if (_isDeptHead(_userRoleId)) {
+      baseTitle = 'My Department';
+    } else {
+      baseTitle = 'My Team';
+    }
+    final title = _selectedDept ?? baseTitle;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            _isManagerRole(_userRole) ? 'All Departments' : 'My Team',
-            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary),
-          ),
-          if (_teamLoading)
-            const SizedBox(width: 16, height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+          Text(title,
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
+          Row(children: [
+            if (!_teamLoading && _teamRows.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color:        AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('${_teamRows.length} staff',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                        color: AppColors.primary)),
+              ),
+            if (_teamLoading)
+              const SizedBox(width: 16, height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+          ]),
         ],
       ),
     );
@@ -437,7 +653,7 @@ class _TasksPageState extends State<TasksPage> {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Container(
-          width: double.infinity,
+          width:   double.infinity,
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(color: Colors.white,
               borderRadius: BorderRadius.circular(16)),
@@ -455,32 +671,24 @@ class _TasksPageState extends State<TasksPage> {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color:        Colors.white,
           borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.04),
-                blurRadius: 10, offset: const Offset(0, 4)),
-          ],
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+              blurRadius: 10, offset: const Offset(0, 4))],
         ),
-        child: Column(
-          children: [
-            // Table header
-            _buildTeamTableHeader(),
-            const Divider(height: 1, color: AppColors.borderLight),
-            // Rows
-            ...(_teamRows.asMap().entries.map((e) {
-              final isLast = e.key == _teamRows.length - 1;
-              return Column(
-                children: [
-                  _buildTeamRow(e.value),
-                  if (!isLast)
-                    const Divider(height: 1, color: AppColors.borderLight,
-                        indent: 16, endIndent: 16),
-                ],
-              );
-            })),
-          ],
-        ),
+        child: Column(children: [
+          _buildTeamTableHeader(),
+          const Divider(height: 1, color: AppColors.borderLight),
+          ...(_teamRows.asMap().entries.map((e) {
+            final isLast = e.key == _teamRows.length - 1;
+            return Column(children: [
+              _buildTeamRow(e.value),
+              if (!isLast)
+                const Divider(height: 1, color: AppColors.borderLight,
+                    indent: 16, endIndent: 16),
+            ]);
+          })),
+        ]),
       ),
     );
   }
@@ -493,35 +701,40 @@ class _TasksPageState extends State<TasksPage> {
             child: Text('Staff',
                 style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
                     color: AppColors.textSecondary))),
-        _headerCell('Done'),
-        _headerCell('Esc'),
-        _headerCell('Rate'),
+        _hCell('Assigned'),
+        _hCell('Done'),
+        _hCell('Esc'),
+        _hCell('Rate'),
       ]),
     );
   }
 
-  Widget _headerCell(String label) {
-    return SizedBox(
-      width: 48,
-      child: Text(label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-              color: AppColors.textSecondary)),
-    );
-  }
+  Widget _hCell(String label) => SizedBox(
+        width: 46,
+        child: Text(label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                color: AppColors.textSecondary)),
+      );
 
   Widget _buildTeamRow(Map<String, dynamic> row) {
-    final name        = (row['full_name']          ?? '—').toString();
-    final dept        = (row['department_name']    ?? '').toString();
-    final closed      = (row['total_closed']       ?? 0) as int;
-    final escalated   = (row['total_escalated']    ?? 0) as int;
-    final rate        = (row['escalation_rate_pct'] ?? 0.0);
-    final rateStr     = rate == 0.0
+    final name      = (row['full_name']          ?? '—').toString();
+    final dept      = (row['department_name']    ?? '').toString();
+    final roleName  = (row['role_name']          ?? '').toString();
+    final assigned  = (row['total_assigned']     as int?) ?? 0;
+    final closed    = (row['total_closed']       as int?) ?? 0;
+    final escalated = (row['total_escalated']    as int?) ?? 0;
+    final rate      = row['escalation_rate_pct'] ?? 0.0;
+    final rateStr   = rate == 0.0
         ? '0%'
         : '${(rate is double ? rate : (rate as num).toDouble()).toStringAsFixed(1)}%';
-    final userId      = (row['user_id']            ?? 0) as int;
+    final userId    = (row['user_id'] as int?) ?? 0;
 
     final escColor = escalated > 0 ? AppColors.error : AppColors.success;
+
+    final subtitle = _isManagementOnly(_userRoleId)
+        ? (dept.isNotEmpty ? dept : roleName)
+        : roleName;
 
     return InkWell(
       onTap: () => Navigator.push(
@@ -533,10 +746,12 @@ class _TasksPageState extends State<TasksPage> {
             deptName: dept,
             month:    _selectedMonth,
             year:     _selectedYear,
+            // CHANGE: Pass userRole string so _StaffDrillDownPage can gate
+            // TicketDetailPage navigation on the viewer's role.
+            userRole: _userRole,
           ),
         ),
       ),
-      borderRadius: BorderRadius.circular(0),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(children: [
@@ -544,47 +759,49 @@ class _TasksPageState extends State<TasksPage> {
             flex: 3,
             child: Row(children: [
               CircleAvatar(
-                radius: 15,
+                radius: 16,
                 backgroundColor: AppColors.primary.withOpacity(0.1),
-                child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                    style: const TextStyle(color: AppColors.primary,
-                        fontWeight: FontWeight.bold, fontSize: 12)),
+                child: Text(
+                  name.isNotEmpty ? name[0].toUpperCase() : '?',
+                  style: const TextStyle(color: AppColors.primary,
+                      fontWeight: FontWeight.bold, fontSize: 12),
+                ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   Text(name,
-                      style: const TextStyle(fontSize: 13,
-                          fontWeight: FontWeight.w600,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                           color: AppColors.textPrimary),
                       maxLines: 1, overflow: TextOverflow.ellipsis),
-                  if (dept.isNotEmpty)
-                    Text(dept,
-                        style: const TextStyle(fontSize: 11,
+                  if (subtitle.isNotEmpty)
+                    Text(subtitle,
+                        style: const TextStyle(fontSize: 10,
                             color: AppColors.textSecondary),
                         maxLines: 1, overflow: TextOverflow.ellipsis),
                 ]),
               ),
             ]),
           ),
-          _metricCell('$closed', AppColors.success),
-          _metricCell('$escalated', escColor),
-          _metricCell(rateStr,
+          _mCell('$assigned', AppColors.textSecondary),
+          _mCell('$closed',   AppColors.success),
+          _mCell('$escalated', escColor),
+          _mCell(rateStr,
               escalated > 0 ? AppColors.error : AppColors.textSecondary),
         ]),
       ),
     );
   }
 
-  Widget _metricCell(String value, Color color) {
-    return SizedBox(
-      width: 48,
-      child: Text(value,
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
-              color: color)),
-    );
-  }
+  Widget _mCell(String value, Color color) => SizedBox(
+        width: 46,
+        child: Text(value,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: color)),
+      );
 
   // ── Recent Activity ───────────────────────────────────────────────────────
 
@@ -600,104 +817,114 @@ class _TasksPageState extends State<TasksPage> {
           const SizedBox(height: 8),
           if (_recentTasks.isEmpty)
             Container(
-              width: double.infinity,
+              width:   double.infinity,
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(color: Colors.white,
                   borderRadius: BorderRadius.circular(18)),
-              child: Column(children: [
+              child: const Column(children: [
                 Icon(Icons.task_alt, size: 40, color: AppColors.textSecondary),
-                const SizedBox(height: 8),
-                const Text('No recent tasks found',
+                SizedBox(height: 8),
+                Text('No recent tasks found',
                     style: TextStyle(color: AppColors.textSecondary)),
               ]),
             )
           else
             Container(
               decoration: BoxDecoration(
-                color: Colors.white,
+                color:        Colors.white,
                 borderRadius: BorderRadius.circular(18),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withOpacity(0.04),
-                      blurRadius: 10, offset: const Offset(0, 4)),
-                ],
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+                    blurRadius: 10, offset: const Offset(0, 4))],
               ),
               child: ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _recentTasks.length,
-                separatorBuilder: (_, __) => Divider(
-                    height: 1, color: AppColors.textSecondary,
-                    indent: 16, endIndent: 16),
+                shrinkWrap:  true,
+                physics:     const NeverScrollableScrollPhysics(),
+                itemCount:   _recentTasks.length,
+                separatorBuilder: (_, __) => const Divider(height: 1,
+                    color: AppColors.borderLight, indent: 16, endIndent: 16),
                 itemBuilder: (ctx, i) {
-                  final task      = _recentTasks[i] as Map<String, dynamic>;
-                  final isEsc     = (task['is_escalated'] ?? 0) == 1 ||
-                                    task['task_flag'] == 'Escalated';
-                  final status    = (task['status'] ?? task['task_flag'] ?? 'Open').toString();
-                  final rawStatus = isEsc ? 'Escalated' : status;
+                  final task   = _recentTasks[i] as Map<String, dynamic>;
+                  final isEsc  = (task['is_escalated'] ?? 0) == 1 ||
+                      task['task_flag'] == 'Escalated';
+                  final status = (task['status'] ??
+                          task['task_flag'] ??
+                          'Open')
+                      .toString();
+                  final displayStatus = isEsc ? 'Escalated' : status;
 
                   Color statusColor;
                   Color statusBg;
                   if (isEsc) {
                     statusColor = AppColors.error;
                     statusBg    = AppColors.errorLight;
-                  } else if (status == 'Closed' || status == 'In Progress') {
-                    statusColor = status == 'Closed' ? AppColors.success : AppColors.orange;
-                    statusBg    = status == 'Closed' ? AppColors.successLight : AppColors.orangeLight;
+                  } else if (status == 'Closed') {
+                    statusColor = AppColors.success;
+                    statusBg    = AppColors.successLight;
+                  } else if (status == 'In Progress') {
+                    statusColor = AppColors.orange;
+                    statusBg    = AppColors.orangeLight;
                   } else {
                     statusColor = AppColors.primary;
                     statusBg    = AppColors.primaryLight;
                   }
 
-                  final room    = (task['room_number'] ?? task['room_id'] ?? '—').toString();
-                  final title   = (task['task_name']   ?? task['question'] ?? '').toString();
-                  final created = (task['created_at']  ?? '').toString();
-                  final timeAgo = _timeAgo(created);
+                  final room  = (task['room_number'] ??
+                          task['room_id'] ??
+                          task['room'] ??
+                          '—')
+                      .toString();
+                  final title = (task['task_name'] ??
+                          task['question'] ??
+                          task['title'] ??
+                          '')
+                      .toString();
+                  final timeAgo = _timeAgo(
+                      (task['created_at'] ?? task['time'] ?? '').toString());
 
                   return Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 14),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                     child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Container(
-                        width: 44, height: 44,
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(12),
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 44, height: 44,
+                          decoration: BoxDecoration(
+                            color:        AppColors.primary.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          alignment: Alignment.center,
+                          child: Text(room,
+                              style: const TextStyle(color: AppColors.primary,
+                                  fontWeight: FontWeight.bold, fontSize: 13)),
                         ),
-                        alignment: Alignment.center,
-                        child: Text(room,
-                            style: const TextStyle(color: AppColors.primary,
-                                fontWeight: FontWeight.bold, fontSize: 13)),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                          Text(title,
-                              style: const TextStyle(fontSize: 14,
-                                  fontWeight: FontWeight.w600),
-                              maxLines: 2, overflow: TextOverflow.ellipsis),
-                          const SizedBox(height: 4),
-                          Text(timeAgo,
-                              style: const TextStyle(fontSize: 12,
-                                  color: Colors.grey)),
-                        ]),
-                      ),
-                      const SizedBox(width: 10),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: statusBg,
-                          borderRadius: BorderRadius.circular(20),
+                              Text(title,
+                                  style: const TextStyle(fontSize: 14,
+                                      fontWeight: FontWeight.w600),
+                                  maxLines: 2, overflow: TextOverflow.ellipsis),
+                              const SizedBox(height: 4),
+                              Text(timeAgo,
+                                  style: const TextStyle(fontSize: 12,
+                                      color: Colors.grey)),
+                            ],
+                          ),
                         ),
-                        child: Text(rawStatus,
-                            style: TextStyle(color: statusColor,
-                                fontWeight: FontWeight.w600, fontSize: 12)),
-                      ),
-                    ]),
+                        const SizedBox(width: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(color: statusBg,
+                              borderRadius: BorderRadius.circular(20)),
+                          child: Text(displayStatus,
+                              style: TextStyle(color: statusColor,
+                                  fontWeight: FontWeight.w600, fontSize: 12)),
+                        ),
+                      ],
+                    ),
                   );
                 },
               ),
@@ -711,11 +938,11 @@ class _TasksPageState extends State<TasksPage> {
     if (ts.isEmpty) return '';
     try {
       String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
-      final d    = DateTime.parse(s).toLocal();
-      final diff = DateTime.now().difference(d);
-      if (diff.inMinutes < 60)  return '${diff.inMinutes}m ago';
-      if (diff.inHours   < 24)  return '${diff.inHours}h ago';
+      if (s.contains(' ') && !s.contains('T'))
+        s = s.replaceFirst(' ', 'T');
+      final diff = DateTime.now().difference(DateTime.parse(s).toLocal());
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours   < 24) return '${diff.inHours}h ago';
       return '${diff.inDays}d ago';
     } catch (_) {
       return '';
@@ -730,7 +957,7 @@ class _TasksPageState extends State<TasksPage> {
       child: Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: AppColors.primary.withOpacity(0.08),
+          color:        AppColors.primary.withOpacity(0.08),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: AppColors.primary.withOpacity(0.2)),
         ),
@@ -741,8 +968,7 @@ class _TasksPageState extends State<TasksPage> {
               color: AppColors.primary.withOpacity(0.15),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.star_outline,
-                color: AppColors.primary, size: 26),
+            child: const Icon(Icons.star_outline, color: AppColors.primary, size: 26),
           ),
           const SizedBox(width: 14),
           const Expanded(
@@ -752,8 +978,7 @@ class _TasksPageState extends State<TasksPage> {
                       fontWeight: FontWeight.bold, fontSize: 15)),
               SizedBox(height: 2),
               Text('Keep up the good work and complete more tasks.',
-                  style: TextStyle(fontSize: 13,
-                      color: AppColors.textSecondary)),
+                  style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
             ]),
           ),
           const SizedBox(width: 8),
@@ -765,7 +990,282 @@ class _TasksPageState extends State<TasksPage> {
   }
 }
 
-// ── Stat card data class ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Month Picker Bottom Sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _MonthPickerSheet extends StatefulWidget {
+  final int initialMonth;
+  final int initialYear;
+  final int maxYear;
+  final ValueChanged<int> onMonthSelected;
+  final ValueChanged<int> onYearChanged;
+
+  const _MonthPickerSheet({
+    required this.initialMonth,
+    required this.initialYear,
+    required this.maxYear,
+    required this.onMonthSelected,
+    required this.onYearChanged,
+  });
+
+  @override
+  State<_MonthPickerSheet> createState() => _MonthPickerSheetState();
+}
+
+class _MonthPickerSheetState extends State<_MonthPickerSheet> {
+  late int _year;
+  static const _monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _year = widget.initialYear;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final now           = DateTime.now();
+    final isCurrentYear = _year == now.year;
+    final selectedMonth = (widget.initialYear == _year)
+        ? widget.initialMonth
+        : -1;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color:        Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        top:    8,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            width: 36, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_rounded, size: 18),
+                  onPressed: _year > now.year - 3
+                      ? () => setState(() {
+                            _year--;
+                            widget.onYearChanged(_year);
+                          })
+                      : null,
+                ),
+                Text('$_year',
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary)),
+                IconButton(
+                  icon: const Icon(Icons.arrow_forward_ios_rounded, size: 18),
+                  onPressed: _year < widget.maxYear
+                      ? () => setState(() {
+                            _year++;
+                            widget.onYearChanged(_year);
+                          })
+                      : null,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: GridView.builder(
+              shrinkWrap: true,
+              physics:    const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount:   3,
+                childAspectRatio: 2.5,
+                crossAxisSpacing: 8,
+                mainAxisSpacing:  8,
+              ),
+              itemCount: 12,
+              itemBuilder: (_, index) {
+                final month      = index + 1;
+                final isSelected = month == selectedMonth;
+                final isDisabled = isCurrentYear && month > now.month;
+                return GestureDetector(
+                  onTap: isDisabled ? null : () => widget.onMonthSelected(month),
+                  child: Container(
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? AppColors.primary
+                          : isDisabled
+                              ? AppColors.surfaceAlt
+                              : Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSelected
+                            ? AppColors.primary
+                            : isDisabled
+                                ? AppColors.borderLight
+                                : AppColors.border,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Text(
+                      _monthNames[index],
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                        color: isDisabled
+                            ? AppColors.textDisabled
+                            : isSelected
+                                ? Colors.white
+                                : AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Department Filter Bottom Sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _DeptFilterSheet extends StatelessWidget {
+  final String?        selectedDept;
+  final List<String>   departments;
+  final bool           showAllOption;
+  final ValueChanged<String?> onSelected;
+
+  const _DeptFilterSheet({
+    required this.selectedDept,
+    required this.departments,
+    required this.showAllOption,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color:        Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 8, bottom: 16),
+            width: 36, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Select Department',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              padding:    const EdgeInsets.symmetric(horizontal: 16),
+              children: [
+                if (showAllOption)
+                  _DeptOptionTile(
+                    label:      'All Departments',
+                    value:      null,
+                    isSelected: selectedDept == null,
+                    onTap:      () => onSelected(null),
+                  ),
+                ...departments.map((dept) => _DeptOptionTile(
+                      label:      dept,
+                      value:      dept,
+                      isSelected: dept == selectedDept,
+                      onTap:      () => onSelected(dept),
+                    )),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeptOptionTile extends StatelessWidget {
+  final String    label;
+  final String?   value;
+  final bool      isSelected;
+  final VoidCallback onTap;
+
+  const _DeptOptionTile({
+    required this.label,
+    required this.value,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap:        onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        child: Row(
+          children: [
+            Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color: isSelected ? AppColors.primary : AppColors.textSecondary,
+              size:  20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(fontSize: 15,
+                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                      color: AppColors.textPrimary)),
+            ),
+            if (isSelected)
+              const Icon(Icons.check_rounded, color: AppColors.primary, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data classes
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _StatCardData {
   final String   count;
@@ -797,6 +1297,9 @@ class _StaffDrillDownPage extends StatefulWidget {
   final String deptName;
   final int    month;
   final int    year;
+  // CHANGE: userRole string from the viewer (the logged-in user) — used to
+  // gate TicketDetailPage navigation on Supervisor or above.
+  final String userRole;
 
   const _StaffDrillDownPage({
     required this.userId,
@@ -804,6 +1307,7 @@ class _StaffDrillDownPage extends StatefulWidget {
     required this.deptName,
     required this.month,
     required this.year,
+    required this.userRole,
   });
 
   @override
@@ -813,11 +1317,11 @@ class _StaffDrillDownPage extends StatefulWidget {
 class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   final HomeService _homeService = HomeService();
 
-  bool  _isLoading = true;
-  Map<String, dynamic> _summaryRow = {};
-  List<Map<String, dynamic>> _tasks = [];
+  bool                       _isLoading  = true;
+  Map<String, dynamic>       _summaryRow = {};
+  List<Map<String, dynamic>> _tasks      = [];
 
-  static const List<String> _monthNames = [
+  static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
@@ -833,8 +1337,8 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
 
     final result = await _homeService.getTeamPerformance(
       targetUserId: widget.userId,
-      month: widget.month,
-      year:  widget.year,
+      month:        widget.month,
+      year:         widget.year,
     );
 
     if (!mounted) return;
@@ -843,12 +1347,29 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
       final team      = (result['team']      as List? ?? []);
       final drillDown = (result['drillDown'] as List? ?? []);
 
+      List<Map<String, dynamic>> taskList = drillDown
+          .map((t) => Map<String, dynamic>.from(t as Map))
+          .toList();
+
+      if (taskList.isEmpty) {
+        final tasksResult = await _homeService.getTasks();
+        if (tasksResult['success'] == true) {
+          final all = (tasksResult['tasks'] as List? ?? [])
+              .cast<Map<String, dynamic>>();
+          taskList = all.where((t) {
+            final assignedRaw = t['raw'] as Map?;
+            if (assignedRaw == null) return false;
+            final assignedId = assignedRaw['assigned_to'];
+            return assignedId?.toString() == widget.userId.toString();
+          }).toList();
+        }
+      }
+
       setState(() {
         _summaryRow = team.isNotEmpty
             ? Map<String, dynamic>.from(team.first)
             : {};
-        _tasks = drillDown.map((t) =>
-            Map<String, dynamic>.from(t as Map)).toList();
+        _tasks     = taskList;
         _isLoading = false;
       });
     } else {
@@ -856,14 +1377,18 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     }
   }
 
-  String _formatTs(String? ts) {
+  String _fmtDate(String? ts) {
     if (ts == null || ts.isEmpty) return '—';
     try {
       String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
+      if (s.contains(' ') && !s.contains('T'))
+        s = s.replaceFirst(' ', 'T');
       final d = DateTime.parse(s).toLocal();
-      return '${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year}';
-    } catch (_) { return ts; }
+      return '${d.day.toString().padLeft(2, '0')}/'
+          '${d.month.toString().padLeft(2, '0')}/${d.year}';
+    } catch (_) {
+      return ts;
+    }
   }
 
   @override
@@ -873,12 +1398,12 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
+        backgroundColor:  Colors.white,
+        elevation:        0,
         surfaceTintColor: Colors.white,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 18, color: AppColors.textPrimary),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18,
+              color: AppColors.textPrimary),
           onPressed: () => Navigator.pop(context),
         ),
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -886,8 +1411,7 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary)),
           Text('${widget.deptName} — $month ${widget.year}',
-              style: const TextStyle(fontSize: 12,
-                  color: AppColors.textSecondary)),
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
         ]),
       ),
       body: _isLoading
@@ -911,11 +1435,11 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   }
 
   Widget _buildSummaryCards() {
-    final total     = (_summaryRow['total_assigned']       ?? 0) as int;
-    final closed    = (_summaryRow['total_closed']         ?? 0) as int;
-    final esc       = (_summaryRow['total_escalated']      ?? 0) as int;
-    final avgMins   = (_summaryRow['avg_resolution_minutes'] ?? 0);
-    final avgStr    = avgMins == 0
+    final total   = (_summaryRow['total_assigned']        as int?) ?? 0;
+    final closed  = (_summaryRow['total_closed']          as int?) ?? 0;
+    final esc     = (_summaryRow['total_escalated']       as int?) ?? 0;
+    final avgMins = _summaryRow['avg_resolution_minutes'] ?? 0;
+    final avgStr  = avgMins == 0
         ? '—'
         : avgMins is double
             ? '${avgMins.toStringAsFixed(0)} min'
@@ -927,53 +1451,53 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
       _DrillCard(value: '$closed', label: 'Closed',
           color: AppColors.success, icon: Icons.check_circle_outline),
       _DrillCard(value: '$esc',    label: 'Escalated',
-          color: esc > 0 ? AppColors.error : AppColors.textDisabled,
-          icon: Icons.warning_amber_outlined,
+          color:     esc > 0 ? AppColors.error : AppColors.textDisabled,
+          icon:      Icons.warning_amber_outlined,
           highlight: esc > 0),
       _DrillCard(value: avgStr,    label: 'Avg Time',
           color: AppColors.info, icon: Icons.timer_outlined),
     ];
 
     return Row(
-      children: cards.asMap().entries.map((e) => Expanded(
-        child: Padding(
-          padding: EdgeInsets.only(left: e.key == 0 ? 0 : 8),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-            decoration: BoxDecoration(
-              color: e.value.highlight ? AppColors.errorLight : Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: e.value.highlight
-                  ? Border.all(color: AppColors.error.withOpacity(0.3))
-                  : null,
-              boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.04),
-                    blurRadius: 8, offset: const Offset(0, 3)),
-              ],
+      children: cards.asMap().entries.map((e) {
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(left: e.key == 0 ? 0 : 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+              decoration: BoxDecoration(
+                color: e.value.highlight ? AppColors.errorLight : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: e.value.highlight
+                    ? Border.all(color: AppColors.error.withOpacity(0.3))
+                    : null,
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+                    blurRadius: 8, offset: const Offset(0, 3))],
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(e.value.icon, size: 18, color: e.value.color),
+                const SizedBox(height: 5),
+                Text(e.value.value,
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                        color: e.value.color)),
+                const SizedBox(height: 2),
+                Text(e.value.label,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 10,
+                        color: AppColors.textSecondary),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+              ]),
             ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Icon(e.value.icon, size: 18, color: e.value.color),
-              const SizedBox(height: 5),
-              Text(e.value.value,
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                      color: e.value.color)),
-              const SizedBox(height: 2),
-              Text(e.value.label,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 10,
-                      color: AppColors.textSecondary),
-                  maxLines: 2, overflow: TextOverflow.ellipsis),
-            ]),
           ),
-        ),
-      )).toList(),
+        );
+      }).toList(),
     );
   }
 
   Widget _buildTaskList() {
     if (_tasks.isEmpty) {
       return Container(
-        width: double.infinity,
+        width:   double.infinity,
         padding: const EdgeInsets.all(32),
         decoration: BoxDecoration(color: Colors.white,
             borderRadius: BorderRadius.circular(16)),
@@ -991,52 +1515,60 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
               color: AppColors.textPrimary)),
       const SizedBox(height: 10),
-      ...(_tasks.map((task) => _buildTaskRow(task))),
+      ...(_tasks.map(_buildTaskRow)),
     ]);
   }
 
+  // CHANGE: Task rows in the drill-down are now tappable for Supervisor+.
+  // Tapping navigates to TicketDetailPage so managers/supervisors can act
+  // on a task directly from the team performance view without going back
+  // to HomePage first.
   Widget _buildTaskRow(Map<String, dynamic> task) {
     final isEsc    = (task['is_escalated'] ?? 0) == 1 ||
-                     task['task_flag'] == 'Escalated';
-    final status   = (task['task_flag']  ??
-                      task['status']     ?? 'Open').toString();
-    final room     = (task['room_number'] ?? '—').toString();
-    final title    = (task['task_name']   ??
-                      task['question']   ?? 'Service Request').toString();
-    final created  = _formatTs((task['created_at'] ?? '').toString());
+        task['task_flag'] == 'Escalated';
+    final status   =
+        (task['task_flag'] ?? task['status'] ?? 'Open').toString();
+    final room     = (task['room_number'] ??
+            task['room_id'] ??
+            task['room'] ??
+            '—')
+        .toString();
+    final title    = (task['task_name'] ??
+            task['question'] ??
+            task['title'] ??
+            'Service Request')
+        .toString();
+    final created  = _fmtDate((task['created_at'] ?? '').toString());
     final escLevel = task['escalation_level_reached'];
 
-    Color borderColor = Colors.transparent;
-    Color statusColor = AppColors.statusColor(status);
-    if (isEsc) {
-      borderColor = AppColors.error.withOpacity(0.35);
-      statusColor = AppColors.error;
-    }
+    final statusColor =
+        isEsc ? AppColors.error : AppColors.statusColor(status);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
+    // CHANGE: canTap — only Supervisor or above can navigate to the ticket.
+    // Staff-level viewers in the drill-down see the row but cannot tap it.
+    final canTap = _isSupervisorOrAboveByName(widget.userRole);
+
+    final card = Container(
+      margin:  const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color:        Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: isEsc
-            ? Border.all(color: borderColor, width: 1.3)
+            ? Border.all(color: AppColors.error.withOpacity(0.35), width: 1.3)
             : null,
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 7, offset: const Offset(0, 2)),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+            blurRadius: 7, offset: const Offset(0, 2))],
       ),
       child: Row(children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: isEsc ? AppColors.errorLight : AppColors.warningLight,
+            color:        isEsc ? AppColors.errorLight : AppColors.warningLight,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(room,
-              style: TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 13,
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13,
                   color: isEsc ? AppColors.error : AppColors.warning)),
         ),
         const SizedBox(width: 10),
@@ -1049,19 +1581,16 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
             const SizedBox(height: 3),
             Row(children: [
               Text(created,
-                  style: const TextStyle(fontSize: 11,
-                      color: AppColors.textDisabled)),
+                  style: const TextStyle(fontSize: 11, color: AppColors.textDisabled)),
               if (escLevel != null) ...[
                 const SizedBox(width: 6),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.errorLight,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
+                  decoration: BoxDecoration(color: AppColors.errorLight,
+                      borderRadius: BorderRadius.circular(6)),
                   child: Text('L$escLevel',
-                      style: const TextStyle(color: AppColors.error,
-                          fontSize: 10, fontWeight: FontWeight.bold)),
+                      style: const TextStyle(color: AppColors.error, fontSize: 10,
+                          fontWeight: FontWeight.bold)),
                 ),
               ],
             ]),
@@ -1070,15 +1599,36 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
+          decoration: BoxDecoration(color: statusColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8)),
           child: Text(isEsc ? 'Escalated' : status,
-              style: TextStyle(color: statusColor,
-                  fontWeight: FontWeight.w700, fontSize: 11)),
+              style: TextStyle(color: statusColor, fontWeight: FontWeight.w700,
+                  fontSize: 11)),
         ),
+        // CHANGE: Show a chevron icon when tappable so the user knows the
+        // row is interactive.
+        if (canTap) ...[
+          const SizedBox(width: 4),
+          const Icon(Icons.chevron_right_rounded,
+              size: 16, color: AppColors.textDisabled),
+        ],
       ]),
+    );
+
+    if (!canTap) return card;
+
+    // CHANGE: Wrap in GestureDetector for Supervisor+ viewers.
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => TicketDetailPage(
+            task:     task,
+            userRole: widget.userRole,
+          ),
+        ),
+      ),
+      child: card,
     );
   }
 }
@@ -1089,6 +1639,7 @@ class _DrillCard {
   final Color    color;
   final IconData icon;
   final bool     highlight;
+
   const _DrillCard({
     required this.value,
     required this.label,
