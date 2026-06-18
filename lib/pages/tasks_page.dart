@@ -10,9 +10,20 @@
 //  • _StaffDrillDownPage._buildTaskRow() — wrapped in GestureDetector
 //    that navigates to TicketDetailPage when the viewer is Supervisor+.
 //    Staff-level viewers see the row but it's not tappable.
+//  • FIX 1: _resolveTitle() helper — treats empty task_name same as null
+//    so question field is used when task_name is "". Fixes blank titles
+//    in Recent Activity and drill-down task rows.
+//  • FIX 2: _allTasks / _hasMoreTasks — stores full untruncated task list.
+//    Recent Activity shows first 5. "Show all N tasks" button opens a
+//    DraggableScrollableSheet with the complete list.
+//  • FIX 3: Stat cards (Completed, In Progress, Escalated) are now
+//    tappable. Tapping opens a filtered bottom sheet from _allTasks.
+//    _StatCardData gains a filterStatus field. _showFilteredTasksSheet()
+//    and _showAllTasksSheet() added. _buildActivityRow() extracted as a
+//    shared helper used by both the inline list and all sheets.
 //
 // All existing role-based hierarchy, dept filter, month picker, stat
-// cards, team table, recent activity, and motivation banner unchanged.
+// cards, team table, and motivation banner unchanged.
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -33,14 +44,24 @@ bool _isManagementOnly(int? roleId)    => roleId != null && roleId <= 3;
 bool _isSupervisorOrAbove(int? roleId) => roleId != null && roleId <= 5;
 bool _isDeptScopedRole(int? roleId)    => roleId == 4 || roleId == 5;
 
-// Role name → bool helpers (used inside _StaffDrillDownPage which receives
-// the role as a string).
 bool _isSupervisorOrAboveByName(String? role) {
   if (role == null) return false;
   const hierarchy = [
     'Staff', 'Supervisor', 'Department Head', 'Manager', 'General Manager', 'Admin',
   ];
   return hierarchy.indexOf(role) >= 1;
+}
+
+// ── FIX 1: Title resolver — treats empty string same as null ─────────────────
+// The API returns task_name: "" when no name is set. Dart's ?? operator only
+// falls through on null, not empty string, so task_name:"" would silently win
+// and render a blank title. This helper explicitly checks isNotEmpty.
+String _resolveTitle(Map<String, dynamic> task) {
+  final name = task['task_name']?.toString() ?? '';
+  if (name.isNotEmpty) return name;
+  final question = task['question']?.toString() ?? '';
+  if (question.isNotEmpty) return question;
+  return (task['title']?.toString() ?? 'Service Request');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,7 +96,12 @@ class _TasksPageState extends State<TasksPage> {
   int  completedTasks  = 0;
   int  inProgressTasks = 0;
   int  escalatedTasks  = 0;
-  List<dynamic> _recentTasks = [];
+
+  // FIX 2: _allTasks holds the full untruncated list.
+  // _recentTasks is the first 5 shown inline.
+  List<dynamic> _recentTasks   = [];
+  List<dynamic> _allTasks      = [];
+  bool          _hasMoreTasks  = false;
 
   // ── Team performance ──────────────────────────────────────────────────────
   bool                       _teamLoading = false;
@@ -117,10 +143,7 @@ class _TasksPageState extends State<TasksPage> {
     if (!mounted) return;
 
     setState(() {
-      _userRole = role ?? '';
-      // CHANGE: If getRoleId() returns null (old session without stored
-      // role_id), derive the numeric id from the role name string so the
-      // team section and stat cards render correctly.
+      _userRole   = role ?? '';
       _userRoleId = roleId ?? _deriveRoleId(role);
       _userId     = userId;
       _myDepts    = depts;
@@ -139,8 +162,6 @@ class _TasksPageState extends State<TasksPage> {
     ]);
   }
 
-  // CHANGE: Maps role name → numeric role_id.
-  // Used as a fallback when UserSessionHelper.getRoleId() returns null.
   int? _deriveRoleId(String? role) {
     switch (role) {
       case 'Admin':            return 1;
@@ -180,13 +201,13 @@ class _TasksPageState extends State<TasksPage> {
           ? Map<String, dynamic>.from(teamList.first)
           : <String, dynamic>{};
 
-      List<dynamic> recentTasksResult = drillDown.take(10).toList();
+      // FIX 2: Keep the full list in _allTasks; show only first 5 inline.
+      List<dynamic> allTasksList = drillDown;
 
-      if (recentTasksResult.isEmpty && _isStaff(_userRoleId)) {
+      if (allTasksList.isEmpty && _isStaff(_userRoleId)) {
         final tasksResult = await _homeService.getTasks();
         if (tasksResult['success'] == true) {
-          recentTasksResult =
-              ((tasksResult['tasks'] as List?) ?? []).take(10).toList();
+          allTasksList = (tasksResult['tasks'] as List?) ?? [];
         }
       }
 
@@ -195,7 +216,9 @@ class _TasksPageState extends State<TasksPage> {
         completedTasks  = (selfRow['total_closed']    as int?) ?? 0;
         escalatedTasks  = (selfRow['total_escalated'] as int?) ?? escalatedTasks;
         inProgressTasks = (totalTasks - completedTasks).clamp(0, 9999);
-        _recentTasks    = recentTasksResult;
+        _allTasks       = allTasksList;
+        _recentTasks    = allTasksList.take(5).toList();
+        _hasMoreTasks   = allTasksList.length > 5;
         _statsLoading   = false;
       });
     } else {
@@ -356,6 +379,158 @@ class _TasksPageState extends State<TasksPage> {
     );
   }
 
+  // FIX 2: Opens a full-list sheet with all tasks for the period.
+  void _showAllTasksSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.85,
+        maxChildSize:     0.95,
+        minChildSize:     0.4,
+        builder: (_, controller) => Container(
+          decoration: const BoxDecoration(
+            color:        Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              _buildSheetHandle(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: Row(
+                  children: [
+                    const Text('All Tasks',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary)),
+                    const SizedBox(width: 8),
+                    _buildCountPill(_allTasks.length),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: AppColors.borderLight),
+              Expanded(
+                child: ListView.separated(
+                  controller:      controller,
+                  itemCount:       _allTasks.length,
+                  separatorBuilder: (_, __) => const Divider(
+                      height: 1,
+                      color: AppColors.borderLight,
+                      indent: 16,
+                      endIndent: 16),
+                  itemBuilder: (ctx, i) =>
+                      _buildActivityRow(_allTasks[i] as Map<String, dynamic>),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // FIX 3: Opens a sheet filtered to a specific status category.
+  void _showFilteredTasksSheet(String filter, String sheetTitle) {
+    final filtered = _allTasks.where((t) {
+      final task  = t as Map<String, dynamic>;
+      final isEsc = (task['is_escalated'] ?? 0) == 1 ||
+          task['task_flag'] == 'Escalated';
+      final status =
+          (task['task_flag'] ?? task['status'] ?? 'Open').toString();
+      switch (filter) {
+        case 'completed':  return status == 'Closed' && !isEsc;
+        case 'inProgress': return status == 'In Progress' && !isEsc;
+        case 'escalated':  return isEsc;
+        default:           return true;
+      }
+    }).toList();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        maxChildSize:     0.95,
+        minChildSize:     0.35,
+        builder: (_, controller) => Container(
+          decoration: const BoxDecoration(
+            color:        Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              _buildSheetHandle(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: Row(
+                  children: [
+                    Text(sheetTitle,
+                        style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary)),
+                    const SizedBox(width: 8),
+                    _buildCountPill(filtered.length),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: AppColors.borderLight),
+              if (filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text('No tasks',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                )
+              else
+                Expanded(
+                  child: ListView.separated(
+                    controller:      controller,
+                    itemCount:       filtered.length,
+                    separatorBuilder: (_, __) => const Divider(
+                        height: 1,
+                        color: AppColors.borderLight,
+                        indent: 16,
+                        endIndent: 16),
+                    itemBuilder: (ctx, i) =>
+                        _buildActivityRow(filtered[i] as Map<String, dynamic>),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Shared sheet widgets ──────────────────────────────────────────────────
+
+  Widget _buildSheetHandle() => Container(
+        margin: const EdgeInsets.only(top: 10, bottom: 8),
+        width:  36,
+        height: 4,
+        decoration: BoxDecoration(
+          color:        Colors.grey.shade300,
+          borderRadius: BorderRadius.circular(2),
+        ),
+      );
+
+  Widget _buildCountPill(int count) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(
+          color:        AppColors.primaryLight,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text('$count',
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primary)),
+      );
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -510,38 +685,46 @@ class _TasksPageState extends State<TasksPage> {
 
     final cards = [
       _StatCardData(
-        count:       '$totalTasks',
-        label:       _isManagementOnly(_userRoleId) ? 'Team Total' : 'Total Tasks',
-        icon:        Icons.assignment_outlined,
-        iconBg:      AppColors.primary.withOpacity(0.1),
-        iconColor:   AppColors.primary,
-        accentColor: AppColors.primary,
+        count:        '$totalTasks',
+        label:        _isManagementOnly(_userRoleId) ? 'Team Total' : 'Total Tasks',
+        icon:         Icons.assignment_outlined,
+        iconBg:       AppColors.primary.withOpacity(0.1),
+        iconColor:    AppColors.primary,
+        accentColor:  AppColors.primary,
+        // Total card shows all tasks — no status filter
+        filterStatus: null,
       ),
       _StatCardData(
-        count:       '$completedTasks',
-        label:       'Completed',
-        icon:        Icons.check_circle_outline,
-        iconBg:      AppColors.successLight,
-        iconColor:   AppColors.success,
-        accentColor: AppColors.success,
+        count:        '$completedTasks',
+        label:        'Completed',
+        icon:         Icons.check_circle_outline,
+        iconBg:       AppColors.successLight,
+        iconColor:    AppColors.success,
+        accentColor:  AppColors.success,
+        // FIX 3: Tap opens sheet filtered to Closed tasks
+        filterStatus: 'completed',
       ),
       _StatCardData(
-        count:       '$inProgressTasks',
-        label:       'In Progress',
-        icon:        Icons.timelapse_outlined,
-        iconBg:      const Color(0xFFF0F1FF),
-        iconColor:   AppColors.primary,
-        accentColor: AppColors.primary,
+        count:        '$inProgressTasks',
+        label:        'In Progress',
+        icon:         Icons.timelapse_outlined,
+        iconBg:       const Color(0xFFF0F1FF),
+        iconColor:    AppColors.primary,
+        accentColor:  AppColors.primary,
+        // FIX 3: Tap opens sheet filtered to In Progress tasks
+        filterStatus: 'inProgress',
       ),
       if (showEscalated)
         _StatCardData(
-          count:       '$escalatedTasks',
-          label:       'Escalated',
-          icon:        Icons.warning_amber_rounded,
-          iconBg:      AppColors.errorLight,
-          iconColor:   AppColors.error,
-          accentColor: AppColors.error,
-          highlight:   escalatedTasks > 0,
+          count:        '$escalatedTasks',
+          label:        'Escalated',
+          icon:         Icons.warning_amber_rounded,
+          iconBg:       AppColors.errorLight,
+          iconColor:    AppColors.error,
+          accentColor:  AppColors.error,
+          highlight:    escalatedTasks > 0,
+          // FIX 3: Tap opens sheet filtered to escalated tasks
+          filterStatus: 'escalated',
         ),
     ];
 
@@ -561,7 +744,7 @@ class _TasksPageState extends State<TasksPage> {
   }
 
   Widget _buildStatCard(_StatCardData d) {
-    return Container(
+    final card = Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
       decoration: BoxDecoration(
         color: d.highlight ? AppColors.errorLight : Colors.white,
@@ -593,6 +776,19 @@ class _TasksPageState extends State<TasksPage> {
               maxLines: 2, overflow: TextOverflow.ellipsis),
         ],
       ),
+    );
+
+    // FIX 3: Only make tappable when filterStatus is set and there are tasks
+    // loaded. Management-only roles see aggregated data, not drill-down tasks,
+    // so don't attach a tap handler for them.
+    if (d.filterStatus == null || _isManagementOnly(_userRoleId)) {
+      return card;
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: () => _showFilteredTasksSheet(d.filterStatus!, d.label),
+      child: card,
     );
   }
 
@@ -746,8 +942,6 @@ class _TasksPageState extends State<TasksPage> {
             deptName: dept,
             month:    _selectedMonth,
             year:     _selectedYear,
-            // CHANGE: Pass userRole string so _StaffDrillDownPage can gate
-            // TicketDetailPage navigation on the viewer's role.
             userRole: _userRole,
           ),
         ),
@@ -836,99 +1030,133 @@ class _TasksPageState extends State<TasksPage> {
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
                     blurRadius: 10, offset: const Offset(0, 4))],
               ),
-              child: ListView.separated(
-                shrinkWrap:  true,
-                physics:     const NeverScrollableScrollPhysics(),
-                itemCount:   _recentTasks.length,
-                separatorBuilder: (_, __) => const Divider(height: 1,
-                    color: AppColors.borderLight, indent: 16, endIndent: 16),
-                itemBuilder: (ctx, i) {
-                  final task   = _recentTasks[i] as Map<String, dynamic>;
-                  final isEsc  = (task['is_escalated'] ?? 0) == 1 ||
-                      task['task_flag'] == 'Escalated';
-                  final status = (task['status'] ??
-                          task['task_flag'] ??
-                          'Open')
-                      .toString();
-                  final displayStatus = isEsc ? 'Escalated' : status;
-
-                  Color statusColor;
-                  Color statusBg;
-                  if (isEsc) {
-                    statusColor = AppColors.error;
-                    statusBg    = AppColors.errorLight;
-                  } else if (status == 'Closed') {
-                    statusColor = AppColors.success;
-                    statusBg    = AppColors.successLight;
-                  } else if (status == 'In Progress') {
-                    statusColor = AppColors.orange;
-                    statusBg    = AppColors.orangeLight;
-                  } else {
-                    statusColor = AppColors.primary;
-                    statusBg    = AppColors.primaryLight;
-                  }
-
-                  final room  = (task['room_number'] ??
-                          task['room_id'] ??
-                          task['room'] ??
-                          '—')
-                      .toString();
-                  final title = (task['task_name'] ??
-                          task['question'] ??
-                          task['title'] ??
-                          '')
-                      .toString();
-                  final timeAgo = _timeAgo(
-                      (task['created_at'] ?? task['time'] ?? '').toString());
-
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: 44, height: 44,
-                          decoration: BoxDecoration(
-                            color:        AppColors.primary.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(room,
-                              style: const TextStyle(color: AppColors.primary,
-                                  fontWeight: FontWeight.bold, fontSize: 13)),
+              child: Column(
+                children: [
+                  ListView.separated(
+                    shrinkWrap:  true,
+                    physics:     const NeverScrollableScrollPhysics(),
+                    itemCount:   _recentTasks.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1,
+                        color: AppColors.borderLight, indent: 16, endIndent: 16),
+                    itemBuilder: (ctx, i) =>
+                        _buildActivityRow(_recentTasks[i] as Map<String, dynamic>),
+                  ),
+                  // FIX 2: Show More button when more tasks exist beyond the first 5
+                  if (_hasMoreTasks) ...[
+                    const Divider(height: 1, color: AppColors.borderLight),
+                    InkWell(
+                      onTap: _showAllTasksSheet,
+                      borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(18)),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Show all ${_allTasks.length} tasks',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.primary),
+                            ),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.expand_more_rounded,
+                                size: 16, color: AppColors.primary),
+                          ],
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(title,
-                                  style: const TextStyle(fontSize: 14,
-                                      fontWeight: FontWeight.w600),
-                                  maxLines: 2, overflow: TextOverflow.ellipsis),
-                              const SizedBox(height: 4),
-                              Text(timeAgo,
-                                  style: const TextStyle(fontSize: 12,
-                                      color: Colors.grey)),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(color: statusBg,
-                              borderRadius: BorderRadius.circular(20)),
-                          child: Text(displayStatus,
-                              style: TextStyle(color: statusColor,
-                                  fontWeight: FontWeight.w600, fontSize: 12)),
-                        ),
-                      ],
+                      ),
                     ),
-                  );
-                },
+                  ],
+                ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  // FIX 1 + shared: Extracted row builder used by both the inline list
+  // and all bottom sheets. Uses _resolveTitle() so question is shown
+  // when task_name is empty.
+  Widget _buildActivityRow(Map<String, dynamic> task) {
+    final isEsc  = (task['is_escalated'] ?? 0) == 1 ||
+        task['task_flag'] == 'Escalated';
+    final status = (task['status'] ??
+            task['task_flag'] ??
+            'Open')
+        .toString();
+    final displayStatus = isEsc ? 'Escalated' : status;
+
+    Color statusColor;
+    Color statusBg;
+    if (isEsc) {
+      statusColor = AppColors.error;
+      statusBg    = AppColors.errorLight;
+    } else if (status == 'Closed') {
+      statusColor = AppColors.success;
+      statusBg    = AppColors.successLight;
+    } else if (status == 'In Progress') {
+      statusColor = AppColors.orange;
+      statusBg    = AppColors.orangeLight;
+    } else {
+      statusColor = AppColors.primary;
+      statusBg    = AppColors.primaryLight;
+    }
+
+    final room = (task['room_number'] ??
+            task['room_id'] ??
+            task['room'] ??
+            '—')
+        .toString();
+
+    // FIX 1: Use _resolveTitle() instead of bare ?? chain.
+    final title  = _resolveTitle(task);
+    final timeAgo = _timeAgo(
+        (task['created_at'] ?? task['time'] ?? '').toString());
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+              color:        AppColors.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            alignment: Alignment.center,
+            child: Text(room,
+                style: const TextStyle(color: AppColors.primary,
+                    fontWeight: FontWeight.bold, fontSize: 13)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(fontSize: 14,
+                        fontWeight: FontWeight.w600),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 4),
+                Text(timeAgo,
+                    style: const TextStyle(fontSize: 12,
+                        color: Colors.grey)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(color: statusBg,
+                borderRadius: BorderRadius.circular(20)),
+            child: Text(displayStatus,
+                style: TextStyle(color: statusColor,
+                    fontWeight: FontWeight.w600, fontSize: 12)),
+          ),
         ],
       ),
     );
@@ -1275,6 +1503,9 @@ class _StatCardData {
   final Color    iconColor;
   final Color    accentColor;
   final bool     highlight;
+  // FIX 3: Which status filter to apply when this card is tapped.
+  // null = not tappable (Total Tasks card for management).
+  final String?  filterStatus;
 
   const _StatCardData({
     required this.count,
@@ -1283,7 +1514,8 @@ class _StatCardData {
     required this.iconBg,
     required this.iconColor,
     required this.accentColor,
-    this.highlight = false,
+    this.highlight    = false,
+    this.filterStatus,
   });
 }
 
@@ -1297,8 +1529,6 @@ class _StaffDrillDownPage extends StatefulWidget {
   final String deptName;
   final int    month;
   final int    year;
-  // CHANGE: userRole string from the viewer (the logged-in user) — used to
-  // gate TicketDetailPage navigation on Supervisor or above.
   final String userRole;
 
   const _StaffDrillDownPage({
@@ -1519,10 +1749,6 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     ]);
   }
 
-  // CHANGE: Task rows in the drill-down are now tappable for Supervisor+.
-  // Tapping navigates to TicketDetailPage so managers/supervisors can act
-  // on a task directly from the team performance view without going back
-  // to HomePage first.
   Widget _buildTaskRow(Map<String, dynamic> task) {
     final isEsc    = (task['is_escalated'] ?? 0) == 1 ||
         task['task_flag'] == 'Escalated';
@@ -1533,19 +1759,15 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
             task['room'] ??
             '—')
         .toString();
-    final title    = (task['task_name'] ??
-            task['question'] ??
-            task['title'] ??
-            'Service Request')
-        .toString();
+
+    // FIX 1: Use _resolveTitle() in drill-down rows too.
+    final title    = _resolveTitle(task);
     final created  = _fmtDate((task['created_at'] ?? '').toString());
     final escLevel = task['escalation_level_reached'];
 
     final statusColor =
         isEsc ? AppColors.error : AppColors.statusColor(status);
 
-    // CHANGE: canTap — only Supervisor or above can navigate to the ticket.
-    // Staff-level viewers in the drill-down see the row but cannot tap it.
     final canTap = _isSupervisorOrAboveByName(widget.userRole);
 
     final card = Container(
@@ -1605,8 +1827,6 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
               style: TextStyle(color: statusColor, fontWeight: FontWeight.w700,
                   fontSize: 11)),
         ),
-        // CHANGE: Show a chevron icon when tappable so the user knows the
-        // row is interactive.
         if (canTap) ...[
           const SizedBox(width: 4),
           const Icon(Icons.chevron_right_rounded,
@@ -1617,7 +1837,6 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
 
     if (!canTap) return card;
 
-    // CHANGE: Wrap in GestureDetector for Supervisor+ viewers.
     return GestureDetector(
       onTap: () => Navigator.push(
         context,

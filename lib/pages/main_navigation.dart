@@ -1,4 +1,5 @@
 // main_navigation.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
@@ -10,6 +11,7 @@ import '../utils/notification_permission_manager.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_colors.dart';
 import '../services/role_change_watcher.dart';
+import '../services/session_change_service.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -18,12 +20,14 @@ class MainNavigation extends StatefulWidget {
   State<MainNavigation> createState() => _MainNavigationState();
 }
 
-class _MainNavigationState extends State<MainNavigation> {
+class _MainNavigationState extends State<MainNavigation>
+    with WidgetsBindingObserver {
   int _currentIndex = 0;
   List<String> _departments = [];
   bool _isLoadingDepts = true;
 
   late final RoleChangeWatcher _roleWatcher;
+  StreamSubscription<String>? _sessionChangeSub;
 
   // ── Nav config ────────────────────────────────────────────────────────────
 
@@ -83,34 +87,27 @@ class _MainNavigationState extends State<MainNavigation> {
     if (d == 'food & beverage') {
       return {'food', 'profile'};
     }
-
     if (d == 'front office') {
       return {'home', 'tasks', 'camera'};
     }
-
     if (d == 'it' ||
         d == 'house keeping' ||
         d == 'maintenance' ||
         (d.contains('room') && d.contains('service'))) {
       return {'home', 'tasks'};
     }
-
     return {'home', 'food', 'tasks', 'camera'};
   }
 
   List<String> get _visibleKeys {
-    if (_departments.isEmpty) {
-      return ['home', 'tasks'];
-    }
+    if (_departments.isEmpty) return ['home', 'tasks'];
 
     final allowed = <String>{};
     for (final dept in _departments) {
       allowed.addAll(_tabsForDepartment(dept));
     }
 
-    if (allowed.contains('home')) {
-      allowed.remove('profile');
-    }
+    if (allowed.contains('home')) allowed.remove('profile');
 
     return _allNavItems
         .map((e) => e.key)
@@ -126,28 +123,45 @@ class _MainNavigationState extends State<MainNavigation> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadDepartments();
     _requestPermissions();
 
-    _roleWatcher = RoleChangeWatcher(
-      onRoleChanged: _forceLogout,
-    );
+    _roleWatcher = RoleChangeWatcher(onRoleChanged: _onRoleChanged);
     _roleWatcher.startWatching();
+
+    // Listen for role/dept changes so we can react on this navigator
+    _sessionChangeSub =
+        SessionChangeService.instance.onRoleChange.listen((_) {
+      // Sheet is shown from _onRoleChanged; nothing extra needed here
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _roleWatcher.stopWatching();
+    _sessionChangeSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Reload departments on resume in case they changed server-side
+    if (state == AppLifecycleState.resumed) {
+      _loadDepartments();
+    }
   }
 
   Future<void> _loadDepartments() async {
     final depts = await UserSessionHelper.getDepartments();
     if (mounted) {
       setState(() {
-        _departments = depts;
+        _departments    = depts;
         _isLoadingDepts = false;
-        _currentIndex = 0;
+        // Clamp index to valid range after dept change
+        final entries = _activeEntries;
+        if (_currentIndex >= entries.length) _currentIndex = 0;
       });
     }
   }
@@ -157,33 +171,41 @@ class _MainNavigationState extends State<MainNavigation> {
     await NotificationPermissionManager.requestAllNotificationPermissions();
   }
 
-  // ── Force logout ──────────────────────────────────────────────────────────
+  // ── Role / dept changed ───────────────────────────────────────────────────
 
-  void _forceLogout() {
+  /// Called by RoleChangeWatcher after the session has been cleared.
+  /// Shows an un-dismissible bottom sheet explaining what changed,
+  /// with a single "Log Out" button.
+  void _onRoleChanged() {
     if (!mounted) return;
 
-    // FIX 3: Use AppColors instead of Colors.orange
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text(
-          'Your role has been updated. Please log in again.',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-            fontSize: 14,
-          ),
-        ),
-        backgroundColor: AppColors.warning,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        duration: const Duration(seconds: 4),
+    final reason = SessionChangeService.instance.changeReason;
+
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      enableDrag:    false,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _RoleChangedSheet(
+        reason:   reason,
+        onLogout: _navigateToLogin,
       ),
     );
+  }
 
+  void _navigateToLogin() {
+    if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
-      MaterialPageRoute(builder: (_) => const LoginPage()),
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 400),
+        pageBuilder:        (_, __, ___) => const LoginPage(),
+        transitionsBuilder: (_, animation, __, child) =>
+            FadeTransition(opacity: animation, child: child),
+      ),
       (route) => false,
     );
   }
@@ -198,7 +220,7 @@ class _MainNavigationState extends State<MainNavigation> {
       );
     }
 
-    final entries = _activeEntries;
+    final entries   = _activeEntries;
     final safeIndex = _currentIndex.clamp(0, entries.length - 1);
 
     return Scaffold(
@@ -210,29 +232,29 @@ class _MainNavigationState extends State<MainNavigation> {
         decoration: BoxDecoration(
           color: AppColors.bgLight,
           borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(24),
+            topLeft:  Radius.circular(24),
             topRight: Radius.circular(24),
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.06),
+              color:      Colors.black.withOpacity(0.06),
               blurRadius: 12,
-              offset: const Offset(0, -3),
+              offset:     const Offset(0, -3),
             ),
           ],
         ),
         child: BottomNavigationBar(
-          currentIndex: safeIndex,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          type: BottomNavigationBarType.fixed,
-          selectedFontSize: 12,
-          unselectedFontSize: 12,
-          selectedItemColor: AppColors.primary,
-          unselectedItemColor: AppColors.textSecondary,
-          selectedIconTheme: const IconThemeData(size: 28),
-          unselectedIconTheme: const IconThemeData(size: 24),
-          showSelectedLabels: true,
+          currentIndex:         safeIndex,
+          backgroundColor:      Colors.transparent,
+          elevation:            0,
+          type:                 BottomNavigationBarType.fixed,
+          selectedFontSize:     12,
+          unselectedFontSize:   12,
+          selectedItemColor:    AppColors.primary,
+          unselectedItemColor:  AppColors.textSecondary,
+          selectedIconTheme:    const IconThemeData(size: 28),
+          unselectedIconTheme:  const IconThemeData(size: 24),
+          showSelectedLabels:   true,
           showUnselectedLabels: true,
           onTap: (index) => setState(() => _currentIndex = index),
           items: entries.map((e) => e.item).toList(),
@@ -242,11 +264,122 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 }
 
+// ── Role Changed Bottom Sheet ─────────────────────────────────────────────────
+
+class _RoleChangedSheet extends StatelessWidget {
+  final String       reason;
+  final VoidCallback onLogout;
+
+  const _RoleChangedSheet({
+    required this.reason,
+    required this.onLogout,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 24),
+              width:  36,
+              height: 4,
+              decoration: BoxDecoration(
+                color:        AppColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+
+            // Icon
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: const BoxDecoration(
+                color: AppColors.warningLight,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.manage_accounts_rounded,
+                color: AppColors.warning,
+                size:  36,
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // Title
+            const Text(
+              'Account Updated',
+              style: TextStyle(
+                fontSize:   20,
+                fontWeight: FontWeight.bold,
+                color:      AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Specific reason
+            Text(
+              reason,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 14,
+                color:    AppColors.textSecondary,
+                height:   1.5,
+              ),
+            ),
+            const SizedBox(height: 6),
+
+            // Sub-text
+            const Text(
+              'Please log in again to continue with your updated access.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color:    AppColors.textDisabled,
+                height:   1.4,
+              ),
+            ),
+            const SizedBox(height: 28),
+
+            // Log Out button
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: onLogout,
+                icon:  const Icon(Icons.logout_rounded, size: 18),
+                label: const Text(
+                  'Log Out',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize:   15,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation:       0,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── Simple data class ─────────────────────────────────────────────────────────
 
 class _NavEntry {
-  final String key;
-  final Widget page;
+  final String                  key;
+  final Widget                  page;
   final BottomNavigationBarItem item;
 
   const _NavEntry({

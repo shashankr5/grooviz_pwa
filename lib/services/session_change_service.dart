@@ -1,8 +1,4 @@
 // lib/services/session_change_service.dart
-//
-// Broadcasts role / department changes to all listening pages so they can
-// reload their state without waiting for the next app-resume cycle.
-
 import 'dart:async';
 
 class SessionChangeService {
@@ -13,6 +9,13 @@ class SessionChangeService {
       StreamController<String>.broadcast();
 
   Stream<String> get onRoleChange => _roleChangeController.stream;
+
+  String _changeReason = 'Your account details have been updated.';
+  String get changeReason => _changeReason;
+
+  void setChangeReason(String reason) {
+    _changeReason = reason;
+  }
 
   void notifyRoleChange(String newRole) {
     if (!_roleChangeController.isClosed) {

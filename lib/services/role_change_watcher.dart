@@ -1,17 +1,4 @@
 // services/role_change_watcher.dart
-//
-// CHANGES IN THIS VERSION:
-//  1. Comparison uses profile JSON blob (saved by ProfileService/ProfilePage)
-//     rather than the departments StringList.
-//  2. 3-second debounce after resume before the API check fires to avoid
-//     spurious logouts on FCM-driven background→resume events.
-//  3. Comparison is symmetric-difference based (Set equality).
-//  4. Saves authoritative dept list + role into dedicated prefs keys at startup.
-//  5. NEW: Added _periodicTimer — checks every 5 minutes while app is in the
-//     foreground so role changes are caught even without a background/resume cycle.
-//  6. NEW: Calls SessionChangeService.instance.notifyRoleChange() when a change
-//     is detected, so all open pages can react immediately before logout.
-
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -29,18 +16,11 @@ class RoleChangeWatcher with WidgetsBindingObserver {
   bool _active   = false;
   bool _checking = false;
 
-  /// Debounce timer — prevents the check from firing during the brief
-  /// background→resume that FCM causes when delivering a notification.
   Timer? _debounce;
-
-  /// Periodic timer — catches role changes while app stays in foreground.
   Timer? _periodicTimer;
 
-  /// How long to wait after resume before we actually hit the API.
   static const _kDebounceDelay = Duration(seconds: 3);
-
-  /// How often to poll while the app is active in the foreground.
-  static const _kPollInterval = Duration(minutes: 5);
+  static const _kPollInterval  = Duration(minutes: 5);
 
   RoleChangeWatcher({required this.onRoleChanged});
 
@@ -49,9 +29,6 @@ class RoleChangeWatcher with WidgetsBindingObserver {
   void startWatching() {
     _active = true;
     WidgetsBinding.instance.addObserver(this);
-
-    // Periodic foreground check so we catch changes without needing a
-    // background/resume cycle (e.g. admin changes role while app is open).
     _periodicTimer?.cancel();
     _periodicTimer = Timer.periodic(_kPollInterval, (_) {
       if (_active) _checkForRoleChange();
@@ -68,7 +45,6 @@ class RoleChangeWatcher with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_active) return;
-
     if (state == AppLifecycleState.resumed) {
       _debounce?.cancel();
       _debounce = Timer(_kDebounceDelay, _checkForRoleChange);
@@ -105,17 +81,13 @@ class RoleChangeWatcher with WidgetsBindingObserver {
 
     try {
       final baseline = await _loadBaseline();
-
       if (baseline.depts.isEmpty && baseline.role == null) return;
 
       final result = await ProfileService().getProfile();
-
-      // Network / server error → skip silently.
       if (result['success'] != true) return;
 
       final profile = result['profile'] as Map<String, dynamic>;
 
-      // Parse fresh depts
       List<String> freshDeptList = [];
       try {
         final raw = profile['departments'];
@@ -129,24 +101,37 @@ class RoleChangeWatcher with WidgetsBindingObserver {
       final freshDeptSet = freshDeptList
           .map((e) => e.trim().toLowerCase())
           .toSet();
-
       final freshRole = profile['role']?.toString().trim();
 
       final deptChanged = !_setsEqual(baseline.depts, freshDeptSet);
-      final roleChanged = (baseline.role != freshRole);
+      final roleChanged = baseline.role != freshRole;
 
       debugPrint('[RoleChangeWatcher] depts: ${baseline.depts} → $freshDeptSet  changed=$deptChanged');
       debugPrint('[RoleChangeWatcher] role:  ${baseline.role} → $freshRole  changed=$roleChanged');
 
       if (deptChanged || roleChanged) {
-        debugPrint('[RoleChangeWatcher] Role/dept change detected — notifying pages then forcing logout');
+        debugPrint('[RoleChangeWatcher] Role/dept change detected — notifying then logging out');
 
-        // Notify all listening pages BEFORE logout so they can react if needed.
+        // Build human-readable reason
+        String reason;
+        if (roleChanged && deptChanged) {
+          reason = 'Your role and department have been updated.';
+        } else if (roleChanged) {
+          reason = 'Your role has been updated.';
+        } else {
+          reason = 'Your department has been updated.';
+        }
+
+        // Store reason so MainNavigation can display it
+        SessionChangeService.instance.setChangeReason(reason);
+
+        // Notify all listening pages
         SessionChangeService.instance.notifyRoleChange(freshRole ?? '');
 
-        // Small delay so pages receive the stream event before navigation clears them.
+        // Small delay so stream listeners receive the event
         await Future.delayed(const Duration(milliseconds: 200));
 
+        // Stop all alerts and clean up
         await OrderAlertService.stop();
         await TaskAlertService.stopAll();
         WebSocketService().disconnect();
@@ -154,8 +139,7 @@ class RoleChangeWatcher with WidgetsBindingObserver {
 
         onRoleChanged();
       } else {
-        // No change — update baseline so profile-page refreshes don't cause
-        // false positives on the next check.
+        // No change — update baseline
         await _saveBaseline(depts: freshDeptList, role: freshRole);
       }
     } catch (e) {

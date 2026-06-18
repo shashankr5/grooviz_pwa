@@ -1,12 +1,4 @@
 // camera_content_page.dart
-//
-// CHANGES:
-//  - Upload mode: once an image is picked it is locked (no "Change Image").
-//    The picker sheet still has Gallery + Camera options for the initial pick.
-//  - Edit mode: "Change Image" button is shown so the photo can be swapped.
-//  - "Cancel / Reset" button is hidden in upload mode — only shown in edit mode.
-//  - Successful edit pops back with `true` so MyContentsPage can refresh
-//    its own list in-place (no navigation to home page).
 
 import 'dart:io';
 import 'dart:convert';
@@ -273,7 +265,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
   }
 
   void _removeImage() {
-    // Only callable in edit mode (remove button only shown there)
+    // Clears the locally selected image in both upload and edit mode
     setState(() {
       _selectedImage = null;
     });
@@ -337,7 +329,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
               color: AppColors.textPrimary,
               onTap: () {
                 Navigator.pop(context);
-                 _pickImage(ImageSource.camera);
+                _pickImage(ImageSource.camera);
               },
             ),
             const SizedBox(height: 12),
@@ -791,8 +783,9 @@ class _CameraContentPageState extends State<CameraContentPage> {
                     ),
                   ),
 
-                // Remove button — only in edit mode so upload mode image is locked
-                if (_isEditMode && _selectedImage != null && !_isUploading)
+                // ── CHANGED: Remove (×) button shown in BOTH upload and edit
+                // mode whenever a local image is selected and not uploading.
+                if (_selectedImage != null && !_isUploading)
                   Positioned(
                     top: 8,
                     right: 8,
@@ -812,8 +805,9 @@ class _CameraContentPageState extends State<CameraContentPage> {
             ),
           ),
 
-          // "Change Image" — only shown in edit mode
-          if (!_isUploading && _isEditMode && hasImage) ...[
+          // ── CHANGED: "Change Image" shown in BOTH upload and edit mode
+          // when an image is present and not uploading.
+          if (!_isUploading && hasImage) ...[
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
