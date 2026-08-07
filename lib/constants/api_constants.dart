@@ -30,14 +30,47 @@ class ApiConstants {
   static const String tasksByRole     = "$baseUrl/ScreenSync_get_tasks_by_role_mobile";
   static const String teamPerformance = "$baseUrl/ScreenSync_get_team_performance_mobile";
 
-  // ── Escalation ────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════
+  // ── ESCALATION — NEW PROFESSIONAL SYSTEM ─────────────────────
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // Lambda/SP name: sp_resolve_escalation_mobile
+  // Endpoint:       ScreenSync_sp_resolve_escalation_mobile ✅
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Get escalation status for a single task (TicketDetailPage)
+  /// Lambda/SP: get_escalation_status_mobile
+  static const String escalationStatus = "$baseUrl/ScreenSync_get_escalation_status_mobile";
+
+  /// Resolve escalation (call after accept, close, or reassign)
+  /// Lambda/SP: sp_resolve_escalation_mobile
+  static const String resolveEscalation = "$baseUrl/ScreenSync_sp_resolve_escalation_mobile";  // ✅ CORRECTED
+
+  /// Check and escalate (called by EventBridge every 1 minute)
+  /// Lambda/SP: sp_check_and_escalate_mobile
+  static const String checkAndEscalate = "$baseUrl/ScreenSync_sp_check_and_escalate_mobile";  // ✅ CORRECTED
+
+  /// Escalate one level (called by checkAndEscalate for each escalate task)
+  /// Lambda/SP: sp_escalate_one_level_mobile
+  static const String escalateOneLevel = "$baseUrl/ScreenSync_sp_escalate_one_level_mobile";  // ✅ CORRECTED
+
+  // ── ESCALATION — LEGACY (Keep for backward compatibility) ──
+  // ═══════════════════════════════════════════════════════════════
+  // These use the OLD cursor-based SPs.
+  // New code should use the 4 endpoints above.
+  // ═══════════════════════════════════════════════════════════════
+
   static const String escalationBadgeCount    = "$baseUrl/ScreenSync_get_escalation_badge_count_mobile";
   static const String escalatedTasks          = "$baseUrl/ScreenSync_get_escalated_tasks_mobile";
   static const String logEscalation           = "$baseUrl/ScreenSync_log_escalation_mobile";
   static const String escalationReport        = "$baseUrl/ScreenSync_get_escalation_report_mobile";
-  static const String checkAndEscalate        = "$baseUrl/ScreenSync_check_and_escalate_mobile";
   static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
   static const String notifyReassign           = "$baseUrl/ScreenSync_notify_reassign_mobile";
+
+  // ── LEGACY CHECK AND ESCALATE (DEPRECATED) ────────────────────
+  // DO NOT USE — this is the OLD cursor-based SP that had the
+  // re-escalation bug. Use checkAndEscalate (above) instead.
+  // static const String legacyCheckAndEscalate = "$baseUrl/ScreenSync_check_and_escalate_mobile";
 
   // ── Food Orders — Room Service Tab ────────────────────────────
   static const String getReadyOrders          = "$baseUrl/ScreenSync_get_ready_orders_for_room_service_mobile";
@@ -51,10 +84,7 @@ class ApiConstants {
   static const String orderSummary          = "$baseUrl/ScreenSync_get_order_summary_mobile";
 
   // ── Rush Hour (F&B) ───────────────────────────────────────────
-  // Read current rush hour state (dedicated read-only Lambda)
-  // Called on page load and app resume by FoodOrdersPage._loadRushHourState()
   static const String getRushHour = "$baseUrl/ScreenSync_get_rush_hour_state_mobile";
-  // Toggle rush hour on/off → reuses updateFoodOrderStatus with status='RUSH_HOUR'
 
   // ── Camera / Content ──────────────────────────────────────────
   static const String getRooms         = "$baseUrl/ScreenSync_get_rooms_for_mobile";

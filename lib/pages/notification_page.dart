@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../theme/app_typography.dart';
 
 class NotificationPage extends StatelessWidget {
   const NotificationPage({super.key});
@@ -7,7 +8,7 @@ class NotificationPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Notifications", style: AppTypography.appBarTitle),
+        title: Text("Notifications", style: AppTypography.appBarTitle),
       ),
       backgroundColor: const Color(0xfffaf8f5),
 

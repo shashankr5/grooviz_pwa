@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 import '../constants/api_timeouts.dart';
 
 class UploadService {
@@ -83,10 +84,9 @@ class UploadService {
         "url": cdnUrl, // CDN URL ready for TV playback
       };
     } on DioException catch (e) {
-      final String message = e.response?.data?.toString() ?? e.message ?? e.toString();
-      return {"success": false, "message": "Network error: $message"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     } catch (e) {
-      return {"success": false, "message": e.toString()};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 }

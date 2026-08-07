@@ -11,6 +11,7 @@
 
 import 'dart:async';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'unified_alert_foreground_task.dart';
 import 'task_alert_service.dart';
 
@@ -22,6 +23,8 @@ class OrderAlertService {
 
   static Stream<void> get onNewOrder => _newOrderController.stream;
   static void notifyNewOrder() => _newOrderController.add(null);
+
+  static int get pendingOrderCount => _pendingOrderCount;
 
   // ── Public API ──────────────────────────────────────────────────────────
 
@@ -57,19 +60,21 @@ class OrderAlertService {
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
-  static int get _totalPending =>
-      _pendingOrderCount + TaskAlertService.totalPending;
-
   static Future<bool> _ensureRunning({
     required String soundName,
     required String notificationTitle,
     required String notificationText,
   }) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(AlertSoundKey.prefKey, soundName);
+      await prefs.setString(AlertSoundKey.loopKey, 'true');
+
       final isRunning = await FlutterForegroundTask.isRunningService;
-      if (!isRunning) {
-        // FIX-4: Pass sound name as taskData — read synchronously by handler.
-        // No SharedPreferences write needed, no race condition possible.
+      if (isRunning) {
+        await FlutterForegroundTask.restartService();
+        print('OrderAlertService: foreground service restarted (sound=$soundName)');
+      } else {
         await FlutterForegroundTask.startService(
           notificationTitle: notificationTitle,
           notificationText:  notificationText,
@@ -85,16 +90,19 @@ class OrderAlertService {
   }
 
   static Future<void> _reevaluate() async {
-    if (_totalPending == 0) {
-      await _stopService();
-    } else {
-      // Restart if not running — covers cold-launch and app-resume with
-      // pending orders (FIX-1 from previous review).
+    if (_pendingOrderCount > 0) {
       await _ensureRunning(
         soundName:         AlertSoundKey.food,
         notificationTitle: 'New Order',
         notificationText:  'Waiting for acceptance...',
       );
+    } else {
+      // 0 food orders pending. Delegate to TaskAlertService if tasks exist; else stop.
+      if (TaskAlertService.totalPending > 0) {
+        await TaskAlertService.reevaluate();
+      } else {
+        await _stopService();
+      }
     }
   }
 
@@ -108,4 +116,4 @@ class OrderAlertService {
       print('OrderAlertService._stopService error: $e');
     }
   }
-}
+}

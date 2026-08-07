@@ -61,6 +61,16 @@ dependencies:
   # for phone dialer, browser
   url_launcher: ^6.2.5
 
+  # ESC/POS Bluetooth thermal printer — Bluetooth Classic (SPP), BLE, USB, Network
+  # Published May 2025, actively maintained, 200+ printer profiles.
+  # Replaces the custom Kotlin BluetoothPrinterChannel bridge.
+  unified_esc_pos_printer: any
+
+  # Deep-links to system Bluetooth settings on Android/iOS.
+  # Used instead of openAppSettings() so the user lands on the BT toggle,
+  # not the app permissions page.
+  app_settings: ^5.1.1
+
 
 dev_dependencies:
   flutter_test:
@@ -84,7 +94,7 @@ flutter:
 
   assets:
     - assets/icons/
-    - assets/audio/bell_notification.wav
+    - assets/audio/
 
 
   # An image asset can refer to one or more resolution-specific "variants", see

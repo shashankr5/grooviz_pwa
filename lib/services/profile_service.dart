@@ -5,6 +5,7 @@ import 'dart:convert';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 
 class ProfileService {
   final Dio _dio;
@@ -83,6 +84,12 @@ class ProfileService {
               : int.tryParse("$enterpriseId") ?? 0);
         }
 
+        // store enterprise_name
+        final enterpriseName = profile["enterprise_name"];
+        if (enterpriseName != null && enterpriseName.toString().trim().isNotEmpty) {
+          await UserSessionHelper.saveEnterpriseName(enterpriseName.toString().trim());
+        }
+
         // store profile image if needed: profile["profile_picture"]
       } catch (e) {
         dev.log("⚠️ Profile save error: $e");
@@ -125,10 +132,10 @@ class ProfileService {
 
     } on DioException catch (e) {
       dev.log("❌ Dio Error: ${e.message}");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     } catch (e) {
       dev.log("⚠️ Exception: $e");
-      return {"success": false, "message": "Exception: $e"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 

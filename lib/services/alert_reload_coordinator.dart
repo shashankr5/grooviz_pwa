@@ -64,9 +64,18 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
 
   // ── App lifecycle ───────────────────────────────────────────────────────
 
+  // Guards against notification-shade pulls (inactive→resumed without paused).
+  bool _didPause = false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _didPause = true;
+      return;
+    }
     if (state == AppLifecycleState.resumed) {
+      if (!_didPause) return; // shade pull — skip
+      _didPause = false;
       print('AlertReloadCoordinator: app resumed — polling');
       _safetyPoll();
     }

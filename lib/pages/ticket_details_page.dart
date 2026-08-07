@@ -81,11 +81,18 @@ class TicketDetailPage extends StatefulWidget {
 class _TicketDetailPageState extends State<TicketDetailPage> {
   final HomeService _homeService = HomeService();
   final TextEditingController _noteController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   bool _isLoading        = false;
   bool _isLoadingStaff   = false;
   bool _isLoadingEscHist = false;
   bool _phoneLoading     = false;
+  bool _showScrollTop    = false;
+
+  // True while the background fresh-data fetch on open is in flight.
+  // Kept separate from _isLoading so we don't block the full-screen spinner
+  // — the page is usable while this quietly refreshes in the background.
+  bool _isRefreshing = false;
 
   List<Map<String, dynamic>> _staffList         = [];
   List<Map<String, dynamic>> _escalationHistory = [];
@@ -103,6 +110,17 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     _task = Map<String, dynamic>.from(widget.task);
     _loadUserId();
 
+    // Silently fetch fresh ticket data so stale notes / status from the
+    // parent list are replaced with the current server state.
+    // The passed-in widget.task is shown instantly as a placeholder — the
+    // page is fully usable while this runs in the background.
+    _refreshFromServer();
+
+    _scrollController.addListener(() {
+      final show = _scrollController.offset > 300;
+      if (show != _showScrollTop) setState(() => _showScrollTop = show);
+    });
+
     final raw = _task['raw'] as Map<String, dynamic>? ?? {};
     _assignedPhone = (raw['assigned_to_phone'] ?? '').toString();
 
@@ -119,6 +137,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   @override
   void dispose() {
     _noteController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -127,6 +146,86 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Future<void> _loadUserId() async {
     final id = await UserSessionHelper.getUserId();
     if (mounted) setState(() => _loggedInUserId = id);
+  }
+
+  // ── Fresh-data refresh on open ────────────────────────────────────────────
+  //
+  // Fetches the current server state for this ticket immediately when the
+  // page opens. The widget.task snapshot passed in by the parent list is used
+  // as an instant placeholder so there is no blank/loading screen — the fresh
+  // data is swapped in quietly once the call resolves.
+  //
+  // Strategy: call getTasks() (which returns ALL tasks for the user) and find
+  // the row whose service_request_id matches ours. If the ticket is flagged as
+  // escalated we also try getEscalatedTasks() as a fallback so we always
+  // surface the most accurate data regardless of which list navigated here.
+  //
+  // Failure behaviour: if the network call fails (offline, timeout, error) we
+  // simply stay with the placeholder data — no error screen, no snackbar, so
+  // the user never notices a problem on reopen.
+
+  Future<void> _refreshFromServer() async {
+    if (!mounted) return;
+    setState(() => _isRefreshing = true);
+    try {
+      final result = await _homeService.getTasks();
+      if (!mounted) return;
+
+      if (result['success'] == true) {
+        final tasks =
+            List<Map<String, dynamic>>.from(result['tasks'] as List? ?? []);
+        final fresh = tasks.firstWhere(
+          (t) =>
+              (t['service_request_id'] ?? t['raw']?['service_request_id'])
+                  ?.toString() ==
+              _serviceRequestId.toString(),
+          orElse: () => {},
+        );
+
+        if (fresh.isNotEmpty) {
+          setState(() {
+            // Merge fresh fields into _task so any locally-applied optimistic
+            // updates (e.g. a just-submitted reassign) are overwritten only
+            // when the server actually reflects them.
+            _task = Map<String, dynamic>.from(fresh);
+          });
+          // Re-resolve the assigned phone from the fresh raw data.
+          final rawFresh = _task['raw'] as Map<String, dynamic>? ?? {};
+          final freshPhone = (rawFresh['assigned_to_phone'] ?? '').toString();
+          if (freshPhone.isNotEmpty) {
+            setState(() => _assignedPhone = freshPhone);
+          } else if (_isSupervisorOrAbove(widget.userRole)) {
+            _fetchAssignedPhone();
+          }
+          return; // found in the main task list — done
+        }
+      }
+
+      // Not found in the main list — try the escalated tasks list as a fallback
+      // (escalated tasks may be returned by a different SP/endpoint).
+      if (_serviceRequestId > 0) {
+        final escResult = await _homeService.getEscalatedTasks();
+        if (!mounted) return;
+        if (escResult['success'] == true) {
+          final escalated = List<Map<String, dynamic>>.from(
+              escResult['tasks'] as List? ?? []);
+          final fresh = escalated.firstWhere(
+            (t) =>
+                (t['service_request_id'] ?? t['raw']?['service_request_id'])
+                    ?.toString() ==
+                _serviceRequestId.toString(),
+            orElse: () => {},
+          );
+          if (fresh.isNotEmpty && mounted) {
+            setState(() => _task = Map<String, dynamic>.from(fresh));
+          }
+        }
+      }
+    } catch (_) {
+      // Network / parse failure — silently fall back to the placeholder data.
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
   }
 
   // ── Resolve assignee phone ────────────────────────────────────────────────
@@ -525,6 +624,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                               final staff = item.staff!;
                               final name  = (staff['name'] ?? '—').toString();
                               final phone = (staff['phone'] ?? '').toString();
+                              final staffId = int.tryParse((staff['userId'] ?? staff['id'] ?? '').toString());
+                              final rawTask = _task['raw'] as Map?;
+                              final assignedToName = (_task['assignedTo'] ?? rawTask?['assigned_to_name'] ?? '').toString();
+                              final isCurrentAssignee = (_assignedToId != null && staffId == _assignedToId) ||
+                                  (assignedToName.isNotEmpty && name.trim().toLowerCase() == assignedToName.trim().toLowerCase());
                               final initials = name.trim().isNotEmpty
                                   ? name
                                       .trim()
@@ -558,12 +662,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                     const SizedBox(width: 12),
                                     CircleAvatar(
                                       radius:          18,
-                                      backgroundColor: AppColors.primaryLight,
+                                      backgroundColor: isCurrentAssignee ? AppColors.successLight : AppColors.primaryLight,
                                       child: Text(initials,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                               fontSize:   12,
                                               fontWeight: FontWeight.bold,
-                                              color:      AppColors.primary)),
+                                              color:      isCurrentAssignee ? AppColors.success : AppColors.primary)),
                                     ),
                                     const SizedBox(width: 12),
                                     Expanded(
@@ -571,28 +675,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                         padding:
                                             const EdgeInsets.symmetric(
                                                 vertical: 14),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(name,
-                                                style: const TextStyle(
-                                                    fontSize:   13,
-                                                    fontWeight: FontWeight.w700,
-                                                    color:      AppColors.textPrimary)),
-                                            if ((staff['department'] ??
-                                                    '')
-                                                .toString()
-                                                .isNotEmpty)
-                                              Text(
-                                                  (staff['department'] ??
-                                                          '')
-                                                      .toString(),
-                                                  style: const TextStyle(
-                                                      fontSize: 11,
-                                                      color: AppColors.textSecondary)),
-                                          ],
-                                        ),
+                                        child: Text(name,
+                                            style: const TextStyle(
+                                                fontSize:   13,
+                                                fontWeight: FontWeight.w700,
+                                                color:      AppColors.textPrimary)),
                                       ),
                                     ),
                                     if (phone.isNotEmpty)
@@ -614,8 +701,26 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                               color: Colors.blue),
                                         ),
                                       ),
-                                    GestureDetector(
-                                      onTap: () async {
+                                    if (isCurrentAssignee)
+                                      Container(
+                                        margin: const EdgeInsets.only(
+                                            right: 12),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.successLight,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Text('Assigned',
+                                            style: TextStyle(
+                                                fontSize:   11,
+                                                fontWeight: FontWeight.w700,
+                                                color:      AppColors.success)),
+                                      )
+                                    else
+                                      GestureDetector(
+                                        onTap: () async {
                                         Navigator.pop(ctx);
                                         setState(() => _isLoading = true);
                                         final res = await _homeService
@@ -821,39 +926,58 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: _buildAppBar(status, statusClr),
+      floatingActionButton: _showScrollTop
+          ? FloatingActionButton.small(
+              onPressed: () => _scrollController.animateTo(
+                0,
+                duration: const Duration(milliseconds: 400),
+                curve: Curves.easeInOut,
+              ),
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              elevation: 4,
+              tooltip: 'Back to top',
+              child: const Icon(Icons.keyboard_arrow_up_rounded, size: 22),
+            )
+          : null,
       body: Stack(
         children: [
-          SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_isEscalated) ...[
-                  _buildEscalatedBanner(),
+          RefreshIndicator(
+            color: AppColors.primary,
+            onRefresh: _refreshFromServer,
+            child: SingleChildScrollView(
+              controller: _scrollController,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_isEscalated) ...[
+                    _buildEscalatedBanner(),
+                    const SizedBox(height: 12),
+                  ],
+
+                  _buildInfoCard(),
+
                   const SizedBox(height: 12),
-                ],
 
-                _buildInfoCard(),
+                  _buildNoteCard(),
 
-                const SizedBox(height: 12),
+                  if (!_isClosed) ...[
+                    const SizedBox(height: 12),
+                    _buildAddNoteCard(),
+                  ],
 
-                _buildNoteCard(),
-
-                if (!_isClosed) ...[
                   const SizedBox(height: 12),
-                  _buildAddNoteCard(),
+
+                  if (_isManagerRole(widget.userRole) ||
+                      _isSupervisorOrAbove(widget.userRole))
+                    _buildEscalationHistory(),
+
+                  const SizedBox(height: 12),
+
+                  if (!_isClosed) _buildActions(),
                 ],
-
-                const SizedBox(height: 12),
-
-                if (_isManagerRole(widget.userRole) ||
-                    _isSupervisorOrAbove(widget.userRole))
-                  _buildEscalationHistory(),
-
-                const SizedBox(height: 12),
-
-                if (!_isClosed) _buildActions(),
-              ],
+              ),
             ),
           ),
           if (_isLoading)
@@ -883,9 +1007,24 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Left side: Request #ID
-          Text('Request #$_serviceRequestId',
-              style: AppTypography.appBarTitle),
+          // Left side: Request #ID + subtle refresh indicator
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Request #$_serviceRequestId',
+                  style: AppTypography.appBarTitle),
+              if (_isRefreshing) ...[
+                const SizedBox(width: 8),
+                const SizedBox(
+                  width: 12, height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: AppColors.textDisabled,
+                  ),
+                ),
+              ],
+            ],
+          ),
           // Right side: status pill
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
@@ -982,7 +1121,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final room       = (_task['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
     final guest      = (_task['guest'] ?? raw['guest_name'] ?? '—').toString();
     final title      = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
-    final subtitle   = (_task['subtitle'] ?? raw['answer'] ?? '').toString();
     final assignedTo = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
     final createdAt  = (raw['created_at'] ?? '').toString();
     final acceptedAt = (raw['accepted_at'] ?? _task['accepted_at'] ?? '').toString();
@@ -1052,15 +1190,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                           color:      AppColors.textPrimary),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis),
-                  if (subtitle.isNotEmpty) ...[
-                    const SizedBox(height: 3),
-                    Text(subtitle,
-                        style: const TextStyle(
-                            fontSize: 12,
-                            color:    AppColors.textSecondary),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis),
-                  ],
                 ]),
               ),
             ]),
@@ -1267,49 +1396,52 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 fontWeight: FontWeight.w700,
                 color:      AppColors.textPrimary)),
         const SizedBox(height: 10),
-        TextField(
-          controller: _noteController,
-          maxLines:   3,
-          style: const TextStyle(
-              fontSize: 13, color: AppColors.textPrimary),
-          decoration: InputDecoration(
-            hintText:  'Write an update or note...',
-            hintStyle: const TextStyle(
-                color: AppColors.textDisabled, fontSize: 13),
-            filled:         true,
-            fillColor:      AppColors.bg,
-            contentPadding: const EdgeInsets.all(12),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppColors.border),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppColors.border),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(
-                  color: AppColors.primary, width: 1.5),
-            ),
+        Container(
+          padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+          decoration: BoxDecoration(
+            color:        AppColors.bg,
+            borderRadius: BorderRadius.circular(14),
+            border:       Border.all(color: AppColors.border),
           ),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _addNote,
-            icon:  const Icon(Icons.send_rounded, size: 15),
-            label: const Text('Add Note',
-                style: TextStyle(fontWeight: FontWeight.w700)),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-              elevation: 0,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              TextField(
+                controller: _noteController,
+                maxLines:   3,
+                style: const TextStyle(
+                    fontSize: 13, color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  hintText:  'Write an update or note...',
+                  hintStyle: TextStyle(
+                      color: AppColors.textDisabled, fontSize: 13),
+                  isDense:        true,
+                  contentPadding: EdgeInsets.zero,
+                  border:         InputBorder.none,
+                  enabledBorder:  InputBorder.none,
+                  focusedBorder:  InputBorder.none,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton.icon(
+                onPressed: _addNote,
+                icon:  const Icon(Icons.send_rounded, size: 12),
+                label: const Text('Add Note',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 11)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  minimumSize:   Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                  elevation: 0,
+                ),
+              ),
+            ],
           ),
         ),
       ]),

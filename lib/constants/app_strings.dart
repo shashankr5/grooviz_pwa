@@ -84,7 +84,7 @@ class UserRoles {
 class AppStrings {
   AppStrings._();
 
-  static const String appName       = 'ScreenSync';
+  static const String appName       = 'Grooviz Connect';
   static const String cancel        = 'Cancel';
   static const String confirm       = 'Confirm';
   static const String retry         = 'Retry';

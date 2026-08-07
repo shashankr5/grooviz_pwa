@@ -59,6 +59,17 @@ class UserSessionHelper {
     return prefs.getInt(StorageKeys.enterpriseId);
   }
 
+  // ---------- ENTERPRISE NAME ----------
+  static Future<void> saveEnterpriseName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(StorageKeys.enterpriseName, name);
+  }
+
+  static Future<String?> getEnterpriseName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(StorageKeys.enterpriseName);
+  }
+
   // ---------- DEPARTMENTS ----------
   static Future<void> saveDepartments(List<String> depts) async {
     final prefs = await SharedPreferences.getInstance();
@@ -187,6 +198,27 @@ class UserSessionHelper {
     return prefs.getBool(StorageKeys.isLoggedIn) ?? false;
   }
 
+  // ---------- INITIAL BASELINE FOR ROLE CHANGE WATCHER ----------
+  static Future<void> saveInitialRole(String role) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(StorageKeys.initialRole, role);
+  }
+
+  static Future<String?> getInitialRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(StorageKeys.initialRole);
+  }
+
+  static Future<void> saveInitialDepartments(List<String> depts) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(StorageKeys.initialDepartments, depts);
+  }
+
+  static Future<List<String>> getInitialDepartments() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(StorageKeys.initialDepartments) ?? [];
+  }
+
   // ---------- CLEAR EVERYTHING ----------
   static Future<void> clearSession() async {
     final prefs = await SharedPreferences.getInstance();
@@ -200,12 +232,15 @@ class UserSessionHelper {
     await prefs.remove(StorageKeys.email);
     await prefs.remove(StorageKeys.phone);
     await prefs.remove(StorageKeys.enterpriseId);
+    await prefs.remove(StorageKeys.enterpriseName);
     await prefs.remove(StorageKeys.departments);
     await prefs.remove(StorageKeys.userRole);
     await prefs.remove(StorageKeys.userRoleId);
     await prefs.remove(StorageKeys.userProfile);
     await prefs.remove(StorageKeys.userProfileUserId);
     await prefs.remove(StorageKeys.isLoggedIn);
+    await prefs.remove(StorageKeys.initialRole);
+    await prefs.remove(StorageKeys.initialDepartments);
 
     // Restore installation ID and device identifier
     if (installationId != null) {

@@ -199,3 +199,76 @@ class SkeletonFoodOrderCard extends StatelessWidget {
     );
   }
 }
+
+/// Composite skeleton matching the collapsed guest checkout card dimensions.
+/// Used as the loading placeholder on GuestCheckoutPage and GuestCheckoutHistoryPage.
+class SkeletonCheckoutCard extends StatelessWidget {
+  const SkeletonCheckoutCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Avatar placeholder
+          SkeletonLoader(
+            width: 44,
+            height: 44,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          const SizedBox(width: 12),
+          // Name + room + time
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SkeletonLoader(
+                  width: 130,
+                  height: 14,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    SkeletonLoader(
+                      width: 52,
+                      height: 20,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    const SizedBox(width: 8),
+                    SkeletonLoader(
+                      width: 90,
+                      height: 12,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SkeletonLoader(
+                  width: 80,
+                  height: 11,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          // Status chip placeholder
+          SkeletonLoader(
+            width: 80,
+            height: 26,
+            borderRadius: BorderRadius.circular(20),
+          ),
+        ],
+      ),
+    );
+  }
+}

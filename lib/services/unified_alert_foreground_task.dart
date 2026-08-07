@@ -14,6 +14,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -40,6 +41,7 @@ class AlertSoundKey {
 
 class UnifiedAlertTaskHandler extends TaskHandler {
   AudioPlayer? _player;
+  AudioSession? _audioSession;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -54,9 +56,27 @@ class UnifiedAlertTaskHandler extends TaskHandler {
 
       // Copy asset to temp dir if not already there
       if (!file.existsSync()) {
-        final byteData = await rootBundle.load(assetPath);
+        ByteData byteData;
+        try {
+          byteData = await rootBundle.load(assetPath);
+        } catch (_) {
+          byteData = await rootBundle.load('assets/audio/bell_notification.wav');
+        }
         await file.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
       }
+
+      // ── Configure AudioSession for Operational Alerts ────────────────────
+      _audioSession = await AudioSession.instance;
+      await _audioSession!.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.sonification,
+          usage: AndroidAudioUsage.notificationRingtone,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
+        androidWillPauseWhenDucked: false,
+      ));
+      await _audioSession!.setActive(true);
 
       _player = AudioPlayer();
       await _player!.setFilePath(file.path);
@@ -89,6 +109,8 @@ class UnifiedAlertTaskHandler extends TaskHandler {
       await _player?.stop();
       await _player?.dispose();
       _player = null;
+      await _audioSession?.setActive(false);
+      _audioSession = null;
     } catch (_) {}
   }
 

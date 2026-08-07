@@ -7,6 +7,7 @@ import '../utils/date_formatter.dart';
 import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 
 class HomeService {
   final Dio _dio;
@@ -51,7 +52,7 @@ class HomeService {
       final payload = {
         "user_id":       userId,
         "enterprise_id": enterpriseId,
-        "stage":         "dev",
+        "stage":         AppConfig.stage,
       };
 
       dev.log("Fetching tasks...");
@@ -82,19 +83,30 @@ class HomeService {
     }
   }
 
+  /// Returns [value] if it is a non-null, non-empty string; otherwise null.
+  /// Used so `??` fallbacks work correctly when the API returns "" instead of null.
+  static String? _nonEmpty(dynamic value) {
+    if (value == null) return null;
+    final s = value.toString().trim();
+    return s.isEmpty ? null : s;
+  }
+
   static List<Map<String, dynamic>> _mapTasks(List raw) {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
       return {
         "service_request_id": m["service_request_id"],
-        "room": (m["room_id"] ?? m["requested_room"] ?? "-").toString(),
+        // room_number is the human-facing string (e.g. "101") from the SP.
+        // room_id is the integer FK — never show to the user.
+        // Priority: room_number > requested_room > room_id fallback.
+        "room": (m["room_number"] ?? m["requested_room"] ?? m["room_id"] ?? "-").toString(),
         "status":      _statusText(m["status"], m["closed"]),
         "statusColor": _statusColor(m["status"]),
         "title":       m["question"] ?? "Service Request",
         "subtitle":    m["answer"]   ?? "Awaiting response",
         "description": m["answer"]   ?? "",
         "time":        _formatTime(m["timestamp"]),
-        "guest":       m["guest_name"] ?? "Unknown Guest",
+        "guest":       _nonEmpty(m["guest_name"]) ?? "Unknown Guest",
         "guestNote":
             "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
         "assignedTo": (m["assigned_to_name"] ??
@@ -148,7 +160,7 @@ class HomeService {
   }
 
   static String _formatTime(String? timestamp) {
-    return DateFormatter.formatTimeDayMonth(timestamp);
+    return DateFormatter.formatDateTimeAmPm(timestamp);
   }
 
   Future<void> triggerEscalationCheck() async {
@@ -161,7 +173,7 @@ class HomeService {
       final payload = {
         "user_id":       userId,
         "enterprise_id": enterpriseId,
-        "stage":         "dev",
+        "stage":         AppConfig.stage,
       };
 
       dev.log("📤 Triggering escalation check...");
@@ -185,7 +197,7 @@ class HomeService {
         return {"success": false, "message": "User not logged in", "staff": []};
       }
 
-      final payload = {"user_id": userId, "stage": "dev"};
+      final payload = {"user_id": userId, "stage": AppConfig.stage};
 
       dev.log("📤 Fetching staff list...");
       final response = await _dio.post(ApiConstants.staffList, data: payload);
@@ -266,7 +278,7 @@ class HomeService {
         "user_id":     userId,
         "task_id":     ticketId,
         "reassign_to": assignedUserId,
-        "stage":       "dev",
+        "stage":       AppConfig.stage,
       };
 
       final response =
@@ -315,7 +327,7 @@ class HomeService {
         "department_id": departmentId,
         "task_name":     taskName,
         "room_id":       roomId,
-        "stage":         "dev",
+        "stage":         AppConfig.stage,
       };
 
       dev.log("📤 Notifying reassign — task:$taskId → user:$assignedTo");
@@ -349,7 +361,7 @@ class HomeService {
         "user_id":            userId,
         "service_request_id": serviceRequestId,
         "note_text":          noteText,
-        "stage":              "dev",
+        "stage":              AppConfig.stage,
       };
 
       final response = await _dio.post(ApiConstants.addNotes, data: payload);
@@ -413,7 +425,7 @@ class HomeService {
         "service_request_id": serviceRequestId,
         "department_id":      departmentId,
         "enterprise_id":      enterpriseId,
-        "stage":              "dev",
+        "stage":              AppConfig.stage,
       };
 
       final response =
@@ -477,7 +489,7 @@ class HomeService {
         "task_id":       taskId,
         "department_id": departmentId,
         "enterprise_id": enterpriseId,
-        "stage":         "dev",
+        "stage":         AppConfig.stage,
       };
 
       final response = await _dio.post(ApiConstants.acceptTask, data: payload);
@@ -499,13 +511,13 @@ class HomeService {
         };
       }
 
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
+      final flag = statusList[0]["status"]?.toString().trim().toUpperCase();
+      final msg  = statusList[0]["message"]?.toString();
 
-      if (flag != "S") {
+      if (flag != "S" && flag != "SUCCESS" && flag != "1" && flag != "200" && flag != "TRUE") {
         return {
           "success": false,
-          "message": msg ?? "Failed",
+          "message": (msg != null && msg.isNotEmpty) ? msg : "Failed to accept task",
           "updatedTask": null,
         };
       }
@@ -537,7 +549,7 @@ class HomeService {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null) return 0;
 
-      final payload = {"user_id": userId, "stage": "dev"};
+      final payload = {"user_id": userId, "stage": AppConfig.stage};
 
       dev.log("📤 Fetching escalation badge count...");
       final response = await _dio.post(
@@ -576,7 +588,7 @@ class HomeService {
       final payload = {
         "user_id": userId,
         if (departmentId != null) "department_id": departmentId,
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Fetching escalated tasks...");
@@ -677,7 +689,7 @@ class HomeService {
       final payload = {
         "user_id":            userId,
         "service_request_id": serviceRequestId,
-        "stage":              "dev",
+        "stage":              AppConfig.stage,
       };
 
       dev.log("📤 Fetching escalation history — sr:$serviceRequestId");
@@ -750,7 +762,7 @@ class HomeService {
         if (targetUserId  != null) "target_user_id": targetUserId,
         "month": month,
         "year":  year,
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Fetching team performance — $month/$year");
@@ -817,7 +829,7 @@ class HomeService {
         if (departmentId != null) "department_id": departmentId,
         "from_date": "${fromDate.year}-${fromDate.month.toString().padLeft(2,'0')}-${fromDate.day.toString().padLeft(2,'0')}",
         "to_date":   "${toDate.year}-${toDate.month.toString().padLeft(2,'0')}-${toDate.day.toString().padLeft(2,'0')}",
-        "stage":     "dev",
+        "stage":     AppConfig.stage,
       };
 
       dev.log("📤 Fetching escalation report...");
@@ -864,7 +876,7 @@ class HomeService {
         return {"success": false, "message": "User ID missing"};
       }
 
-      final payload = {"user_id": userId, "stage": "dev"};
+      final payload = {"user_id": userId, "stage": AppConfig.stage};
 
       dev.log("📤 Fetching READY Orders for Room Service");
       final response =
@@ -923,7 +935,7 @@ class HomeService {
         "user_id":         userId,
         "order_number":    orderNumber,
         "delivery_action": action,
-        "stage":           "dev",
+        "stage":           AppConfig.stage,
       };
 
       dev.log("📤 Updating Room Service Status — $action for $orderNumber");
@@ -984,7 +996,7 @@ class HomeService {
         return {"success": false, "message": "User ID missing"};
       }
 
-      final payload = {"user_id": userId, "stage": "dev"};
+      final payload = {"user_id": userId, "stage": AppConfig.stage};
 
       dev.log("📤 Fetching ACCEPTED Orders for Room Service");
       final response =
@@ -1036,7 +1048,7 @@ class HomeService {
         return {"success": false, "message": "User ID missing"};
       }
 
-      final payload = {"user_id": userId, "stage": "dev"};
+      final payload = {"user_id": userId, "stage": AppConfig.stage};
 
       dev.log("📤 Fetching DELIVERED Orders for Room Service");
       final response =

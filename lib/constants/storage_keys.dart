@@ -23,6 +23,9 @@ class StorageKeys {
   /// `int` — the enterprise (organisation) ID for the logged-in user.
   static const enterpriseId = 'enterprise_id';
 
+  /// `String` — the enterprise (organisation) name for the logged-in user.
+  static const enterpriseName = 'enterprise_name';
+
   /// `List<String>` — departments the user belongs to.
   static const departments = 'departments';
 
@@ -41,6 +44,12 @@ class StorageKeys {
 
   /// `bool` — whether a user is currently authenticated.
   static const isLoggedIn = 'is_logged_in';
+
+  /// `String` — authenticated initial baseline role (written once at login/seed lock).
+  static const initialRole = 'initial_role';
+
+  /// `List<String>` — authenticated initial baseline departments (written once at login/seed lock).
+  static const initialDepartments = 'initial_departments';
 
   // ─── Device Identity (DeviceInfo / UserSessionHelper) ────────────────────
 

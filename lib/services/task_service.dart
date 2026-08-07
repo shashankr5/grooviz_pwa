@@ -2,6 +2,7 @@ import 'dart:developer' as dev;
 import 'package:dio/dio.dart';
 import 'dart:convert';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
 import 'home_service.dart';
@@ -150,7 +151,7 @@ class TaskService {
       dev.log("❌ ERROR (fetchTaskSummary): $e");
       return {
         "success": false,
-        "message": "Exception: $e",
+        "message": ErrorHandler.friendlyMessage(e),
       };
     }
   }

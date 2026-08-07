@@ -1,23 +1,22 @@
 // services/fcm_background.dart
-//
-// CHANGES IN THIS VERSION:
-//  FIX-1/2/3 from previous version kept.
-//  NEW: Added PULSE case — starts service if not running (sound plays on
-//       next foreground onStart via FCM).
-//  NEW: Added ESCALATION_ALERT case — starts service (plays once on foreground).
-//  NEW: Added ACCEPTED case — stops service immediately (cross-device stop).
 
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'unified_alert_foreground_task.dart';
+import 'notification_constants.dart';
+import 'notification_message_builder.dart';
 
 void _initForegroundTask() {
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
       channelId: 'order_alert_service',
-      channelName: 'Order Alert Service',
-      channelDescription: 'Plays alert sound for new orders and tasks',
+      channelName: 'ScreenSync Alerts',
+      channelDescription: 'Plays alert sound for new orders, service tasks, and delivery',
       channelImportance: NotificationChannelImportance.HIGH,
       priority: NotificationPriority.HIGH,
     ),
@@ -33,14 +32,12 @@ void _initForegroundTask() {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers — safe to call from background isolate (no singleton state)
-// ─────────────────────────────────────────────────────────────────────────────
-
 Future<void> _startServiceIfNeeded() async {
   try {
     final isRunning = await FlutterForegroundTask.isRunningService;
-    if (!isRunning) {
+    if (isRunning) {
+      await FlutterForegroundTask.restartService();
+    } else {
       await FlutterForegroundTask.startService(
         notificationTitle: 'New Alert',
         notificationText: 'Tap to view',
@@ -63,122 +60,86 @@ Future<void> _stopServiceIfRunning() async {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Background handler entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   _initForegroundTask();
 
-  final type      = (message.data['type'] ?? '').toString();
-  final stopAlert = message.data['stop_alert'] == 'true';
+  final data      = message.data;
+  final type      = (data['type'] ?? '').toString();
+  final stopAlert = data['stop_alert'] == 'true';
   print('Background FCM | type=$type | stop_alert=$stopAlert');
 
   switch (type) {
-
-    // ── Food order alerts ──────────────────────────────────────────────────
-
     case 'NEW_FOOD_ORDER':
-      await _startServiceIfNeeded();
-      return;
-
-    case 'ORDER_ACCEPTED':
-    case 'ORDER_CANCELLED':
-      if (stopAlert) {
-        await _stopServiceIfRunning();
-        print('BG: $type – service stopped (stop_alert=true)');
-      } else {
-        print('BG: $type – service will reset on app foreground');
-      }
-      return;
-
-    case 'ORDER_DELIVERED':
-      await _stopServiceIfRunning();
-      return;
-
-    case 'ORDER_STATUS_CHANGED':
-      final orderStatus = (message.data['order_status'] ?? message.data['status'] ?? '').toString().toUpperCase();
-      if (orderStatus == 'READY') {
-        await _startServiceIfNeeded();
-      }
-      return;
-
+    case 'NEW_SERVICE_TASK':
+    case 'NEW_DELIVERY_TASK':
     case 'ORDER_READY':
     case 'FOOD_ORDER_READY':
     case 'DELIVERY_READY':
     case 'DELIVERY_NOTIFICATION':
-      await _startServiceIfNeeded();
-      return;
-
-    // ── Service task alerts ────────────────────────────────────────────────
-
-    case 'NEW_SERVICE_TASK':
-      await _startServiceIfNeeded();
-      return;
-
-    case 'SERVICE_TASK_ACCEPTED':
-      if (stopAlert) {
-        await _stopServiceIfRunning();
-        print('BG: SERVICE_TASK_ACCEPTED – service stopped (stop_alert=true)');
-      } else {
-        print('BG: SERVICE_TASK_ACCEPTED – will reset on app foreground');
-      }
-      return;
-
-    // ── Delivery alerts ────────────────────────────────────────────────────
-
-    case 'NEW_DELIVERY_TASK':
-      await _startServiceIfNeeded();
-      return;
-
-    case 'DELIVERY_ACCEPTED':
-      if (stopAlert) {
-        await _stopServiceIfRunning();
-        print('BG: DELIVERY_ACCEPTED – service stopped (stop_alert=true)');
-      } else {
-        print('BG: DELIVERY_ACCEPTED – will reset on app foreground');
-      }
-      return;
-
-    case 'DELIVERY_DELIVERED':
-      await _stopServiceIfRunning();
-      return;
-
-    // ── NEW: Lambda pulse ────────────────────────────────────────────────────
-    //
-    // Sent by EventBridge job for unaccepted tasks. In the background isolate
-    // we can only start/stop the service — the actual sound plays in onStart()
-    // when the foreground service fires.
-
     case 'PULSE':
-      await _startServiceIfNeeded();
-      print('BG: PULSE – service started/kept running for next sound play');
-      return;
-
-    // ── NEW: Escalation alert ──────────────────────────────────────────────
-    //
-    // Sent only to the escalation recipient. Start the service — the
-    // UnifiedAlertTaskHandler will play the escalation sound once (no loop).
-
     case 'ESCALATION_ALERT':
       await _startServiceIfNeeded();
-      print('BG: ESCALATION_ALERT – service started for one-shot escalation sound');
-      return;
+      break;
 
-    // ── NEW: Cross-device accept stop ──────────────────────────────────────
-    //
-    // Lambda broadcasts this after any device accepts a task.
-    // Stop the foreground service immediately on all other devices.
-
+    case 'ORDER_ACCEPTED':
+    case 'ORDER_CANCELLED':
+    case 'SERVICE_TASK_ACCEPTED':
+    case 'DELIVERY_ACCEPTED':
     case 'ACCEPTED':
-      await _stopServiceIfRunning();
-      print('BG: ACCEPTED – foreground service stopped (cross-device)');
-      return;
+      if (stopAlert) {
+        await _stopServiceIfRunning();
+      }
+      break;
 
-    default:
-      print('Background FCM: unhandled type=$type');
-      return;
+    case 'ORDER_DELIVERED':
+    case 'DELIVERY_DELIVERED':
+      await _stopServiceIfRunning();
+      break;
+
+    case 'ORDER_STATUS_CHANGED':
+      final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
+      if (orderStatus == 'READY') {
+        await _startServiceIfNeeded();
+      }
+      break;
+  }
+
+  await _showBackgroundNotification(data);
+}
+
+Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
+  try {
+    final plugin = FlutterLocalNotificationsPlugin();
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const ios     = DarwinInitializationSettings();
+    await plugin.initialize(const InitializationSettings(android: android, iOS: ios));
+
+    final msg = NotificationMessageBuilder.build(data);
+
+    final androidDetails = AndroidNotificationDetails(
+      msg.channelId,
+      msg.channelId,
+      importance:       Importance.max,
+      priority:         Priority.max,
+      icon:             msg.icon,
+      color:            Color(msg.color),
+      ticker:           msg.ticker,
+      styleInformation: BigTextStyleInformation(msg.bigText, contentTitle: msg.title),
+      groupKey:         NotifGroup.key,
+      autoCancel:       true,
+      playSound:        false,
+    );
+
+    await plugin.show(
+      msg.notifId,
+      msg.title,
+      msg.body,
+      NotificationDetails(android: androidDetails),
+      payload: jsonEncode(data),
+    );
+  } catch (e) {
+    debugPrint('Background notification display error: $e');
   }
 }

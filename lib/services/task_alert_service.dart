@@ -11,16 +11,19 @@ import 'dart:async';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'unified_alert_foreground_task.dart';
+import 'order_alert_service.dart';
 
 class TaskAlertService {
   TaskAlertService._();
 
   static int _pendingServiceCount  = 0;
   static int _pendingDeliveryCount = 0;
-  static int _escalationCount      = 0;   // NEW
+  static int _escalationCount      = 0;
 
   static int get totalPending =>
       _pendingServiceCount + _pendingDeliveryCount;
+
+  static Future<void> reevaluate() => _reevaluate();
 
   // ── Streams ─────────────────────────────────────────────────────────────
   static final StreamController<void> _newTaskController =
@@ -149,7 +152,10 @@ class TaskAlertService {
       await prefs.setString(AlertSoundKey.loopKey, shouldLoop ? 'true' : 'false');
 
       final isRunning = await FlutterForegroundTask.isRunningService;
-      if (!isRunning) {
+      if (isRunning) {
+        await FlutterForegroundTask.restartService();
+        print('TaskAlertService: foreground service restarted (sound=$soundName, loop=$shouldLoop)');
+      } else {
         await FlutterForegroundTask.startService(
           notificationTitle: notificationTitle,
           notificationText:  notificationText,
@@ -165,6 +171,12 @@ class TaskAlertService {
   }
 
   static Future<void> _reevaluate() async {
+    // If OrderAlertService has pending food orders, food orders take priority
+    if (OrderAlertService.pendingOrderCount > 0) {
+      await OrderAlertService.ensureRunning();
+      return;
+    }
+
     if (totalPending == 0) {
       await _stopService();
     } else {

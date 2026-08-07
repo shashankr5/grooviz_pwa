@@ -13,9 +13,6 @@ class AppSnackBar {
     final Color lightBg = isError ? AppColors.errorLight : AppColors.successLight;
     final IconData icon = isError ? Icons.error_rounded : Icons.check_circle_rounded;
 
-    // Capture navigator before the async gap
-    final navigator = Navigator.of(context, rootNavigator: false);
-
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -23,8 +20,11 @@ class AppSnackBar {
       isDismissible: true,
       enableDrag: true,
       builder: (ctx) {
+        final route = ModalRoute.of(ctx);
         Future.delayed(const Duration(seconds: 3), () {
-          if (navigator.canPop()) navigator.pop();
+          if (ctx.mounted && route != null && route.isActive && route.isCurrent) {
+            Navigator.of(ctx).pop();
+          }
         });
 
         return SafeArea(
@@ -79,7 +79,9 @@ class AppSnackBar {
                     ),
                     GestureDetector(
                       onTap: () {
-                        if (navigator.canPop()) navigator.pop();
+                        if (ctx.mounted && route != null && route.isActive && route.isCurrent) {
+                          Navigator.of(ctx).pop();
+                        }
                       },
                       child: const Padding(
                         padding: EdgeInsets.only(left: 8),

@@ -15,11 +15,15 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'order_alert_service.dart';
 import 'task_alert_service.dart';
+import 'escalation_service.dart';
+import 'session_change_service.dart';
+import '../utils/user_session_helper.dart';
 
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
@@ -45,9 +49,21 @@ class WebSocketService {
   static const String _wsUrl =
       'wss://3fj7tlzfk3.execute-api.ap-south-1.amazonaws.com/production';
 
+  Future<void> _cleanupChannel() async {
+    try {
+      await _subscription?.cancel();
+    } catch (_) {}
+    _subscription = null;
+
+    try {
+      _channel?.sink.close(status.goingAway);
+    } catch (_) {}
+    _channel = null;
+  }
+
   // ── Connect ────────────────────────────────────────────────────────────
 
-  void connect({String? userId, String? enterpriseId}) {
+  void connect({String? userId, String? enterpriseId}) async {
     // FIX-3: Guard — skip reconnect if already connected with same credentials.
     final sameCredentials = userId == _userId && enterpriseId == _enterpriseId;
     if (sameCredentials && isConnected.value) {
@@ -58,38 +74,65 @@ class WebSocketService {
     if (userId != null)       _userId       = userId;
     if (enterpriseId != null) _enterpriseId = enterpriseId;
 
-    if (_isConnecting || _isDisposed) return;
+    // Reset disposed flag so a re-login after dispose() can reconnect cleanly.
+    _isDisposed = false;
+
+    if (_isConnecting) return;
     _isConnecting = true;
 
     try {
-      _channel?.sink.close(status.goingAway);
-      _channel = WebSocketChannel.connect(Uri.parse(_wsUrl));
+      await _cleanupChannel();
+      final channel = WebSocketChannel.connect(Uri.parse(_wsUrl));
+      _channel = channel;
 
-      _subscription?.cancel();
-      _subscription = _channel!.stream.listen(
+      // Handle async connection error on channel.ready so SocketException is never unhandled
+      unawaited(channel.ready.then((_) {
+        _isConnecting = false;
+        if (!isConnected.value) {
+          isConnected.value = true;
+          _onConnected();
+          print('WebSocket connected | user=$_userId');
+        }
+      }).catchError((e) {
+        _isConnecting = false;
+        isConnected.value = false;
+        print('WebSocket ready connection error: $e');
+        _scheduleReconnect();
+      }));
+
+      _subscription = channel.stream.listen(
         (message) {
+          _isConnecting = false;
           if (!isConnected.value) {
             isConnected.value = true;
+            _onConnected();
             print('WebSocket connected | user=$_userId');
           }
           _handleMessage(message);
         },
-        onError: _onError,
-        onDone:  _onDone,
+        onError: (error) {
+          _isConnecting = false;
+          _onError(error);
+        },
+        onDone: () {
+          _isConnecting = false;
+          _onDone();
+        },
+        cancelOnError: true,
       );
 
       if (_userId != null && _enterpriseId != null) {
-        _channel!.sink.add(jsonEncode({
+        channel.sink.add(jsonEncode({
           'action':        'register',
           'enterprise_id': _enterpriseId,
           'user_id':       _userId,
         }));
       }
     } catch (e) {
-      print('WebSocket connection failed: $e');
-      _scheduleReconnect();
-    } finally {
       _isConnecting = false;
+      isConnected.value = false;
+      print('WebSocket connection failed (caught): $e');
+      _scheduleReconnect();
     }
   }
 
@@ -138,6 +181,7 @@ class WebSocketService {
 
       if (type == 'NEW_FOOD_ORDER') {
         OrderAlertService.ensureRunning();
+        OrderAlertService.notifyNewOrder();
         return;
       }
 
@@ -148,6 +192,7 @@ class WebSocketService {
 
       if (type == 'ORDER_DELIVERED') {
         OrderAlertService.stop();
+        OrderAlertService.notifyNewOrder();
         return;
       }
 
@@ -157,6 +202,7 @@ class WebSocketService {
           TaskAlertService.ensureDeliveryRunning();
           TaskAlertService.notifyNewDelivery();
         }
+        OrderAlertService.notifyNewOrder();
         return;
       }
 
@@ -204,11 +250,14 @@ class WebSocketService {
       // ── Escalation alert ───────────────────────────────────────────────
 
       if (type == 'ESCALATION_ALERT') {
-        final badgeCount = int.tryParse(
-              (data['badge_count'] ?? '').toString(),
-            ) ??
-            0;
-        TaskAlertService.notifyEscalation(badgeCount);
+        // Play escalation sound (one-shot, not looped)
+        TaskAlertService.ensureEscalationRunning();
+        // Update badge count AND always refresh the escalated task list.
+        // EscalationService emits on both streams unconditionally —
+        // no selectedFilter guard unlike the old TaskAlertService path.
+        EscalationService.instance.handleEscalationAlert(
+          Map<String, dynamic>.from(data),
+        );
         return;
       }
 
@@ -235,6 +284,37 @@ class WebSocketService {
         return;
       }
 
+      // ── Real-time Session / Role Revocation ─────────────────────────────
+
+      if (type == 'SESSION_INVALIDATED' || type == 'ROLE_UPDATED' || type == 'DEPARTMENT_UPDATED') {
+        final rawReason = data['reason']?.toString().trim();
+        final bool roleChanged = data['role_changed'] == true || data['role'] != null;
+        final bool deptChanged = data['dept_changed'] == true || data['departments'] != null;
+
+        String reason;
+        if (rawReason != null && rawReason.isNotEmpty) {
+          reason = rawReason;
+        } else if (roleChanged && deptChanged) {
+          reason = 'Your role and department have been updated by an administrator.';
+        } else if (roleChanged) {
+          reason = 'Your role has been changed by an administrator.';
+        } else if (deptChanged) {
+          reason = 'Your department assignment has changed.';
+        } else {
+          reason = 'Your account permissions have changed.';
+        }
+
+        SessionChangeService.instance.setChangeReason(reason);
+        SessionChangeService.instance.notifyRoleChange(data['role']?.toString() ?? '');
+
+        // Stop alerts, disconnect socket, and clear local session
+        OrderAlertService.stop();
+        TaskAlertService.stopAll();
+        disconnect();
+        UserSessionHelper.clearSession();
+        return;
+      }
+
     } catch (e) {
       print('WS Message error: $e');
     }
@@ -256,10 +336,35 @@ class WebSocketService {
 
   // ── Reconnect ──────────────────────────────────────────────────────────
 
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 10;
+  static const Duration _baseDelay = Duration(seconds: 2);
+  static const Duration _maxDelay  = Duration(seconds: 60);
+
+  void _onConnected() {
+    _reconnectAttempts = 0;
+    debugPrint('[WebSocket] Connected — reconnect counter reset');
+  }
+
   void _scheduleReconnect() {
     if (_isDisposed || _userId == null) return;
-    Future.delayed(const Duration(seconds: 5), () {
-      if (!_isDisposed && _userId != null) {
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      debugPrint('[WebSocket] Max reconnect attempts reached ($_maxReconnectAttempts)');
+      return;
+    }
+
+    final exponential = _baseDelay * (1 << _reconnectAttempts);
+    final capped      = exponential > _maxDelay ? _maxDelay : exponential;
+    final jitter      = Duration(
+      milliseconds: (Random().nextDouble() * 0.3 * capped.inMilliseconds).toInt(),
+    );
+    final delay = capped + jitter;
+
+    _reconnectAttempts++;
+    debugPrint('[WebSocket] Reconnect attempt $_reconnectAttempts in ${delay.inSeconds}s');
+
+    Future.delayed(delay, () {
+      if (_userId != null && !_isDisposed) {
         connect(userId: _userId, enterpriseId: _enterpriseId);
       }
     });
@@ -268,10 +373,17 @@ class WebSocketService {
   // ── Dispose ────────────────────────────────────────────────────────────
 
   void dispose() {
+    // NOTE: isConnected is NOT disposed here.
+    // WebSocketService is a singleton that outlives any individual session.
+    // Calling isConnected.dispose() would permanently kill the ValueNotifier
+    // and cause "ValueNotifier<bool> used after being disposed" crashes when
+    // connect() next sets isConnected.value after a re-login.
+    // Instead: set the value to false so all listeners see disconnected state,
+    // then let disconnect() manage credential cleanup.
     _isDisposed = true;
     _subscription?.cancel();
     _channel?.sink.close(status.normalClosure);
-    _controller.close();
-    isConnected.dispose();
+    if (!_controller.isClosed) _controller.close();
+    isConnected.value = false; // signal disconnected; do NOT call .dispose()
   }
 }

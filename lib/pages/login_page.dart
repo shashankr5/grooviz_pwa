@@ -6,6 +6,7 @@ import 'main_navigation.dart';
 import '../components/app_button.dart';
 import '../services/login_service.dart';
 import '../services/fcm_service.dart';
+import '../services/notification_navigation_coordinator.dart';
 import '../utils/user_session_helper.dart';
 import '../services/profile_service.dart';
 import '../services/websocket_service.dart';
@@ -111,6 +112,11 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
+    final role = await UserSessionHelper.getRole();
+    final depts = await UserSessionHelper.getDepartments();
+    if (role != null) await UserSessionHelper.saveInitialRole(role);
+    if (depts.isNotEmpty) await UserSessionHelper.saveInitialDepartments(depts);
+
     // FIX-9 (Bug 9): WebSocketService().connect() was never called anywhere
     // in the app. Without this, HomePage's onNewTask/onNewDelivery/onEscalation
     // listeners (which are already correctly wired) never receive live
@@ -121,6 +127,8 @@ class _LoginPageState extends State<LoginPage> {
       userId: response['user_id']?.toString(),
       enterpriseId: enterpriseId?.toString(),
     );
+
+    NotificationNavigationCoordinator.instance.onPostLogin();
 
     // Wipes the entire navigation stack — nothing to go back to
     Navigator.pushAndRemoveUntil(

@@ -15,48 +15,72 @@ import 'services/fcm_service.dart';
 import 'services/notification_handler.dart';
 import 'services/fcm_background.dart';
 import 'services/alert_reload_coordinator.dart';
+import 'services/notification_navigation_coordinator.dart';
+import 'services/bluetooth_printer_service.dart';
 import 'utils/user_session_helper.dart';
 import 'utils/app_colors.dart';
 
+import 'package:flutter/foundation.dart';
+
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp();
+    // Intercept framework UI / rendering errors
+    FlutterError.onError = (FlutterErrorDetails details) {
+      FlutterError.presentError(details);
+      print('🔴 Flutter Framework Error (intercepted): ${details.exception}');
+    };
 
-  FlutterForegroundTask.init(
-  androidNotificationOptions: AndroidNotificationOptions(
-    channelId: 'order_alert_service',
-    channelName: 'Order Alert Service',
-    channelDescription: 'Plays alert sound for new orders',
-    channelImportance: NotificationChannelImportance.HIGH,
-    priority: NotificationPriority.HIGH,
-  ),
-  iosNotificationOptions: const IOSNotificationOptions(
-    showNotification: true,
-    playSound: false,
-  ),
-  foregroundTaskOptions: ForegroundTaskOptions(
-    autoRunOnBoot: false,
-    allowWakeLock: true,
-    eventAction: ForegroundTaskEventAction.nothing(),
-  ),
-);
-  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    // Intercept unhandled platform, socket, and async isolate errors
+    PlatformDispatcher.instance.onError = (error, stack) {
+      print('🔴 Uncaught Async Error (intercepted): $error\n$stack');
+      return true; // Prevent native crash
+    };
 
-  await _requestForegroundServicePermission();
+    await Firebase.initializeApp();
 
-  await FCMService.initialize();
-  unawaited(FCMService.ensureFCMToken());
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'order_alert_service',
+        channelName: 'ScreenSync Alerts',
+        channelDescription: 'Plays alert sound for new orders',
+        channelImportance: NotificationChannelImportance.HIGH,
+        priority: NotificationPriority.HIGH,
+        enableVibration: false,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(
+        showNotification: true,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        autoRunOnBoot: false,
+        allowWakeLock: true,
+        eventAction: ForegroundTaskEventAction.nothing(),
+      ),
+    );
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-  await localNotifications.cancelAll();
-  await createNotificationChannel();
-  await setupFirebaseNotifications();
+    await _requestForegroundServicePermission();
 
-  AlertReloadCoordinator.init();
+    await FCMService.initialize();
+    unawaited(FCMService.ensureFCMToken());
 
-  final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
+    await localNotifications.cancelAll();
+    await createNotificationChannel();
+    await setupFirebaseNotifications();
 
-  runApp(MyApp(isLoggedIn: isLoggedIn));
+    AlertReloadCoordinator.init();
+
+    // Initialize printer service — reloads persisted queue and print history
+    unawaited(bluetoothPrinterService.init());
+
+    final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
+
+    runApp(MyApp(isLoggedIn: isLoggedIn));
+  }, (error, stack) {
+    print('🔴 Zone Guard Error: $error\n$stack');
+  });
 }
 
 Future<void> _requestForegroundServicePermission() async {
@@ -110,19 +134,7 @@ class _MyAppState extends State<MyApp> {
   }
 
   void _consumePendingDeepLink() {
-    final route = pendingDeepLinkRoute;
-    if (route == null) return;
-    pendingDeepLinkRoute = null;
-
-    if (route == 'delivery') {
-      navigatorKey.currentState?.push(
-        MaterialPageRoute(builder: (_) => const DeliveryPage()),
-      );
-      return;
-    }
-
-    // 'home' or 'food' — switch the bottom-nav tab.
-    MainNavigation.tabSwitchCallback?.call(route);
+    NotificationNavigationCoordinator.instance.onPostLogin();
   }
 
   void _showServiceFailWarning(String type) {

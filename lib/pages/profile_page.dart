@@ -25,11 +25,12 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isPressed = false;
   bool _isLoading = true;
 
-  String name = "";
-  String role = "";
-  String designation = "";
-  String email = "";
-  String phone = "";
+  String name           = "";
+  String role           = "";
+  String designation    = "";
+  String email          = "";
+  String phone          = "";
+  String enterpriseName = "";
   List<String> departments = [];
   int userId = 0;
 
@@ -90,13 +91,14 @@ class _ProfilePageState extends State<ProfilePage> {
     } catch (_) {}
 
     setState(() {
-      userId = profile["user_id"] ?? 0;
-      name = profile["name"] ?? "";
-      role = profile["role"] ?? "";
-      designation = profile["designation"] ?? "";
-      email = profile["email"] ?? "";
-      phone = profile["phone_number"] ?? "";
-      departments = deptList;
+      userId        = profile["user_id"] ?? 0;
+      name          = profile["name"] ?? "";
+      role          = profile["role"] ?? "";
+      designation   = profile["designation"] ?? "";
+      email         = profile["email"] ?? "";
+      phone         = profile["phone_number"] ?? "";
+      enterpriseName = (profile["enterprise_name"] ?? "").toString().trim();
+      departments   = deptList;
     });
   }
 
@@ -108,13 +110,98 @@ class _ProfilePageState extends State<ProfilePage> {
 
     if (!mounted) return;
 
-    final confirm = await AppDialog.show(
-      context,
-      title: 'Log Out?',
-      message: "You'll need to log in again to access your tasks.",
-      confirmLabel: 'Log Out',
-      cancelLabel: 'Cancel',
-      isDestructive: true,
+    final confirm = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.error.withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.logout_rounded,
+                        color: AppColors.error, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    "Log Out?",
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "You'll need to log in again to access your tasks.",
+                style: AppTypography.bodySecondary.copyWith(fontSize: 14),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.textPrimary,
+                        side: const BorderSide(color: AppColors.border),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text("Cancel",
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text("Log Out",
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
 
     if (confirm != true || !mounted) return;
@@ -434,6 +521,10 @@ class _ProfilePageState extends State<ProfilePage> {
                               if (role.isNotEmpty) ...[
                                 const SizedBox(height: 14),
                                 _infoRow(Icons.badge_outlined, "Role", role),
+                              ],
+                              if (enterpriseName.isNotEmpty) ...[
+                                const SizedBox(height: 14),
+                                _infoRow(Icons.business_outlined, "Enterprise", enterpriseName),
                               ],
                             ],
                           ),

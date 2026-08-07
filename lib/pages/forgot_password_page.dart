@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/login_service.dart';
-
+import '../utils/app_colors.dart';
+import '../utils/app_snackbar.dart';
 import '../theme/app_typography.dart';
-import '../theme/app_colors.dart';
 import '../utils/validators.dart';
 import 'otp_verify_page.dart';
 
@@ -32,21 +32,13 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     if (!mounted) return;
 
     if (!response["success"]) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(response["message"] ?? "Failed to send OTP"),
-          backgroundColor: AppColors.error,
-        ),
+      AppSnackBar.show(
+        context,
+        response["message"] ?? "Failed to send OTP",
+        isError: true,
       );
       return;
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text("OTP sent successfully"),
-        backgroundColor: AppColors.secondary,
-      ),
-    );
 
     Navigator.push(
       context,
@@ -56,6 +48,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         ),
       ),
     );
+
+    AppSnackBar.show(context, response["message"] ?? "OTP sent successfully");
   }
 
   @override

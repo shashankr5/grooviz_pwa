@@ -37,6 +37,13 @@ class NotificationPermissionManager {
         await FlutterForegroundTask.requestNotificationPermission();
       }
 
+      // ✅ STEP 3: Ignore Battery Optimizations (Allows background wake-up on OEM devices)
+      final batteryStatus = await Permission.ignoreBatteryOptimizations.status;
+      if (batteryStatus.isDenied) {
+        print('🔋 Requesting ignore battery optimizations permission');
+        await Permission.ignoreBatteryOptimizations.request();
+      }
+
     } catch (e) {
       print('❌ Permission request failed: $e');
     }

@@ -5,6 +5,7 @@ import '../services/login_service.dart';
 
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
+import '../utils/app_snackbar.dart';
 import '../utils/validators.dart';
 import 'reset_password_page.dart';
 
@@ -77,19 +78,18 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     if (!mounted) return;
 
     if (!response["success"]) {
-      _showSnack(response["message"] ?? "Failed to send OTP");
+      _showSnack(response["message"] ?? "Failed to send OTP", isError: true);
       return;
     }
 
-    _showSnack(response["message"]); // ✅ dynamic message
+    _showSnack(response["message"] ?? "OTP sent successfully");
     _startResendTimer();
   }
-    //_generatedOtp = response['otp'] ??
 
   Future<void> _verifyOtp() async {
     final validationError = Validators.validateOtp(_enteredOtp);
     if (validationError != null) {
-      _showSnack(validationError);
+      _showSnack(validationError, isError: true);
       return;
     }
 
@@ -103,7 +103,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     setState(() => _isLoading = false);
 
     if (!response['success']) {
-      _showSnack(response['message'] ?? "Invalid OTP");
+      _showSnack(response['message'] ?? "Invalid OTP", isError: true);
       return;
     }
 
@@ -124,13 +124,8 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     await _sendOtp();
   }
 
-  void _showSnack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.textPrimary,
-      ),
-    );
+  void _showSnack(String message, {bool isError = false}) {
+    AppSnackBar.show(context, message, isError: isError);
   }
 
   Widget _buildOtpField(int index) {

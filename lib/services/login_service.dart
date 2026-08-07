@@ -9,6 +9,7 @@ import '../constants/api_timeouts.dart';
 import 'device_info.dart';
 import 'fcm_service.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 
 class LoginService {
   final Dio _dio;
@@ -150,7 +151,36 @@ class LoginService {
             : int.tryParse(enterpriseIdRaw.toString()) ?? 0;
         await UserSessionHelper.saveEnterpriseId(enterpriseId);
       }
+      if (user['enterprise_name'] != null && user['enterprise_name'].toString().trim().isNotEmpty) {
+        await UserSessionHelper.saveEnterpriseName(user['enterprise_name'].toString().trim());
+      }
       await UserSessionHelper.saveIsLoggedIn(true);
+
+      // Save role and departments at login so RoleChangeWatcher has a
+      // baseline to compare against. Without this, _loadBaseline() returns
+      // empty values and the watcher's empty-baseline guard fires immediately,
+      // skipping every comparison — so no logout ever triggers on role change.
+      final rawRole = user['role'] ?? user['user_role'];
+      if (rawRole != null) {
+        await UserSessionHelper.saveRole(rawRole.toString().trim());
+        dev.log('✅ Role saved at login: $rawRole');
+      }
+
+      try {
+        final rawDepts = user['departments'];
+        List<String> deptList = [];
+        if (rawDepts is String && rawDepts.isNotEmpty) {
+          deptList = List<String>.from(jsonDecode(rawDepts));
+        } else if (rawDepts is List) {
+          deptList = List<String>.from(rawDepts);
+        }
+        if (deptList.isNotEmpty) {
+          await UserSessionHelper.saveDepartments(deptList);
+          dev.log('✅ Departments saved at login: $deptList');
+        }
+      } catch (e) {
+        dev.log('⚠️ Could not save departments at login: $e');
+      }
 
       return {
         'success': true,
@@ -160,10 +190,10 @@ class LoginService {
       };
     } on DioException catch (e) {
       dev.log('❌ Dio error: ${e.message}');
-      return {'success': false, 'message': 'Network error. Please check your connection.'};
+      return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
     } catch (e) {
       dev.log('⚠️ Exception: $e');
-      return {'success': false, 'message': 'Unexpected error: $e'};
+      return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -197,7 +227,7 @@ class LoginService {
     } catch (e) {
       return {
         "success": false,
-        "message": "Failed to send OTP",
+        "message": ErrorHandler.friendlyMessage(e),
       };
     }
   }
@@ -293,6 +323,6 @@ class LoginService {
 
   Map<String, dynamic> _handleError(dynamic error) {
     dev.log('❌ Error: $error');
-    return {'success': false, 'message': 'Something went wrong'};
+    return {'success': false, 'message': ErrorHandler.friendlyMessage(error)};
   }
 }

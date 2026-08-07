@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 
 import '../constants/api_constants.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/websocket_service.dart';
@@ -120,7 +121,7 @@ class LogoutService {
 
     } catch (e) {
       await _cleanupAndClearSession();
-      return {"success": false, "message": "Logout failed: $e"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 }

@@ -3,8 +3,8 @@ import '../utils/user_session_helper.dart';
 import '../services/login_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
+import '../utils/app_snackbar.dart';
 import 'otp_verify_page.dart';
-import 'reset_password_page.dart';
 
 class PasswordSecurityPage extends StatefulWidget {
   const PasswordSecurityPage({super.key});
@@ -109,17 +109,11 @@ class _PasswordSecurityPageState extends State<PasswordSecurityPage> {
                     child: ElevatedButton(
                     onPressed: () async {
                       if (mobile.isEmpty) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text("Phone number not available"),
-                          ),
-                        );
+                        AppSnackBar.show(context, "Phone number not available", isError: true);
                         return;
                       }
 
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Sending OTP code...")),
-                      );
+                      AppSnackBar.show(context, "Sending OTP code...");
 
                       final result = await LoginService().sendOtp(mobile: mobile);
                       if (!context.mounted) return;
@@ -131,13 +125,9 @@ class _PasswordSecurityPageState extends State<PasswordSecurityPage> {
                             builder: (_) => OtpVerifyPage(mobile: mobile),
                           ),
                         );
+                        AppSnackBar.show(context, result['message'] ?? "OTP sent successfully");
                       } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(result['message'] ?? 'Failed to send OTP'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
+                        AppSnackBar.show(context, result['message'] ?? 'Failed to send OTP', isError: true);
                       }
                     },
                       style: ElevatedButton.styleFrom(

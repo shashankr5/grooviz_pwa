@@ -1,5 +1,6 @@
 // main_navigation.dart
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
@@ -15,6 +16,7 @@ import '../theme/app_typography.dart';
 import '../services/role_change_watcher.dart';
 import '../services/session_change_service.dart';
 import '../services/websocket_service.dart';
+import '../services/profile_service.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -36,13 +38,17 @@ class _MainNavigationState extends State<MainNavigation>
   late final RoleChangeWatcher _roleWatcher;
   StreamSubscription<String>? _sessionChangeSub;
 
+  final GlobalKey<HomePageState>       _homeKey  = GlobalKey<HomePageState>();
+  final GlobalKey<FoodOrdersPageState> _foodKey  = GlobalKey<FoodOrdersPageState>();
+  final GlobalKey<TasksPageState>      _tasksKey = GlobalKey<TasksPageState>();
+
   // ── Nav config ────────────────────────────────────────────────────────────
 
-  static const _allNavItems = [
+  late final List<_NavEntry> _allNavItems = [
     _NavEntry(
       key: 'home',
-      page: HomePage(key: PageStorageKey('home')),
-      item: BottomNavigationBarItem(
+      page: HomePage(key: _homeKey),
+      item: const BottomNavigationBarItem(
         icon: Icon(Icons.home_outlined, size: 26),
         activeIcon: Icon(Icons.home, size: 26),
         label: 'Home',
@@ -50,8 +56,8 @@ class _MainNavigationState extends State<MainNavigation>
     ),
     _NavEntry(
       key: 'food',
-      page: FoodOrdersPage(key: PageStorageKey('food')),
-      item: BottomNavigationBarItem(
+      page: FoodOrdersPage(key: _foodKey),
+      item: const BottomNavigationBarItem(
         icon: Icon(Icons.fastfood_outlined, size: 26),
         activeIcon: Icon(Icons.fastfood, size: 26),
         label: 'Food',
@@ -59,14 +65,14 @@ class _MainNavigationState extends State<MainNavigation>
     ),
     _NavEntry(
       key: 'tasks',
-      page: TasksPage(key: PageStorageKey('tasks')),
-      item: BottomNavigationBarItem(
+      page: TasksPage(key: _tasksKey),
+      item: const BottomNavigationBarItem(
         icon: Icon(Icons.task_alt_outlined, size: 26),
         activeIcon: Icon(Icons.task_alt, size: 26),
         label: 'My Tasks',
       ),
     ),
-    _NavEntry(
+    const _NavEntry(
       key: 'profile',
       page: ProfilePage(key: PageStorageKey('profile')),
       item: BottomNavigationBarItem(
@@ -75,7 +81,7 @@ class _MainNavigationState extends State<MainNavigation>
         label: 'Profile',
       ),
     ),
-    _NavEntry(
+    const _NavEntry(
       key: 'camera',
       page: CameraContentPage(key: PageStorageKey('camera')),
       item: BottomNavigationBarItem(
@@ -103,7 +109,7 @@ class _MainNavigationState extends State<MainNavigation>
         (d.contains('room') && d.contains('service'))) {
       return {'home', 'tasks'};
     }
-    return {'home', 'food', 'tasks', 'camera'};
+    return {'home', 'food', 'tasks'};
   }
 
   List<String> get _visibleKeys {
@@ -131,8 +137,8 @@ class _MainNavigationState extends State<MainNavigation>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadDepartments();
     _requestPermissions();
+    _reconnectWebSocket(); // Fix Bug 1: Ensure WebSocket connects unconditionally on MainNavigation mount
 
     // Register tab-switch callback so external callers (notification taps)
     // can switch the active tab without needing direct widget tree access.
@@ -141,10 +147,13 @@ class _MainNavigationState extends State<MainNavigation>
     _roleWatcher = RoleChangeWatcher(onRoleChanged: _onRoleChanged);
     _roleWatcher.startWatching();
 
-    // Listen for role/dept changes so we can react on this navigator
+    // Seed the role/dept baseline immediately on startup, then load departments.
+    _seedBaselineIfNeeded();
+
+    // Listen for role/dept changes so we can react instantly on this navigator
     _sessionChangeSub =
         SessionChangeService.instance.onRoleChange.listen((_) {
-      // Sheet is shown from _onRoleChanged; nothing extra needed here
+      _onRoleChanged();
     });
   }
 
@@ -157,6 +166,19 @@ class _MainNavigationState extends State<MainNavigation>
     super.dispose();
   }
 
+  void _refreshCurrentTab(int index) {
+    final entries = _activeEntries;
+    if (index < 0 || index >= entries.length) return;
+    final key = entries[index].key;
+    if (key == 'home') {
+      _homeKey.currentState?.refreshData();
+    } else if (key == 'food') {
+      _foodKey.currentState?.refreshData();
+    } else if (key == 'tasks') {
+      _tasksKey.currentState?.refreshData();
+    }
+  }
+
   /// Switches to the named tab key ('home', 'food', 'tasks', etc.).
   /// Safely ignored if the key is not visible for the current user's role.
   void switchToTab(String tabKey) {
@@ -164,18 +186,91 @@ class _MainNavigationState extends State<MainNavigation>
     final idx = entries.indexWhere((e) => e.key == tabKey);
     if (idx == -1 || !mounted) return;
     setState(() => _currentIndex = idx);
+    _refreshCurrentTab(idx);
   }
+
+  void _onTabTapped(int index) {
+    if (_currentIndex == index) {
+      _refreshCurrentTab(index);
+      return;
+    }
+    setState(() => _currentIndex = index);
+    _refreshCurrentTab(index);
+  }
+
+  // Guards didChangeAppLifecycleState against notification-shade pulls.
+  bool _didPause = false;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Reload departments on resume in case they changed server-side
+    if (state == AppLifecycleState.paused) {
+      _didPause = true;
+      return;
+    }
     if (state == AppLifecycleState.resumed) {
+      if (!_didPause) return; // shade pull: inactive→resumed, skip
+      _didPause = false;
+      // Reload departments on resume in case they changed server-side
       _loadDepartments();
       // FIX-9 (Bug 9): connect() has a same-credentials + isConnected guard,
       // so this is a cheap no-op if already connected — but re-establishes
       // the socket if it dropped while backgrounded.
       _reconnectWebSocket();
     }
+  }
+
+  /// Seeds role + departments into SharedPreferences from the server if they
+  /// are not already present, and then loads departments. Sequenced to avoid
+  /// race conditions between initial write and read.
+  Future<void> _seedBaselineIfNeeded() async {
+    final existingRole  = await UserSessionHelper.getRole();
+    final existingDepts = await UserSessionHelper.getDepartments();
+
+    final initRole  = await UserSessionHelper.getInitialRole();
+    final initDepts = await UserSessionHelper.getInitialDepartments();
+
+    if (existingRole == null || existingDepts.isEmpty) {
+      debugPrint('[MainNavigation] Baseline missing — seeding from getProfile()...');
+      try {
+        final result = await ProfileService().getProfile();
+        if (result['success'] == true) {
+          final profile = result['profile'] as Map<String, dynamic>?;
+          final role = profile?['role']?.toString() ?? '';
+          debugPrint('[MainNavigation] Baseline seeded: role="$role" departments=${profile?['departments']}');
+
+          List<String> deptList = [];
+          final rawDepts = profile?['departments'];
+          if (rawDepts is String) {
+            deptList = List<String>.from(jsonDecode(rawDepts));
+          } else if (rawDepts is List) {
+            deptList = List<String>.from(rawDepts);
+          }
+
+          if (initRole == null && role.isNotEmpty) {
+            await UserSessionHelper.saveInitialRole(role);
+          }
+          if (initDepts.isEmpty && deptList.isNotEmpty) {
+            await UserSessionHelper.saveInitialDepartments(deptList);
+          }
+
+          SessionChangeService.instance.notifyRoleChange(role);
+        } else {
+          debugPrint('[MainNavigation] getProfile() failed during baseline seed: ${result['message']}');
+        }
+      } catch (e) {
+        debugPrint('[MainNavigation] _seedBaselineIfNeeded error (non-fatal): $e');
+      }
+    } else {
+      if (initRole == null) {
+        await UserSessionHelper.saveInitialRole(existingRole);
+      }
+      if (initDepts.isEmpty) {
+        await UserSessionHelper.saveInitialDepartments(existingDepts);
+      }
+      debugPrint('[MainNavigation] Baseline already seeded: role="$existingRole" depts=$existingDepts');
+    }
+
+    await _loadDepartments(); // Read departments only after baseline seed check is complete
   }
 
   Future<void> _reconnectWebSocket() async {
@@ -208,11 +303,14 @@ class _MainNavigationState extends State<MainNavigation>
 
   // ── Role / dept changed ───────────────────────────────────────────────────
 
-  /// Called by RoleChangeWatcher after the session has been cleared.
+  bool _isShowingRoleChangedSheet = false;
+
+  /// Called by RoleChangeWatcher or WebSocket after session invalidation.
   /// Shows an un-dismissible bottom sheet explaining what changed,
   /// with a single "Log Out" button.
   void _onRoleChanged() {
-    if (!mounted) return;
+    if (!mounted || _isShowingRoleChangedSheet) return;
+    _isShowingRoleChangedSheet = true;
 
     final reason = SessionChangeService.instance.changeReason;
 
@@ -226,7 +324,10 @@ class _MainNavigationState extends State<MainNavigation>
       ),
       builder: (_) => _RoleChangedSheet(
         reason:   reason,
-        onLogout: _navigateToLogin,
+        onLogout: () async {
+          await UserSessionHelper.clearSession();
+          _navigateToLogin();
+        },
       ),
     );
   }
@@ -291,7 +392,7 @@ class _MainNavigationState extends State<MainNavigation>
           unselectedIconTheme:  const IconThemeData(size: 24),
           showSelectedLabels:   true,
           showUnselectedLabels: true,
-          onTap: (index) => setState(() => _currentIndex = index),
+          onTap: _onTabTapped,
           items: entries.map((e) => e.item).toList(),
         ),
       ),

@@ -80,10 +80,14 @@ class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
 
   @override
-  State<TasksPage> createState() => _TasksPageState();
+  State<TasksPage> createState() => TasksPageState();
 }
 
-class _TasksPageState extends State<TasksPage> {
+class TasksPageState extends State<TasksPage> {
+  void refreshData() {
+    _onRefresh();
+  }
+
   final HomeService _homeService = HomeService();
 
   // ── Session ───────────────────────────────────────────────────────────────
@@ -268,9 +272,6 @@ class _TasksPageState extends State<TasksPage> {
     final result = await _homeService.getTeamPerformance(
       month: _selectedMonth,
       year:  _selectedYear,
-      departmentId: _isManagementOnly(_userRoleId) && _selectedDept != null
-          ? _deptIdForName(_selectedDept!)
-          : null,
     );
 
     if (!mounted) return;
@@ -301,7 +302,9 @@ class _TasksPageState extends State<TasksPage> {
             .toSet()
             .toList()
           ..sort();
-        setState(() => _availableFilterDepts = allDepts);
+        if (allDepts.isNotEmpty) {
+          setState(() => _availableFilterDepts = allDepts);
+        }
       }
 
       setState(() {
@@ -337,12 +340,7 @@ class _TasksPageState extends State<TasksPage> {
     if (_selectedDept == dept) return;
     setState(() {
       _selectedDept = dept;
-      if (_isManagementOnly(_userRoleId)) {
-        _teamRows = [];
-        _loadTeamPerformance();
-      } else {
-        _teamRows = _applyDeptFilter(_teamRowsAll);
-      }
+      _teamRows = _applyDeptFilter(_teamRowsAll);
     });
   }
 
@@ -601,7 +599,7 @@ class _TasksPageState extends State<TasksPage> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
               children: List.generate(
-                6,
+                10,
                 (_) => const Padding(
                   padding: EdgeInsets.only(bottom: 10),
                   child: SkeletonTaskCard(),
@@ -617,7 +615,7 @@ class _TasksPageState extends State<TasksPage> {
   @override
   Widget build(BuildContext context) {
     final showDeptButton = _isSupervisorOrAbove(_userRoleId) &&
-        _availableFilterDepts.length > 1;
+        (_availableFilterDepts.length > 1 || _selectedDept != null);
 
     return Scaffold(
       backgroundColor: AppColors.bgLight,
@@ -1391,7 +1389,7 @@ class _MonthPickerSheetState extends State<_MonthPickerSheet> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_rounded, size: 18),
+                  icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
                   onPressed: _year > now.year - 3
                       ? () => setState(() {
                             _year--;

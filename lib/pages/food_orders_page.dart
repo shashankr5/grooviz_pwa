@@ -10,30 +10,32 @@ import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/order_grouping.dart';
 
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
-import '../theme/app_border.dart';
-import '../theme/app_durations.dart';
-import '../theme/app_spacing.dart';
-import '../constants/app_strings.dart';
 import '../components/app_badge.dart';
-import '../components/app_card.dart';
-import '../components/app_dialog.dart';
 import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
 import '../services/websocket_service.dart';
+import '../services/notification_handler.dart';
+import '../services/notification_constants.dart';
 import '../components/skeleton_loader.dart';
+import '../widgets/kot_preview_sheet.dart';
 
 class FoodOrdersPage extends StatefulWidget {
   const FoodOrdersPage({super.key});
 
   @override
-  State<FoodOrdersPage> createState() => _FoodOrdersPageState();
+  State<FoodOrdersPage> createState() => FoodOrdersPageState();
 }
 
-class _FoodOrdersPageState extends State<FoodOrdersPage>
+class FoodOrdersPageState extends State<FoodOrdersPage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+
+  void refreshData() {
+    _loadFoodOrders();
+  }
 
   final String userRole = 'Food & Beverage';
   late Timer _timer;
@@ -192,21 +194,24 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   void _handleSocketEtaUpdate(dynamic data) {
-    final orderNo  = data['order_number']?.toString();
-    final newExtra = (data['extra_eta_minutes'] as num?)?.toInt() ?? 0;
-    final locked   = data['eta_locked'] == true ||
-                     data['eta_locked'] == 1    ||
-                     data['eta_locked'] == '1';
+    final orderNo = data['order_number']?.toString();
     if (orderNo == null) return;
-
     final index =
         foodOrders.indexWhere((o) => o['orderNo'].toString() == orderNo);
     if (index == -1) return;
 
+    final expiresStr = data['eta_expires_at']?.toString() ?? '';
+    final tapCount   = (data['eta_tap_count'] as num?)?.toInt() ?? 0;
+    final locked     = data['eta_locked'] == true ||
+                       data['eta_locked'] == 1    ||
+                       data['eta_locked'] == '1';
+
     setState(() {
-      foodOrders[index]['extraEta']   = newExtra;
-      foodOrders[index]['etaMinutes'] = 15 + newExtra;
-      foodOrders[index]['etaLocked']  = locked;
+      if (expiresStr.isNotEmpty) {
+        foodOrders[index]['etaExpiresAt'] = parseOrderDate(expiresStr);
+      }
+      foodOrders[index]['etaTapCount'] = tapCount;
+      foodOrders[index]['etaLocked']   = locked;
       if (locked) _maxDelayReachedOrders.add(orderNo);
     });
   }
@@ -447,47 +452,25 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   // ── _groupApiOrders ───────────────────────────────────────────────────────
+  // Delegates to groupFoodOrderRows() (utils/order_grouping.dart) which is the
+  // shared implementation used by EntityResolver too, so both callers can never
+  // drift apart.  After grouping, this method re-applies page-level ETA lock
+  // state (_maxDelayReachedOrders) which only FoodOrdersPage tracks.
   List<Map<String, dynamic>> _groupApiOrders(List apiOrders) {
-    final Map<String, Map<String, dynamic>> grouped = {};
-    for (final o in apiOrders) {
-      final orderNo     = o["orderNumber"];
-      final raw         = o["raw"];
-      final createdTime = raw?["order_time"] ?? raw?["delivered_time"] ?? "";
+    final grouped = groupFoodOrderRows(apiOrders);
 
-      if (!grouped.containsKey(orderNo)) {
-        final extraEta = (o["extraEtaMinutes"] ?? 0) as int;
-        final locked   = o["etaLocked"] == true;
-
-        if (locked && orderNo != null) {
-          _maxDelayReachedOrders.add(orderNo.toString());
-        }
-
-        grouped[orderNo] = {
-          "orderNo":      orderNo,
-          "room":         o["roomNumber"],
-          "guest":        (o["guestName"] ?? "Guest").toString(),
-          "status":       o["status"],
-          "items":        [],
-          "raw":          raw,
-          "createdAt":    _safeParseDate(createdTime),
-          "acceptedAt":   o["status"] == FoodOrderStatus.preparing.label
-              ? _safeParseDate(createdTime)
-              : null,
-          "etaMinutes":   15 + extraEta,
-          "extraEta":     extraEta,
-          "etaLocked":    locked,
-          "cancelReason": o["cancelReason"] ?? raw?["cancel_reason"] ?? "",
-          "isVeg":        raw?["is_veg"],
-        };
+    // Re-apply page-level ETA lock state that the shared utility doesn't touch.
+    for (final order in grouped) {
+      final orderNo = order['orderNo']?.toString() ?? '';
+      if (_maxDelayReachedOrders.contains(orderNo)) {
+        order['etaLocked'] = true;
       }
-      grouped[orderNo]!["items"].add({
-        "name":         o["foodItem"],
-        "qty":          o["quantity"],
-        "instructions": o["cookingInstructions"],
-        "isVeg":        o["raw"]?["is_veg"] ?? raw?["is_veg"],
-      });
+      if (order['etaLocked'] == true && orderNo.isNotEmpty) {
+        _maxDelayReachedOrders.add(orderNo);
+      }
     }
-    return grouped.values.toList();
+
+    return grouped;
   }
 
   Future<void> _handleFilterChange(String filter) async {
@@ -519,6 +502,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   @override
   void initState() {
     super.initState();
+    localNotifications.cancel(NotifId.foodOrder);
+    updateGroupSummary();
     _initializeWebSocket();
     _loadFoodOrders(); // also calls _loadRushHourState internally
     _pulseController = AnimationController(
@@ -570,41 +555,48 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     super.dispose();
   }
 
+  // Guards didChangeAppLifecycleState against notification-shade pulls.
+  bool _didPause = false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _loadFoodOrders();
+    if (state == AppLifecycleState.paused) {
+      _didPause = true;
+      return;
+    }
+    if (state == AppLifecycleState.resumed) {
+      if (!_didPause) return; // shade pull: inactive→resumed, skip
+      _didPause = false;
+      _loadFoodOrders();
+    }
   }
 
   // ====================== ETA / TIMING ======================
   int _remainingSeconds(Map<String, dynamic> order) {
-    final createdAt = order['createdAt'] as DateTime;
-    return createdAt
-        .add(Duration(minutes: order['etaMinutes'] as int))
-        .difference(DateTime.now())
-        .inSeconds;
+    final expires = order['etaExpiresAt'] as DateTime?;
+    if (expires == null) return 0;
+    return expires.difference(DateTime.now()).inSeconds;
   }
 
   double _orderProgress(Map<String, dynamic> order) {
-    final totalSeconds = (order['etaMinutes'] as int) * 60;
-    if (totalSeconds <= 0) return 0;
-    return (DateTime.now()
-                .difference(order['createdAt'])
-                .inSeconds /
-            totalSeconds)
-        .clamp(0.0, 1.5);
+    final accepted = order['acceptedAt'] as DateTime?;
+    final expires  = order['etaExpiresAt'] as DateTime?;
+    if (accepted == null || expires == null) return 0.0;
+    final total = expires.difference(accepted).inSeconds;
+    if (total <= 0) return 0.0;
+    return (DateTime.now().difference(accepted).inSeconds / total).clamp(0.0, 1.5);
   }
 
   String _etaText(Map<String, dynamic> order) {
-    final s = order['status'];
-    if (s == FoodOrderStatus.delivered.label ||
-        s == FoodOrderStatus.cancelled.label) return '';
-    if (s == FoodOrderStatus.ready.label) return 'Ready';
+    final status = order['status'] as String;
+    if (status == FoodOrderStatus.delivered.label ||
+        status == FoodOrderStatus.cancelled.label) return '';
+    if (status == FoodOrderStatus.ready.label) return 'Ready';
     final sec = _remainingSeconds(order);
     if (sec >= 0) {
       return 'READY IN ${(sec ~/ 60).toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
     }
-    final delayMin = (-sec ~/ 60) + 1;
-    return 'DELAYED BY $delayMin MIN';
+    return 'DELAYED BY ${((-sec) ~/ 60) + 1} MIN';
   }
 
   Color _etaColor(Map<String, dynamic> order) {
@@ -614,23 +606,6 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   String _formattedDateTime(DateTime time) {
     return DateFormatter.formatDateTimeObjectAmPm(time);
-  }
-
-  DateTime _safeParseDate(String s) {
-    if (s.trim().isEmpty) return DateTime.now();
-    try {
-      final str = s.trim().replaceFirst(' ', 'T');
-      if (str.endsWith('Z') || str.contains('+')) {
-        return DateTime.parse(str).toLocal();
-      }
-      return DateTime.parse('${str}Z').toLocal();
-    } catch (_) {
-      try {
-        return DateTime.parse(s.trim().replaceFirst(' ', 'T')).toLocal();
-      } catch (_) {
-        return DateTime.now();
-      }
-    }
   }
 
   DateTime _parseRushHourEndsAt(String s) {
@@ -668,6 +643,8 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   bool _isMaxDelayReached(Map<String, dynamic> order) {
     if (order['etaLocked'] == true) return true;
+    final tapCount = (order['etaTapCount'] as num?)?.toInt() ?? 0;
+    if (tapCount >= 5) return true;
     final orderNo = order['orderNo']?.toString() ?? '';
     if (_maxDelayReachedOrders.contains(orderNo)) return true;
     return (order['extraEta'] ?? 0) as int >= _kMaxExtraEta;
@@ -828,21 +805,31 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   // ====================== FILTERED ORDERS ======================
   List<Map<String, dynamic>> get _filteredOrders {
     final pending = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.pending.label)
+        .where((o) => (o['status'] ?? '').toString().toLowerCase() == FoodOrderStatus.pending.label.toLowerCase())
         .toList()
       ..sort((a, b) =>
           (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
     final preparing = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.preparing.label)
+        .where((o) => (o['status'] ?? '').toString().toLowerCase() == FoodOrderStatus.preparing.label.toLowerCase())
         .toList()
       ..sort((a, b) =>
           ((b['acceptedAt'] ?? b['createdAt']) as DateTime)
               .compareTo((a['acceptedAt'] ?? a['createdAt']) as DateTime));
     final ready = foodOrders
-        .where((o) => o['status'] == FoodOrderStatus.ready.label)
+        .where((o) => (o['status'] ?? '').toString().toLowerCase() == FoodOrderStatus.ready.label.toLowerCase())
         .toList()
       ..sort((a, b) =>
           (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+
+    final otherActive = foodOrders
+        .where((o) {
+          final s = (o['status'] ?? '').toString().toLowerCase();
+          return s != FoodOrderStatus.pending.label.toLowerCase() &&
+                 s != FoodOrderStatus.preparing.label.toLowerCase() &&
+                 s != FoodOrderStatus.ready.label.toLowerCase();
+        })
+        .toList();
+
     final delivered = [...deliveredOrders]
       ..sort((a, b) =>
           (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
@@ -856,7 +843,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     if (selectedFilter == FoodOrderStatus.delivered.label) return delivered;
     if (selectedFilter == FoodOrderStatus.cancelled.label) return cancelled;
 
-    return [...pending, ...preparing, ...ready, ...delivered, ...cancelled];
+    return [...pending, ...preparing, ...ready, ...otherActive, ...delivered, ...cancelled];
   }
 
   // ====================== STATUS HELPERS ======================
@@ -919,7 +906,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     return ListView.builder(
       physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-      itemCount: 6,
+      itemCount: 10,
       itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
     );
   }
@@ -1289,7 +1276,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           Text(
                             "Room ",
                             style: TextStyle(
-                              fontSize: 16,
+                              fontSize: 15,
                               color: isDelayed ? AppColors.error : Colors.indigo,
                               fontWeight: FontWeight.w600,
                             ),
@@ -1297,7 +1284,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                           Text(
                             "${order["room"]}",
                             style: TextStyle(
-                              fontSize: 16,
+                              fontSize: 15,
                               fontWeight: FontWeight.bold,
                               color: isDelayed ? AppColors.error : Colors.indigo,
                             ),
@@ -1305,34 +1292,72 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                         ],
                       ),
                     ),
-                    const Spacer(),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _buildStatusChip(status, chipColor),
-                        const SizedBox(height: 6),
-                        Text(
-                          "#${order["orderNo"]}",
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textPrimary),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            const Icon(Icons.calendar_today_rounded,
-                                size: 11, color: AppColors.textDisabled),
-                            const SizedBox(width: 3),
-                            Text(
-                              _formattedDateTime(order['createdAt']),
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textSecondary),
-                            ),
-                          ],
-                        ),
-                      ],
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              // KOT print button right before status chip
+                              InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () => KOTPreviewSheet.show(context, order),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primaryLight,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.print_rounded, size: 13, color: AppColors.primary),
+                                      SizedBox(width: 3),
+                                      Text(
+                                        "KOT",
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Flexible(child: _buildStatusChip(status, chipColor)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            "#${order["orderNo"]}",
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textPrimary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              const Icon(Icons.calendar_today_rounded,
+                                  size: 11, color: AppColors.textDisabled),
+                              const SizedBox(width: 3),
+                              Text(
+                                _formattedDateTime(order['createdAt']),
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -1515,10 +1540,15 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                               return;
                             }
                             HapticFeedback.selectionClick();
+                            final initialExpires = DateTime.now().add(Duration(
+                                minutes: 15 + (rushHourActive ? _rushExtraMinutes() : 0)));
                             setState(() {
                               _acceptingIndex = index;
                               order["status"] = FoodOrderStatus.preparing.label;
                               order["acceptedAt"] = DateTime.now();
+                              order["etaExpiresAt"] = initialExpires;
+                              order["etaTapCount"] = 0;
+                              order["etaLocked"] = false;
                               if (rushHourActive) {
                                 final extra = _rushExtraMinutes();
                                 order['etaMinutes'] =
@@ -1535,11 +1565,20 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                               setState(() {
                                 order["status"] = FoodOrderStatus.pending.label;
                                 order.remove("acceptedAt");
+                                order.remove("etaExpiresAt");
                               });
                               _showError(result["message"]);
                             } else {
                               final b = result["data"]?["new_status"];
                               if (b != null) order["raw"]["order_status"] = b;
+                              final serverExpires = result["etaExpiresAt"]?.toString() ??
+                                  result["data"]?["eta_expires_at"]?.toString() ??
+                                  '';
+                              if (serverExpires.isNotEmpty) {
+                                setState(() {
+                                  order["etaExpiresAt"] = parseOrderDate(serverExpires);
+                                });
+                              }
                               await OrderAlertService.stopOne();
                               AppSnackBar.show(context, "Order accepted");
                             }
@@ -1592,18 +1631,20 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                               : () async {
                                   final orderNo =
                                       order['orderNo']?.toString() ?? '';
-                                  final prevExtra =
-                                      (order['extraEta'] ?? 0) as int;
-                                  final prevEta =
-                                      (order['etaMinutes'] ?? 15) as int;
+                                  final prevExpires =
+                                      order['etaExpiresAt'] as DateTime?;
+                                  final newExpires = (prevExpires ?? DateTime.now())
+                                      .add(const Duration(minutes: 2));
+                                  final prevTaps =
+                                      (order['etaTapCount'] as num?)?.toInt() ?? 0;
+                                  final newTaps = prevTaps + 1;
                                   const addMinutes = 2;
 
                                   setState(() {
-                                    order['etaMinutes'] = prevEta + addMinutes;
-                                    order['extraEta']   = prevExtra + addMinutes;
-                                    if ((order['extraEta'] as int) >=
-                                        _kMaxExtraEta) {
-                                      order['etaLocked'] = true;
+                                    order['etaExpiresAt'] = newExpires;
+                                    order['etaTapCount']  = newTaps;
+                                    order['etaLocked']    = newTaps >= 5;
+                                    if (newTaps >= 5) {
                                       _maxDelayReachedOrders.add(orderNo);
                                     }
                                   });
@@ -1619,28 +1660,38 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
                                   if (result["success"] != true) {
                                     setState(() {
-                                      order['etaMinutes'] = prevEta;
-                                      order['extraEta']   = prevExtra;
-                                      order['etaLocked']  = false;
-                                      _maxDelayReachedOrders.remove(orderNo);
+                                      order['etaExpiresAt'] = prevExpires;
+                                      order['etaTapCount']  = prevTaps;
+                                      order['etaLocked']    = prevTaps >= 5;
+                                      if (prevTaps < 5) {
+                                        _maxDelayReachedOrders.remove(orderNo);
+                                      }
                                     });
                                     _showError(result["message"]);
                                     return;
                                   }
 
-                                  final serverExtra =
-                                      (result["extraEtaMinutes"] as num?)
-                                              ?.toInt() ??
-                                          prevExtra + addMinutes;
+                                  final serverExpires =
+                                      result["etaExpiresAt"]?.toString() ??
+                                      result["data"]?["eta_expires_at"]?.toString() ??
+                                      '';
+                                  final serverTaps =
+                                      (result["etaTapCount"] as num?)?.toInt() ??
+                                      (result["data"]?["eta_tap_count"] as num?)?.toInt() ??
+                                      newTaps;
                                   final serverLocked =
                                       result["etaLocked"] == 1 ||
                                       result["etaLocked"] == true ||
-                                      result["etaLocked"] == '1';
+                                      result["etaLocked"] == '1' ||
+                                      result["data"]?["eta_locked"] == 1 ||
+                                      result["data"]?["eta_locked"] == true;
 
                                   setState(() {
-                                    order['extraEta']   = serverExtra;
-                                    order['etaMinutes'] = 15 + serverExtra;
-                                    order['etaLocked']  = serverLocked;
+                                    if (serverExpires.isNotEmpty) {
+                                      order['etaExpiresAt'] = parseOrderDate(serverExpires);
+                                    }
+                                    order['etaTapCount'] = serverTaps;
+                                    order['etaLocked']   = serverLocked;
                                     if (serverLocked) {
                                       _maxDelayReachedOrders.add(orderNo);
                                     }

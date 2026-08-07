@@ -207,7 +207,7 @@ class FoodOrderService {
   }
 
   static String _formatTime(String? timestamp) {
-    return DateFormatter.formatTimeDayMonthYear(timestamp);
+    return DateFormatter.formatDateTimeAmPm(timestamp);
   }
 
   // ── UPDATE FOOD ORDER STATUS ──────────────────────────────────────────────
@@ -263,7 +263,9 @@ class FoodOrderService {
         "status":          flag,
         "data":            result,
         "extraEtaMinutes": result["extra_eta_minutes"],
+        "etaTapCount":     result["eta_tap_count"],
         "etaLocked":       result["eta_locked"],
+        "etaExpiresAt":    result["eta_expires_at"],
       };
     } catch (e, stack) {
       dev.log("❌ ERROR (updateFoodOrderStatus): $e");

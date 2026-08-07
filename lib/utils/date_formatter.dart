@@ -59,7 +59,10 @@ class DateFormatter {
   static String formatTimeDayMonth(String? timestamp) {
     if (timestamp == null || timestamp.trim().isEmpty) return '-';
     try {
-      final dt = DateTime.parse(timestamp);
+      String s = timestamp.trim();
+      if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
+      if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
+      final dt = DateTime.parse(s);
       final mm = dt.minute.toString().padLeft(2, '0');
       return '${dt.hour}:$mm • ${dt.day}/${dt.month}';
     } catch (_) {
@@ -71,9 +74,10 @@ class DateFormatter {
   static String formatTimeDayMonthYear(String? timestamp) {
     if (timestamp == null || timestamp.trim().isEmpty) return '-';
     try {
-      final dt = DateTime.parse(
-        timestamp.toString().replaceFirst(' ', 'T'),
-      ).toLocal();
+      String s = timestamp.trim();
+      if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
+      if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
+      final dt = DateTime.parse(s);
       final mm = dt.minute.toString().padLeft(2, '0');
       return '${dt.hour}:$mm • ${dt.day}/${dt.month}/${dt.year}';
     } catch (_) {
@@ -87,8 +91,9 @@ class DateFormatter {
     try {
       String s = ts.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
-      final d = DateTime.parse(s).toLocal();
-      
+      if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
+      final d = DateTime.parse(s);
+
       final h = d.hour > 12
           ? d.hour - 12
           : d.hour == 0
@@ -125,8 +130,9 @@ class DateFormatter {
     try {
       String s = ts.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
-      final d = DateTime.parse(s).toLocal();
-      
+      if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
+      final d = DateTime.parse(s);
+
       final h = d.hour > 12
           ? d.hour - 12
           : d.hour == 0
