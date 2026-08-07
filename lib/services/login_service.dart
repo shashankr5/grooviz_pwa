@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:http/http.dart' as http;
 
 import '../constants/api_constants.dart';
+import '../constants/api_timeouts.dart';
 import 'device_info.dart';
 import 'fcm_service.dart';
 import '../utils/user_session_helper.dart';
@@ -16,9 +17,9 @@ class LoginService {
       : _dio = Dio(
           BaseOptions(
             baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
+            connectTimeout: ApiTimeouts.connectTimeout,
+            receiveTimeout: ApiTimeouts.receiveTimeout,
+            sendTimeout: ApiTimeouts.sendTimeout,
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': ApiConstants.apiKey,

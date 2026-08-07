@@ -2,7 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/login_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../utils/validators.dart';
 import 'reset_password_page.dart';
 
 class OtpVerifyPage extends StatefulWidget {
@@ -84,8 +87,9 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     //_generatedOtp = response['otp'] ??
 
   Future<void> _verifyOtp() async {
-    if (_enteredOtp.length != 4) { // 4 digits
-      _showSnack("Enter valid 4-digit OTP");
+    final validationError = Validators.validateOtp(_enteredOtp);
+    if (validationError != null) {
+      _showSnack(validationError);
       return;
     }
 
@@ -163,10 +167,7 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
-        title: const Text("OTP Verification", style: TextStyle(color: Colors.black)),
+        title: const Text("OTP Verification", style: AppTypography.appBarTitle),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -238,3 +239,4 @@ class _OtpVerifyPageState extends State<OtpVerifyPage> with TickerProviderStateM
     );
   }
 }
+

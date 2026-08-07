@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import '../services/login_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../utils/validators.dart';
 import 'login_page.dart';
 
 class ResetPasswordPage extends StatefulWidget {
@@ -20,12 +23,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   bool _obscure2 = true;
 
   Future<void> _resetPassword() async {
-    if (_newPassController.text.trim().length < 4) {
-      _showMessage("Password must be at least 4 characters", false);
+    final passError = Validators.validatePassword(_newPassController.text.trim(), minLength: 4);
+    if (passError != null) {
+      _showMessage(passError, false);
       return;
     }
-    if (_newPassController.text != _confirmPassController.text) {
-      _showMessage("Passwords do not match", false);
+    final matchError = Validators.validateConfirmPassword(_confirmPassController.text, _newPassController.text);
+    if (matchError != null) {
+      _showMessage(matchError, false);
       return;
     }
 
@@ -62,11 +67,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
-        title: const Text("Reset Password",
-            style: TextStyle(color: AppColors.textPrimary)),
+        title: const Text("Reset Password", style: AppTypography.appBarTitle),
       ),
       backgroundColor: Colors.white,
       body: Padding(
@@ -149,14 +150,16 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
         fillColor: AppColors.bgLight,
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: AppColors.border),
+          borderSide: BorderSide(color: AppColors.border),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide:
-              const BorderSide(color: AppColors.primary, width: 1.5),
+              BorderSide(color: AppColors.primary, width: 1.5),
         ),
       ),
     );
   }
 }
+
+

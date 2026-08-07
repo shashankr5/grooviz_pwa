@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import '../utils/user_session_helper.dart';
+import '../services/login_service.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_typography.dart';
+import 'otp_verify_page.dart';
 import 'reset_password_page.dart';
-import '../utils/app_colors.dart';
 
 class PasswordSecurityPage extends StatefulWidget {
   const PasswordSecurityPage({super.key});
@@ -57,10 +60,7 @@ class _PasswordSecurityPageState extends State<PasswordSecurityPage> {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        title: const Text("Password & Login"),
-        backgroundColor: Colors.white,
-        elevation: 1,
-        iconTheme: const IconThemeData(color: Colors.black),
+        title: const Text("Password & Login", style: AppTypography.appBarTitle),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -107,22 +107,38 @@ class _PasswordSecurityPageState extends State<PasswordSecurityPage> {
                     width: double.infinity,
                     height: 55,
                     child: ElevatedButton(
-                    onPressed: () {
-                    if (mobile.isEmpty) {
+                    onPressed: () async {
+                      if (mobile.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
+                          const SnackBar(
                             content: Text("Phone number not available"),
-                        ),
+                          ),
                         );
                         return;
-                    }
+                      }
 
-                    Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                        builder: (_) => ResetPasswordPage(mobile: mobile),
-                        ),
-                    );
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("Sending OTP code...")),
+                      );
+
+                      final result = await LoginService().sendOtp(mobile: mobile);
+                      if (!context.mounted) return;
+
+                      if (result['success'] == true) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => OtpVerifyPage(mobile: mobile),
+                          ),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(result['message'] ?? 'Failed to send OTP'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
                     },
                       style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
@@ -162,3 +178,4 @@ class _PasswordSecurityPageState extends State<PasswordSecurityPage> {
     );
   }
 }
+

@@ -1,7 +1,10 @@
 //order_history_page.dart
 import 'package:flutter/material.dart';
 import '../services/food_order_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../utils/date_formatter.dart';
 
 class OrderHistoryPage extends StatefulWidget {
 
@@ -167,13 +170,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        title: const Text(
-          'Order History',
-          style: TextStyle(color: AppColors.textPrimary),
-        ),        
-        centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 2,
+        title: const Text('Order History', style: AppTypography.appBarTitle),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -288,7 +285,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                 padding: EdgeInsets.all(16),
                 child: Text(
                   'No orders available',
-                  style: const TextStyle(color: AppColors.textSecondary),
+                  style: AppTypography.bodySecondary,
                 ),
               )
             else
@@ -354,8 +351,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     return null;
   }
 
-  String _formatTime(DateTime d) =>
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  String _formatTime(DateTime d) => DateFormatter.formatDateTimeToTime(d);
 
   /// ================== UI HELPERS ==================
 
@@ -619,3 +615,5 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     ],
   );
 }
+
+

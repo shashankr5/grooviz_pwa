@@ -27,7 +27,15 @@ import 'ticket_details_page.dart';
 import 'profile_page.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
-import '../utils/app_colors.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_typography.dart';
+import '../theme/app_border.dart';
+import '../theme/app_durations.dart';
+import '../theme/app_spacing.dart';
+import '../constants/app_strings.dart';
+import '../components/app_badge.dart';
+import '../components/app_card.dart';
+import '../components/skeleton_loader.dart';
 
 // ── Role helpers ─────────────────────────────────────────────────────────────
 
@@ -54,7 +62,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String selectedFilter     = "All";
   String selectedDateFilter = "All Days";
   String userName           = "";
@@ -69,7 +77,7 @@ class _HomePageState extends State<HomePage> {
   bool  _roleLoaded      = false;
   String? _errorMessage;
 
-  bool isRoomServiceUser = false;
+  bool isFrontOfficeUser = false;
 
   List<Map<String, dynamic>> tasks          = [];
   List<Map<String, dynamic>> escalatedTasks = [];
@@ -97,6 +105,12 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    // FIX-9 (Bug 9): Reload on app resume. This is a safety net — the real
+    // fix is that WebSocketService().connect() must actually be called
+    // (see login_page.dart) so onNewTask/onNewDelivery fire live. Resume
+    // reload additionally covers the case where the socket dropped while
+    // backgrounded and hasn't finished reconnecting yet.
+    WidgetsBinding.instance.addObserver(this);
     _loadUserId();
     _loadUserName();
     _loadUserRole();
@@ -151,6 +165,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _newTaskSub?.cancel();
     _newDeliverySub?.cancel();
     _escalationSub?.cancel();
@@ -158,6 +173,20 @@ class _HomePageState extends State<HomePage> {
     // and avoid calling setState after the widget is removed from the tree.
     _escalationTimer?.cancel();
     super.dispose();
+  }
+
+  // FIX-9 (Bug 9): On resume, re-pull tasks/deliveries/badge and make sure
+  // the websocket is (re)connected. IndexedStack keeps HomePage alive
+  // permanently, so initState never re-fires — this is the only lifecycle
+  // hook that catches "backgrounded, dropped socket, resumed" cleanly.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      _loadTasks();
+      _loadDeliveryCounts();
+      _loadEscalationBadge();
+      if (selectedFilter == "Escalated") _loadEscalatedTasks();
+    }
   }
 
   // ── Loaders ───────────────────────────────────────────────────────────────
@@ -196,8 +225,8 @@ class _HomePageState extends State<HomePage> {
     final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
     if (!mounted) return;
     setState(() {
-      isRoomServiceUser =
-          normalized.any((d) => d.contains("room") && d.contains("service"));
+      isFrontOfficeUser =
+          normalized.any((d) => (d.contains("front") && d.contains("office")) || d.contains("frontoffice"));
       _deptLoaded = true;
     });
   }
@@ -219,19 +248,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadTasks() async {
-    if (tasks.isEmpty) {
-      setState(() {
-        _isLoading    = true;
-        _errorMessage = null;
-      });
-    }
+    setState(() {
+      _isLoading    = true;
+      _errorMessage = null;
+    });
 
     final result = await HomeService().getTasks();
     if (!mounted) return;
 
     if (result["success"] != true) {
       setState(() {
-        _errorMessage = "Unable to load tasks.";
+        _errorMessage = result["message"] as String? ?? "Unable to load tasks.";
         _isLoading    = false;
       });
       return;
@@ -412,10 +439,9 @@ class _HomePageState extends State<HomePage> {
         // Handled separately — returns escalatedTasks list directly.
         return [];
       default:
-        // CHANGE: Escalated tasks now sort to the top of the "All" list
-        // before the date sort so the most urgent cards are always visible
-        // first without the user having to switch to the Escalated filter.
-        list = tasks.where((t) => t["status"] != "Closed").toList()
+        // "All" filter includes Open, In Progress, and Closed tasks.
+        // Escalated tasks sort to top first before date sorting.
+        list = List<Map<String, dynamic>>.from(tasks)
           ..sort((a, b) {
             final aEsc = ((a["is_escalated"] ??
                         (a["raw"] as Map?)?["is_escalated"] ??
@@ -472,13 +498,12 @@ class _HomePageState extends State<HomePage> {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 12, 20, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text("Filter by Date",
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary)),
+                    style: AppTypography.title.copyWith(color: AppColors.textPrimary)),
               ),
             ),
             ...options.map((opt) {
@@ -505,8 +530,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                       const SizedBox(width: 12),
                       Text(opt,
-                          style: TextStyle(
-                            fontSize: 15,
+                          style: AppTypography.bodyPrimary.copyWith(
                             fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                             color: isSelected ? AppColors.primary : AppColors.textPrimary,
                           )),
@@ -527,13 +551,46 @@ class _HomePageState extends State<HomePage> {
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
+  Widget _buildSkeletonTaskView() {
+    return SingleChildScrollView(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Expanded(child: SkeletonLoader(height: 72, borderRadius: BorderRadius.all(Radius.circular(16)))),
+              SizedBox(width: 8),
+              Expanded(child: SkeletonLoader(height: 72, borderRadius: BorderRadius.all(Radius.circular(16)))),
+              SizedBox(width: 8),
+              Expanded(child: SkeletonLoader(height: 72, borderRadius: BorderRadius.all(Radius.circular(16)))),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: const [
+              SkeletonLoader(width: 70, height: 32, borderRadius: BorderRadius.all(Radius.circular(16))),
+              SizedBox(width: 8),
+              SkeletonLoader(width: 80, height: 32, borderRadius: BorderRadius.all(Radius.circular(16))),
+              SizedBox(width: 8),
+              SkeletonLoader(width: 90, height: 32, borderRadius: BorderRadius.all(Radius.circular(16))),
+            ],
+          ),
+          const SizedBox(height: 16),
+          for (int i = 0; i < 6; i++) const SkeletonTaskCard(),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // CHANGE: Gate on both _deptLoaded AND _roleLoaded so the loading spinner
-    // stays up until the role is resolved. This prevents Manager/GM/Admin
-    // from briefly seeing the "All" filter before defaulting to "Escalated".
     if (!_deptLoaded || !_roleLoaded) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        backgroundColor: AppColors.bg,
+        body: SafeArea(child: _buildSkeletonTaskView()),
+      );
     }
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -542,10 +599,10 @@ class _HomePageState extends State<HomePage> {
         children: [
           _errorMessage != null ? _buildError() : _buildContent(),
           if (_isLoading)
-            const Positioned.fill(
-              child: ColoredBox(
-                color: Colors.black26,
-                child: Center(child: CircularProgressIndicator()),
+            Positioned.fill(
+              child: Container(
+                color: AppColors.bg,
+                child: _buildSkeletonTaskView(),
               ),
             ),
         ],
@@ -556,21 +613,17 @@ class _HomePageState extends State<HomePage> {
   AppBar _buildAppBar() {
     return AppBar(
       automaticallyImplyLeading: false,
-      backgroundColor: Colors.white,
-      elevation: 0,
-      surfaceTintColor: Colors.white,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text("Hi $userName 👋",
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          const Text("Here's your task overview",
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              style: AppTypography.appBarTitle),
+          Text("Here's your task overview",
+              style: AppTypography.appBarSubtitle),
         ],
       ),
       actions: [
-        if (isRoomServiceUser)
+        if (isFrontOfficeUser)
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: GestureDetector(
@@ -608,7 +661,6 @@ class _HomePageState extends State<HomePage> {
         ),
       ],
     );
-  }
 
   // ── Summary cards ─────────────────────────────────────────────────────────
 
@@ -826,7 +878,7 @@ class _HomePageState extends State<HomePage> {
           const Icon(Icons.error_outline, size: 48, color: AppColors.error),
           const SizedBox(height: 12),
           Text(_errorMessage ?? "Something went wrong",
-              style: const TextStyle(color: AppColors.textSecondary)),
+              style: AppTypography.bodySecondary),
           const SizedBox(height: 16),
           ElevatedButton(
             onPressed: _loadTasks,
@@ -864,7 +916,7 @@ class _HomePageState extends State<HomePage> {
                             color: AppColors.textPrimary)),
                     Text(
                       "$currentSectionCount ${selectedFilter == 'All' ? 'active' : selectedFilter.toLowerCase()} requests",
-                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                      style: AppTypography.bodySecondary,
                     ),
                   ],
                 ),
@@ -957,6 +1009,19 @@ class _HomePageState extends State<HomePage> {
                                 }
                               });
                             },
+                            onNoteAdded: (note) {
+                              setState(() {
+                                final idx = tasks.indexWhere((t) =>
+                                    t["raw"]["service_request_id"] ==
+                                    task["raw"]["service_request_id"]);
+                                if (idx != -1) {
+                                  tasks[idx]["note"] = note;
+                                  if (tasks[idx]["raw"] is Map) {
+                                    (tasks[idx]["raw"] as Map)["note"] = note;
+                                  }
+                                }
+                              });
+                            },
                           ),
                         ),
                       );
@@ -983,7 +1048,7 @@ class _HomePageState extends State<HomePage> {
           child: Column(children: [
             Icon(Icons.check_circle_outline_rounded, size: 48, color: AppColors.success),
             SizedBox(height: 12),
-            Text("No escalated tasks", style: TextStyle(color: AppColors.textSecondary)),
+            Text("No escalated tasks", style: AppTypography.bodySecondary),
           ]),
         ),
       );
@@ -1006,6 +1071,14 @@ class _HomePageState extends State<HomePage> {
                   task:     task,
                   userRole: userRole,
                   onClose:  () => _loadEscalatedTasks(),
+                  onNoteAdded: (note) {
+                    setState(() {
+                      final idx = escalatedTasks.indexWhere((t) =>
+                          t["service_request_id"] ==
+                          task["service_request_id"]);
+                      if (idx != -1) escalatedTasks[idx]["note"] = note;
+                    });
+                  },
                 ),
               ),
             ).then((_) => _loadEscalatedTasks()),
@@ -1252,19 +1325,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _statusPill(String status, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 5, height: 5,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 4),
-        Text(status,
-            style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 11)),
-      ]),
+    return AppBadge(
+      label: status,
+      color: color,
+      backgroundColor: color.withOpacity(0.1),
+      small: true,
     );
   }
 
@@ -1355,7 +1420,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
     final result = await HomeService().getReadyOrdersForRoomService();
     if (!mounted) return;
     if (result["success"] != true) {
-      setState(() { _errorMessage = "Unable to load orders."; });
+      setState(() { _errorMessage = result["message"] as String? ?? "Unable to load orders."; });
       return;
     }
     final grouped =
@@ -1507,8 +1572,8 @@ class _DeliveryPageState extends State<DeliveryPage> {
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary)),
               const SizedBox(height: 8),
-              const Text("Mark this order as delivered?",
-                  style: TextStyle(fontSize: 15, color: AppColors.textSecondary)),
+              Text("Mark this order as delivered?",
+                  style: AppTypography.bodySecondary.copyWith(fontSize: 15)),
               const SizedBox(height: 20),
               Row(
                 children: [
@@ -1598,11 +1663,7 @@ class _DeliveryPageState extends State<DeliveryPage> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        title: const Text("Delivery Management",
-            style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: AppColors.textPrimary,
+        title: const Text("Delivery Management"),
       ),
       body: Column(
         children: [

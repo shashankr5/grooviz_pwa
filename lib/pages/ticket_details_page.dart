@@ -29,8 +29,11 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
 
 // ── Role helpers ──────────────────────────────────────────────────────────────
 
@@ -60,6 +63,7 @@ class TicketDetailPage extends StatefulWidget {
   final String userRole;
   final VoidCallback? onClose;
   final void Function(Map<String, dynamic>)? onReassign;
+  final void Function(String)? onNoteAdded;
 
   const TicketDetailPage({
     super.key,
@@ -67,6 +71,7 @@ class TicketDetailPage extends StatefulWidget {
     this.userRole = '',
     this.onClose,
     this.onReassign,
+    this.onNoteAdded,
   });
 
   @override
@@ -206,27 +211,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   // ── Timestamp formatter ───────────────────────────────────────────────────
 
   String _formatTs(String? ts) {
-    if (ts == null || ts.trim().isEmpty) return '—';
-    try {
-      String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
-
-      // .toLocal() converts UTC → local time.
-      // Remove this call if your DB stores timestamps in local time already.
-      final d = DateTime.parse(s).toLocal();
-
-      final h = d.hour > 12
-          ? d.hour - 12
-          : d.hour == 0
-              ? 12   // FIX: midnight shows as 12, not 0
-              : d.hour;
-      final p = d.hour >= 12 ? 'PM' : 'AM';
-      return '${d.day.toString().padLeft(2, '0')}/'
-          '${d.month.toString().padLeft(2, '0')}/${d.year}'
-          ' • $h:${d.minute.toString().padLeft(2, '0')} $p';
-    } catch (_) {
-      return ts!;
-    }
+    return DateFormatter.formatDateTimeAmPm(ts);
   }
 
   Future<void> _callPhone(String phone) async {
@@ -393,6 +378,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     _noteController.clear();
     setState(() => _task['note'] = text);
+    widget.onNoteAdded?.call(text);
     AppSnackBar.show(context, 'Note added');
   }
 
@@ -887,27 +873,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   AppBar _buildAppBar(String status, Color statusClr) {
   final label = _isEscalated ? 'Escalated' : status;
   return AppBar(
-    backgroundColor:  Colors.white,
-    elevation:        0,
-    surfaceTintColor: Colors.white,
     toolbarHeight:    64,
-    centerTitle:      false,                // ← allow left/right alignment
     leading: IconButton(
-      icon: const Icon(Icons.arrow_back_ios_new_rounded,
-          size: 18, color: AppColors.textPrimary),
+      icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
       onPressed: () => Navigator.pop(context),
     ),
     title: SizedBox(
-      width: double.infinity,               // fill available horizontal space
+      width: double.infinity,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           // Left side: Request #ID
           Text('Request #$_serviceRequestId',
-              style: const TextStyle(
-                  fontSize:   16,
-                  fontWeight: FontWeight.bold,
-                  color:      AppColors.textPrimary)),
+              style: AppTypography.appBarTitle),
           // Right side: status pill
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
@@ -1582,7 +1560,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               style: OutlinedButton.styleFrom(
                 padding:         const EdgeInsets.symmetric(vertical: 13),
                 foregroundColor: AppColors.primary,
-                side: const BorderSide(color: AppColors.primary),
+                side: BorderSide(color: AppColors.primary),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(13)),
               ),
@@ -1619,3 +1597,4 @@ class _StaffListItem {
   final Map<String, dynamic>? staff;
   _StaffListItem({required this.isDivider, this.dept, this.staff});
 }
+

@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import '../services/checkout_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../utils/date_formatter.dart';
 import 'guest_checkout_page.dart' show OrdersSection;
 
 class GuestCheckoutHistoryPage extends StatefulWidget {
@@ -44,22 +47,12 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
 
   /// "04/05/2026 • 2:30 PM"  — consistent with home_page style
   String _formatDateTime(String? s) {
-    final d = _parseDate(s);
-    if (d == null) return '—';
-    final day    = d.day.toString().padLeft(2, '0');
-    final month  = d.month.toString().padLeft(2, '0');
-    final year   = d.year;
-    final hour12 = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
-    final minute = d.minute.toString().padLeft(2, '0');
-    final period = d.hour >= 12 ? 'PM' : 'AM';
-    return '$day/$month/$year • $hour12:$minute $period';
+    return DateFormatter.formatDateTimeAmPm(s);
   }
 
   /// "04/05/2026"
   String _formatDateOnly(String? s) {
-    final d = _parseDate(s);
-    if (d == null) return '—';
-    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+    return DateFormatter.formatDateOnlyFullYear(s);
   }
 
   String _stayDuration(String? checkIn, String? checkOut) {
@@ -93,23 +86,11 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 18, color: AppColors.textPrimary),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text(
-          'Checkout History',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textPrimary,
-            letterSpacing: -0.3,
-          ),
-        ),
+        title: const Text('Checkout History', style: AppTypography.appBarTitle),
       ),
       body: FutureBuilder<List<Map<String, dynamic>>>(
         future: _futureGuests,
@@ -195,7 +176,7 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                   child: Text(
                     '${filtered.length} guest${filtered.length != 1 ? 's' : ''} checked out today',
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 12,
                         color: AppColors.textSecondary,
                         fontWeight: FontWeight.w500),
@@ -209,14 +190,14 @@ class _GuestCheckoutHistoryPageState extends State<GuestCheckoutHistoryPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.history_toggle_off_rounded,
+                            Icon(Icons.history_toggle_off_rounded,
                                 size: 48, color: AppColors.textDisabled),
                             const SizedBox(height: 14),
                             Text(
                               _search.isNotEmpty
                                   ? 'No results for "$_search"'
                                   : 'No checkout history today',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w600,
                                   color: AppColors.textPrimary),
@@ -328,7 +309,7 @@ class _HistoryCard extends StatelessWidget {
                     alignment: Alignment.center,
                     child: Text(
                       firstLetter,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w800,
                         color: AppColors.primary,
@@ -343,7 +324,7 @@ class _HistoryCard extends StatelessWidget {
                       children: [
                         Text(
                           name,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,
                             color: AppColors.textPrimary,
@@ -364,7 +345,7 @@ class _HistoryCard extends StatelessWidget {
                               ),
                               child: Text(
                                 'Rm ${guest['roomNumber'] ?? '—'}',
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w700,
                                   color: AppColors.primary,
@@ -375,7 +356,7 @@ class _HistoryCard extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 'Out · ${formatDateTime(guest['checkoutDate'])}',
-                                style: const TextStyle(
+                                style: TextStyle(
                                     fontSize: 12, color: AppColors.textSecondary),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -398,12 +379,12 @@ class _HistoryCard extends StatelessWidget {
                           color: AppColors.successLight,
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(Icons.check_circle_rounded,
                                 size: 11, color: AppColors.success),
-                            SizedBox(width: 4),
+                            const SizedBox(width: 4),
                             Text(
                               'Checked Out',
                               style: TextStyle(
@@ -418,7 +399,7 @@ class _HistoryCard extends StatelessWidget {
                       AnimatedRotation(
                         turns: expanded ? 0.5 : 0,
                         duration: const Duration(milliseconds: 200),
-                        child: const Icon(Icons.keyboard_arrow_down_rounded,
+                        child: Icon(Icons.keyboard_arrow_down_rounded,
                             size: 20, color: AppColors.textDisabled),
                       ),
                     ],
@@ -429,7 +410,7 @@ class _HistoryCard extends StatelessWidget {
 
             // ── Expanded ───────────────────────────────────────────────
             if (expanded) ...[
-              const Divider(height: 1, color: AppColors.borderLight),
+              Divider(height: 1, color: AppColors.borderLight),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
                 child: Column(
@@ -544,7 +525,7 @@ class _MiniDetail extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 10,
                       color: AppColors.textSecondary,
                       fontWeight: FontWeight.w500),
@@ -552,7 +533,7 @@ class _MiniDetail extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textPrimary),
@@ -567,3 +548,4 @@ class _MiniDetail extends StatelessWidget {
     );
   }
 }
+

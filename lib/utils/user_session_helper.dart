@@ -1,83 +1,84 @@
 // lib/utils/user_session_helper.dart
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../constants/storage_keys.dart';
 
 class UserSessionHelper {
   // ---------- USER ID ----------
   static Future<void> saveUserId(int userId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt("user_id", userId);
+    await prefs.setInt(StorageKeys.userId, userId);
   }
 
   static Future<int?> getUserId() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt("user_id");
+    return prefs.getInt(StorageKeys.userId);
   }
 
   // ---------- USER NAME ----------
   static Future<void> saveUserName(String name) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("user_name", name);
+    await prefs.setString(StorageKeys.userName, name);
   }
 
   static Future<String?> getUserName() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString("user_name");
+    return prefs.getString(StorageKeys.userName);
   }
 
   // ---------- EMAIL ----------
   static Future<void> saveEmail(String email) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("email", email);
+    await prefs.setString(StorageKeys.email, email);
   }
 
   static Future<String?> getEmail() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString("email");
+    return prefs.getString(StorageKeys.email);
   }
 
   // ---------- PHONE ----------
   static Future<void> savePhone(String phone) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("phone", phone);
+    await prefs.setString(StorageKeys.phone, phone);
   }
 
   static Future<String?> getPhone() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString("phone");
+    return prefs.getString(StorageKeys.phone);
   }
 
   // ---------- ENTERPRISE ID ----------
   static Future<void> saveEnterpriseId(int enterpriseId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt("enterprise_id", enterpriseId);
+    await prefs.setInt(StorageKeys.enterpriseId, enterpriseId);
   }
 
   static Future<int?> getEnterpriseId() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt("enterprise_id");
+    return prefs.getInt(StorageKeys.enterpriseId);
   }
 
   // ---------- DEPARTMENTS ----------
   static Future<void> saveDepartments(List<String> depts) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList("departments", depts);
+    await prefs.setStringList(StorageKeys.departments, depts);
   }
 
   static Future<List<String>> getDepartments() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList("departments") ?? [];
+    return prefs.getStringList(StorageKeys.departments) ?? [];
   }
 
   // ---------- ROLE (string name) ----------
   static Future<void> saveRole(String role) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("user_role", role);
+    await prefs.setString(StorageKeys.userRole, role);
   }
 
   static Future<String?> getRole() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString("user_role");
+    return prefs.getString(StorageKeys.userRole);
   }
 
   // ---------- ROLE ID (numeric, from DB roles table) ----------
@@ -90,17 +91,17 @@ class UserSessionHelper {
   //   6 = Staff
   static Future<void> saveRoleId(int roleId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt("user_role_id", roleId);
+    await prefs.setInt(StorageKeys.userRoleId, roleId);
   }
 
   static Future<int?> getRoleId() async {
     final prefs = await SharedPreferences.getInstance();
     // Prefer the stored numeric role_id.
-    final stored = prefs.getInt("user_role_id");
+    final stored = prefs.getInt(StorageKeys.userRoleId);
     if (stored != null) return stored;
 
     // Fallback: derive role_id from the stored role name string.
-    final roleName = prefs.getString("user_role");
+    final roleName = prefs.getString(StorageKeys.userRole);
     return _roleNameToId(roleName);
   }
 
@@ -122,29 +123,29 @@ class UserSessionHelper {
   // ---------- FULL PROFILE ----------
   static Future<void> saveUserProfile(Map<String, dynamic> profile) async {
     final prefs = await SharedPreferences.getInstance();
-    final currentUserId = prefs.getInt("user_id");
+    final currentUserId = prefs.getInt(StorageKeys.userId);
     final profileCopy = Map<String, dynamic>.from(profile);
 
     final profileUserId = _readInt(profileCopy["user_id"]) ?? currentUserId;
     if (profileUserId != null && profileUserId != 0) {
       profileCopy["user_id"] = profileUserId;
-      await prefs.setInt("user_profile_user_id", profileUserId);
+      await prefs.setInt(StorageKeys.userProfileUserId, profileUserId);
     } else {
-      await prefs.remove("user_profile_user_id");
+      await prefs.remove(StorageKeys.userProfileUserId);
     }
 
     // Also persist role_id from the profile if present.
     final roleId = _readInt(profileCopy["role_id"]);
     if (roleId != null && roleId != 0) {
-      await prefs.setInt("user_role_id", roleId);
+      await prefs.setInt(StorageKeys.userRoleId, roleId);
     }
 
-    await prefs.setString("user_profile", jsonEncode(profileCopy));
+    await prefs.setString(StorageKeys.userProfile, jsonEncode(profileCopy));
   }
 
   static Future<Map<String, dynamic>?> getUserProfile() async {
     final prefs = await SharedPreferences.getInstance();
-    final data = prefs.getString("user_profile");
+    final data = prefs.getString(StorageKeys.userProfile);
     if (data == null) return null;
 
     final decoded = jsonDecode(data);
@@ -154,9 +155,9 @@ class UserSessionHelper {
     }
 
     final profile = Map<String, dynamic>.from(decoded);
-    final currentUserId = prefs.getInt("user_id");
+    final currentUserId = prefs.getInt(StorageKeys.userId);
     final cachedUserId =
-        prefs.getInt("user_profile_user_id") ?? _readInt(profile["user_id"]);
+        prefs.getInt(StorageKeys.userProfileUserId) ?? _readInt(profile["user_id"]);
 
     if (currentUserId == null ||
         currentUserId == 0 ||
@@ -171,19 +172,19 @@ class UserSessionHelper {
 
   static Future<void> clearCachedProfile() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove("user_profile");
-    await prefs.remove("user_profile_user_id");
+    await prefs.remove(StorageKeys.userProfile);
+    await prefs.remove(StorageKeys.userProfileUserId);
   }
 
   // ---------- LOGIN STATE ----------
   static Future<void> saveIsLoggedIn(bool value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool("is_logged_in", value);
+    await prefs.setBool(StorageKeys.isLoggedIn, value);
   }
 
   static Future<bool> isLoggedIn() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool("is_logged_in") ?? false;
+    return prefs.getBool(StorageKeys.isLoggedIn) ?? false;
   }
 
   // ---------- CLEAR EVERYTHING ----------
@@ -191,27 +192,27 @@ class UserSessionHelper {
     final prefs = await SharedPreferences.getInstance();
 
     // Preserve installation_id (device identity)
-    final installationId   = prefs.getString("installation_id");
-    final deviceIdentifier = prefs.getString("device_identifier");
+    final installationId   = prefs.getString(StorageKeys.installationId);
+    final deviceIdentifier = prefs.getString(StorageKeys.deviceIdentifier);
 
-    await prefs.remove("user_id");
-    await prefs.remove("user_name");
-    await prefs.remove("email");
-    await prefs.remove("phone");
-    await prefs.remove("enterprise_id");
-    await prefs.remove("departments");
-    await prefs.remove("user_role");
-    await prefs.remove("user_role_id");        // ← NEW
-    await prefs.remove("user_profile");
-    await prefs.remove("user_profile_user_id");
-    await prefs.remove("is_logged_in");
+    await prefs.remove(StorageKeys.userId);
+    await prefs.remove(StorageKeys.userName);
+    await prefs.remove(StorageKeys.email);
+    await prefs.remove(StorageKeys.phone);
+    await prefs.remove(StorageKeys.enterpriseId);
+    await prefs.remove(StorageKeys.departments);
+    await prefs.remove(StorageKeys.userRole);
+    await prefs.remove(StorageKeys.userRoleId);
+    await prefs.remove(StorageKeys.userProfile);
+    await prefs.remove(StorageKeys.userProfileUserId);
+    await prefs.remove(StorageKeys.isLoggedIn);
 
     // Restore installation ID and device identifier
     if (installationId != null) {
-      await prefs.setString("installation_id", installationId);
+      await prefs.setString(StorageKeys.installationId, installationId);
     }
     if (deviceIdentifier != null) {
-      await prefs.setString("device_identifier", deviceIdentifier);
+      await prefs.setString(StorageKeys.deviceIdentifier, deviceIdentifier);
     }
   }
 
@@ -226,16 +227,20 @@ class UserSessionHelper {
   static Future<Map<String, dynamic>?> getSafeUserProfile() async {
     final prefs = await SharedPreferences.getInstance();
 
-    final data = prefs.getString("user_profile");
+    final data = prefs.getString(StorageKeys.userProfile);
     if (data == null) return null;
 
     final profile = jsonDecode(data);
-    final currentUserId = prefs.getInt("user_id");
+    final currentUserId = prefs.getInt(StorageKeys.userId);
 
     if (profile["user_id"] != currentUserId) {
-      await prefs.remove("user_profile");
+      await prefs.remove(StorageKeys.userProfile);
       return null;
     }
     return profile;
+  }
+
+  static Future<void> logout() async {
+    await clearSession();
   }
 }

@@ -8,11 +8,22 @@ import '../services/food_order_service.dart';
 import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
+import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_border.dart';
+import '../theme/app_durations.dart';
+import '../theme/app_spacing.dart';
+import '../constants/app_strings.dart';
+import '../components/app_badge.dart';
+import '../components/app_card.dart';
+import '../components/app_dialog.dart';
 import '../utils/order_alert_sound.dart';
 import '../services/order_alert_service.dart';
 import '../services/websocket_service.dart';
+import '../components/skeleton_loader.dart';
 
 class FoodOrdersPage extends StatefulWidget {
   const FoodOrdersPage({super.key});
@@ -211,7 +222,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
     DateTime? parsedEndsAt;
     if (active && endsAt != null && endsAt.isNotEmpty) {
-      parsedEndsAt = _safeParseDate(endsAt);
+      parsedEndsAt = _parseRushHourEndsAt(endsAt);
     }
 
     _applyRushHourState(active: active, endsAt: parsedEndsAt, extraMin: extra);
@@ -286,9 +297,21 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     cancelled.sort((a, b) =>
         (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
 
+    // Fetch delivered orders concurrently so All filter displays pending, preparing, ready, delivered, cancelled
+    final deliveredResult = await _homeService.getDeliveredOrdersForRoomService();
+    List<Map<String, dynamic>> deliveredGrouped = [];
+    if (deliveredResult["success"] == true) {
+      deliveredGrouped = _groupApiOrders(deliveredResult["orders"] ?? []);
+      for (final o in deliveredGrouped) o["status"] = FoodOrderStatus.delivered.label;
+      deliveredGrouped.sort((a, b) =>
+          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    }
+
     setState(() {
       foodOrders..clear()..addAll(active);
       cancelledOrders..clear()..addAll(cancelled);
+      deliveredOrders..clear()..addAll(deliveredGrouped);
+      _deliveredLoaded = true;
       _isLoading = false;
     });
 
@@ -315,7 +338,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
         DateTime? parsedEndsAt;
         if (active && endsAt != null && endsAt.isNotEmpty) {
-          parsedEndsAt = _safeParseDate(endsAt);
+          parsedEndsAt = _parseRushHourEndsAt(endsAt);
           // If the server says active but the time has already passed, treat as off
           if (parsedEndsAt.isBefore(DateTime.now())) {
             _applyRushHourState(active: false);
@@ -389,8 +412,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         final endsAt  = result["rush_hour_ends_at"]?.toString();
         final extra   = (result["rush_hour_extra_min"] as num?)?.toInt() ?? 10;
         DateTime? parsedEndsAt;
-        if (active && endsAt != null && endsAt.isNotEmpty) {
-          parsedEndsAt = _safeParseDate(endsAt);
+        if (active) {
+          if (durationMinutes > 0) {
+            parsedEndsAt = DateTime.now().add(Duration(minutes: durationMinutes));
+          } else if (endsAt != null && endsAt.isNotEmpty) {
+            parsedEndsAt = _parseRushHourEndsAt(endsAt);
+          }
         }
         _applyRushHourState(
           active:   active,
@@ -586,17 +613,34 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   String _formattedDateTime(DateTime time) {
-    final d   = time.day.toString().padLeft(2, '0');
-    final m   = time.month.toString().padLeft(2, '0');
-    final h   = time.hour > 12 ? time.hour - 12 : time.hour;
-    final min = time.minute.toString().padLeft(2, '0');
-    final p   = time.hour >= 12 ? 'PM' : 'AM';
-    return '$d/$m/${time.year} • ${h == 0 ? 12 : h}:$min $p';
+    return DateFormatter.formatDateTimeObjectAmPm(time);
   }
 
   DateTime _safeParseDate(String s) {
+    if (s.trim().isEmpty) return DateTime.now();
     try {
-      return DateTime.parse(s.replaceFirst(' ', 'T')).toLocal();
+      final str = s.trim().replaceFirst(' ', 'T');
+      if (str.endsWith('Z') || str.contains('+')) {
+        return DateTime.parse(str).toLocal();
+      }
+      return DateTime.parse('${str}Z').toLocal();
+    } catch (_) {
+      try {
+        return DateTime.parse(s.trim().replaceFirst(' ', 'T')).toLocal();
+      } catch (_) {
+        return DateTime.now();
+      }
+    }
+  }
+
+  DateTime _parseRushHourEndsAt(String s) {
+    if (s.trim().isEmpty) return DateTime.now();
+    try {
+      var clean = s.trim().replaceFirst(' ', 'T');
+      if (clean.endsWith('Z')) {
+        clean = clean.substring(0, clean.length - 1);
+      }
+      return DateTime.parse(clean);
     } catch (_) {
       return DateTime.now();
     }
@@ -871,6 +915,15 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
     }
   }
 
+  Widget _buildSkeletonFoodOrdersView() {
+    return ListView.builder(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+      itemCount: 6,
+      itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
+    );
+  }
+
   // ====================== BUILD ======================
   @override
   Widget build(BuildContext context) {
@@ -904,8 +957,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
           ),
           Expanded(
             child: _isLoading
-                ? const Center(
-                    child: CircularProgressIndicator(color: AppColors.primary))
+                ? _buildSkeletonFoodOrdersView()
                 : _hasError
                     ? Center(
                         child: Text(
@@ -954,21 +1006,12 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
   // ── APP BAR ───────────────────────────────────────────────────
   AppBar _buildAppBar() {
     return AppBar(
-      backgroundColor: Colors.white,
-      elevation: 0,
-      surfaceTintColor: Colors.white,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Food Orders",
-              style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          Text(
-            "Manage incoming food orders in real-time",
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-          ),
+          const Text("Food Orders", style: AppTypography.appBarTitle),
+          const Text("Manage incoming food orders in real-time",
+              style: AppTypography.appBarSubtitle),
         ],
       ),
       actions: [
@@ -1634,28 +1677,11 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
 
   // ── STATUS CHIP ───────────────────────────────────────────────
   Widget _buildStatusChip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.25)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-              width: 5, height: 5,
-              decoration:
-                  BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 4),
-          Text(label,
-              style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 10)),
-        ],
-      ),
+    return AppBadge(
+      label: label,
+      color: color,
+      backgroundColor: color.withOpacity(0.1),
+      small: true,
     );
   }
 
@@ -1780,13 +1806,13 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              const Text('Cancel Order',
+              Text('Cancel Order',
                   style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textPrimary)),
               const SizedBox(height: 4),
-              const Text('Select a reason',
+              Text('Select a reason',
                   style: TextStyle(
                       fontSize: 13, color: AppColors.textSecondary)),
               const SizedBox(height: 12),
@@ -1834,7 +1860,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(
                       vertical: 14, horizontal: 8),
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                       border: Border(
                           bottom: BorderSide(color: AppColors.borderLight))),
                   child: Row(
@@ -1848,7 +1874,7 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
                       ),
                       const SizedBox(width: 12),
                       Text(reason,
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w500,
                               color: AppColors.textPrimary)),
@@ -1871,3 +1897,4 @@ class _FoodOrdersPageState extends State<FoodOrdersPage>
         isError: true);
   }
 }
+

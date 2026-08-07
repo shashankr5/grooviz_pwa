@@ -1,8 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/checkout_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../components/app_dialog.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/date_formatter.dart';
 import 'guest_checkout_history_page.dart';
 
 class GuestCheckoutPage extends StatefulWidget {
@@ -58,25 +62,12 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
 
   /// "04/05/2026 • 2:30 PM"  — matches home_page style
   String _formatDateTime(String? s) {
-    final d = _parseDate(s);
-    if (d == null) return '—';
-    final day    = d.day.toString().padLeft(2, '0');
-    final month  = d.month.toString().padLeft(2, '0');
-    final year   = d.year;
-    final hour12 = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
-    final minute = d.minute.toString().padLeft(2, '0');
-    final period = d.hour >= 12 ? 'PM' : 'AM';
-    return '$day/$month/$year • $hour12:$minute $period';
+    return DateFormatter.formatDateTimeAmPm(s);
   }
 
   /// "2:30 PM"
   String _formatTime(String? s) {
-    final d = _parseDate(s);
-    if (d == null) return '—';
-    final h = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
-    final m = d.minute.toString().padLeft(2, '0');
-    final period = d.hour >= 12 ? 'PM' : 'AM';
-    return '$h:$m $period';
+    return DateFormatter.formatTimeOnlyAmPm(s);
   }
 
   Map<String, dynamic> _statusStyle(String? status) {
@@ -146,36 +137,13 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
   }
 
   void _onManualCheckout(Map<String, dynamic> guest) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: Colors.white,
-        title: const Text(
-          'Confirm Checkout',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
-        ),
-        content: Text(
-          'Check out ${guest['guestName'] ?? 'this guest'} from Room ${guest['roomNumber'] ?? '—'}?',
-          style: const TextStyle(fontSize: 14, color: AppColors.textSecondary, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              elevation: 0,
-            ),
-            child: const Text('Check Out'),
-          ),
-        ],
-      ),
+    final confirmed = await AppDialog.show(
+      context,
+      title: 'Confirm Checkout',
+      message: 'Check out ${guest['guestName'] ?? 'this guest'} from Room ${guest['roomNumber'] ?? '—'}?',
+      confirmLabel: 'Check Out',
+      cancelLabel: 'Cancel',
+      isDestructive: false,
     );
 
     if (confirmed == true && mounted) {
@@ -227,15 +195,7 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
         backgroundColor: Colors.white,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
-        title: const Text(
-          'Checkout Today',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textPrimary,
-            letterSpacing: -0.3,
-          ),
-        ),
+        title: const Text('Checkout Today', style: AppTypography.appBarTitle),
         actions: [
           IconButton(
             icon: const Icon(Icons.history_rounded, color: AppColors.textPrimary),
@@ -385,18 +345,18 @@ class _GuestCheckoutPageState extends State<GuestCheckoutPage> {
                     child: Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
-                        children: const [
+                        children: [
                           Icon(Icons.hotel_rounded, size: 52, color: AppColors.textDisabled),
-                          SizedBox(height: 14),
+                          const SizedBox(height: 14),
                           Text(
                             'No checkouts today',
                             style: TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
                           ),
-                          SizedBox(height: 6),
+                          const SizedBox(height: 6),
                           Text(
                             'Guests checking out today will appear here',
-                            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                            style: AppTypography.bodySecondary.copyWith(fontSize: 13),
                           ),
                         ],
                       ),
@@ -933,12 +893,12 @@ class OrdersSection extends StatelessWidget {
               color: const Color(0xFFF5F7FA),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Row(
+            child: Row(
               children: [
                 Icon(Icons.receipt_long_outlined, size: 16, color: AppColors.textDisabled),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Text('No food orders placed',
-                    style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                    style: AppTypography.bodySecondary.copyWith(fontSize: 13)),
               ],
             ),
           );
@@ -952,14 +912,14 @@ class OrdersSection extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Divider(height: 24, color: AppColors.borderLight),
+            Divider(height: 24, color: AppColors.borderLight),
 
             // Header
             Row(
               children: [
-                const Icon(Icons.receipt_long_outlined, size: 15, color: AppColors.textSecondary),
+                Icon(Icons.receipt_long_outlined, size: 15, color: AppColors.textSecondary),
                 const SizedBox(width: 7),
-                const Text(
+                Text(
                   'Food Orders',
                   style: TextStyle(
                       fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
@@ -973,7 +933,7 @@ class OrdersSection extends StatelessWidget {
                   ),
                   child: Text(
                     '${orders.length} order${orders.length > 1 ? 's' : ''}',
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
                   ),
                 ),
@@ -1051,13 +1011,13 @@ class _OrderRow extends StatelessWidget {
             children: [
               Text(
                 'Order #$orderNo',
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
               ),
               const Spacer(),
               Text(
                 '₹${total.toStringAsFixed(2)}',
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.primary),
               ),
             ],
@@ -1086,7 +1046,7 @@ class _OrderRow extends StatelessWidget {
                       Expanded(
                         child: Text(
                           item['food_name']?.toString() ?? '—',
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 12,
                               color: AppColors.textPrimary,
                               fontWeight: FontWeight.w500),
@@ -1094,7 +1054,7 @@ class _OrderRow extends StatelessWidget {
                       ),
                       Text(
                         'x${item['quantity'] ?? 1}',
-                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
                       ),
                       const SizedBox(width: 10),
                       SizedBox(
@@ -1102,7 +1062,7 @@ class _OrderRow extends StatelessWidget {
                         child: Text(
                           '₹${(item['total_price'] as num? ?? 0).toStringAsFixed(0)}',
                           textAlign: TextAlign.end,
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 12,
                               color: AppColors.textSecondary,
                               fontWeight: FontWeight.w600),
@@ -1141,12 +1101,12 @@ class _DetailRow extends StatelessWidget {
           SizedBox(
             width: 80,
             child: Text(label,
-                style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                style: AppTypography.bodySecondary),
           ),
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
             ),
           ),
@@ -1155,3 +1115,6 @@ class _DetailRow extends StatelessWidget {
     );
   }
 }
+
+
+

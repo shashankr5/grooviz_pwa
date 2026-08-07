@@ -11,7 +11,10 @@ import 'my_contents_page.dart';
 import '../services/rooms_service.dart';
 import '../services/upload_service.dart';
 import '../utils/user_session_helper.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../components/components.dart';
 import '../utils/app_snackbar.dart';
 
 class CameraContentPage extends StatefulWidget {
@@ -499,23 +502,12 @@ class _CameraContentPageState extends State<CameraContentPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              _isEditMode ? 'Edit Photo' : 'Camera Content',
-              style: const TextStyle(
-                color: Colors.black,
-                fontWeight: FontWeight.bold,
-                fontSize: 18,
-              ),
-            ),
-            const Text(
-              'Upload and display content instantly',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
+            Text(_isEditMode ? 'Edit Photo' : 'Camera Content',
+                style: AppTypography.appBarTitle),
+            const Text('Upload and display content instantly',
+                style: AppTypography.appBarSubtitle),
           ],
         ),
-        elevation: 0,
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.black),
         actions: _isEditMode
             ? []
             : [
@@ -861,7 +853,7 @@ class _CameraContentPageState extends State<CameraContentPage> {
         decoration: _cardDecoration(),
         padding: const EdgeInsets.all(24),
         child: const Text("No rooms available",
-            style: TextStyle(color: AppColors.textSecondary)),
+            style: AppTypography.bodySecondary),
       );
     }
 
@@ -1062,3 +1054,5 @@ class _CameraContentPageState extends State<CameraContentPage> {
     );
   }
 }
+
+

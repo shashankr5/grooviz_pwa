@@ -5,7 +5,9 @@ import 'package:dio/dio.dart';
 
 import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
+import '../utils/date_formatter.dart';
 import '../constants/api_constants.dart';
+import '../constants/api_timeouts.dart';
 
 class FoodOrderService {
   final Dio _dio;
@@ -14,9 +16,9 @@ class FoodOrderService {
       : _dio = Dio(
           BaseOptions(
             baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
+            connectTimeout: ApiTimeouts.connectTimeout,
+            receiveTimeout: ApiTimeouts.receiveTimeout,
+            sendTimeout: ApiTimeouts.sendTimeout,
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': ApiConstants.apiKey,
@@ -205,16 +207,7 @@ class FoodOrderService {
   }
 
   static String _formatTime(String? timestamp) {
-    if (timestamp == null) return "-";
-    try {
-      final dt = DateTime.parse(
-        timestamp.toString().replaceFirst(' ', 'T'),
-      ).toLocal();
-      return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} • "
-          "${dt.day}/${dt.month}/${dt.year}";
-    } catch (_) {
-      return "-";
-    }
+    return DateFormatter.formatTimeDayMonthYear(timestamp);
   }
 
   // ── UPDATE FOOD ORDER STATUS ──────────────────────────────────────────────

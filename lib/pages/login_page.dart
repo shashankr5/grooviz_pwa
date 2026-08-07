@@ -1,12 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'main_navigation.dart';
+import '../components/app_button.dart';
 import '../services/login_service.dart';
 import '../services/fcm_service.dart';
 import '../utils/user_session_helper.dart';
 import '../services/profile_service.dart';
-import '../utils/app_colors.dart';
+import '../services/websocket_service.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_typography.dart';
+import '../utils/validators.dart';
 import 'forgot_password_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -106,6 +111,17 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
+    // FIX-9 (Bug 9): WebSocketService().connect() was never called anywhere
+    // in the app. Without this, HomePage's onNewTask/onNewDelivery/onEscalation
+    // listeners (which are already correctly wired) never receive live
+    // events — the list/count only ever updated via FCM cold-start delivery,
+    // which is why a full app-kill+reopen "fixed" it.
+    final enterpriseId = await UserSessionHelper.getEnterpriseId();
+    WebSocketService().connect(
+      userId: response['user_id']?.toString(),
+      enterpriseId: enterpriseId?.toString(),
+    );
+
     // Wipes the entire navigation stack — nothing to go back to
     Navigator.pushAndRemoveUntil(
       context,
@@ -134,9 +150,9 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(width: 8),
           Text(
             'Preparing secure connection...',
-            style: TextStyle(
+            style: AppTypography.bodySecondary.copyWith(
               fontSize: 12,
-              color: Colors.grey.shade600,
+              color: AppColors.textDisabled,
             ),
           ),
         ],
@@ -153,7 +169,7 @@ class _LoginPageState extends State<LoginPage> {
         _isFormValid && !_isLoading && _fcmStatus != FCMStatus.acquiring;
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.surface,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -184,12 +200,11 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 25),
 
-                const Center(
+                Center(
                   child: Text(
                     'Welcome',
-                    style: TextStyle(
+                    style: AppTypography.h1.copyWith(
                       fontSize: 26,
-                      fontWeight: FontWeight.bold,
                       color: Colors.black87,
                     ),
                   ),
@@ -199,20 +214,27 @@ class _LoginPageState extends State<LoginPage> {
                 Center(
                   child: Text(
                     'Login to continue',
-                    style: TextStyle(fontSize: 15, color: Colors.grey),
+                    style: AppTypography.bodySecondary.copyWith(
+                      color: Colors.grey,
+                    ),
                   ),
                 ),
 
                 const SizedBox(height: 40),
 
-                const Text(
+                Text(
                   'Username',
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                  style: AppTypography.bodyPrimary.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 8),
 
                 TextFormField(
                   controller: _usernameController,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                  ],
                   decoration: InputDecoration(
                     hintText: 'Enter username',
                     prefixIcon: const Icon(Icons.person_outline),
@@ -230,20 +252,25 @@ class _LoginPageState extends State<LoginPage> {
                           color: AppColors.primary, width: 1.5),
                     ),
                   ),
-                  validator: (v) => v!.isEmpty ? 'Username required' : null,
+                  validator: (v) => Validators.validateRequired(v, 'Username'),
                 ),
 
                 const SizedBox(height: 20),
 
-                const Text(
+                Text(
                   'Password',
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                  style: AppTypography.bodyPrimary.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 8),
 
                 TextFormField(
                   controller: _passwordController,
                   obscureText: _obscurePassword,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                  ],
                   decoration: InputDecoration(
                     hintText: 'Enter password',
                     prefixIcon: const Icon(Icons.lock_outline),
@@ -268,7 +295,7 @@ class _LoginPageState extends State<LoginPage> {
                           color: AppColors.primary, width: 1.5),
                     ),
                   ),
-                  validator: (v) => v!.isEmpty ? 'Password required' : null,
+                  validator: (v) => Validators.validateRequired(v, 'Password'),
                 ),
 
                 const SizedBox(height: 12),
@@ -282,9 +309,9 @@ class _LoginPageState extends State<LoginPage> {
                         MaterialPageRoute(
                             builder: (_) => const ForgotPasswordPage()),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Forgot Password?',
-                        style: TextStyle(
+                        style: AppTypography.bodyPrimary.copyWith(
                           color: AppColors.primary,
                           fontWeight: FontWeight.bold,
                         ),
@@ -295,33 +322,11 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 20),
 
-                SizedBox(
-                  width: double.infinity,
+                AppButton(
+                  label: 'Login',
+                  onPressed: buttonEnabled ? _login : null,
+                  loading: _isLoading,
                   height: 55,
-                  child: ElevatedButton(
-                    onPressed: buttonEnabled ? _login : null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      disabledBackgroundColor: Colors.grey.shade400,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    child: _isLoading
-                        ? const CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          )
-                        : const Text(
-                            'Login',
-                            style: TextStyle(
-                              fontSize: 18,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                  ),
                 ),
 
                 // ── FCM status hint ──────────────────────────────────────

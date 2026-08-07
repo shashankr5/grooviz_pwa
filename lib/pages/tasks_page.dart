@@ -30,7 +30,17 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/user_session_helper.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_border.dart';
+import '../theme/app_durations.dart';
+import '../theme/app_spacing.dart';
+import '../constants/app_strings.dart';
+import '../components/app_badge.dart';
+import '../components/app_card.dart';
+import '../components/app_dialog.dart';
+import '../components/skeleton_loader.dart';
 import 'ticket_details_page.dart';
 
 // ── Role helpers ──────────────────────────────────────────────────────────────
@@ -92,6 +102,10 @@ class _TasksPageState extends State<TasksPage> {
 
   // ── Personal stats ────────────────────────────────────────────────────────
   bool _statsLoading   = true;
+  // FIX-10 (Bug 10): was silently cleared on failure with no error state,
+  // so a no-internet fetch left the previous month's data on screen with
+  // no indication anything had failed.
+  String? _statsError;
   int  totalTasks      = 0;
   int  completedTasks  = 0;
   int  inProgressTasks = 0;
@@ -178,7 +192,10 @@ class _TasksPageState extends State<TasksPage> {
 
   Future<void> _loadMyStats() async {
     if (!mounted) return;
-    setState(() => _statsLoading = true);
+    setState(() {
+      _statsLoading = true;
+      _statsError   = null;
+    });
 
     if (_isManagementOnly(_userRoleId)) {
       setState(() => _statsLoading = false);
@@ -220,9 +237,25 @@ class _TasksPageState extends State<TasksPage> {
         _recentTasks    = allTasksList.take(5).toList();
         _hasMoreTasks   = allTasksList.length > 5;
         _statsLoading   = false;
+        _statsError     = null;
       });
     } else {
-      if (mounted) setState(() => _statsLoading = false);
+      // FIX-10 (Bug 10): show the error and clear stale figures instead of
+      // silently leaving the previous month's numbers on screen next to a
+      // newly-selected month — this was the "wrong month" bug.
+      if (mounted) {
+        setState(() {
+          _statsLoading   = false;
+          _statsError     = result['message'] as String? ??
+              'Failed to load activity. Please check your connection.';
+          totalTasks      = 0;
+          completedTasks  = 0;
+          inProgressTasks = 0;
+          _allTasks       = [];
+          _recentTasks    = [];
+          _hasMoreTasks   = false;
+        });
+      }
     }
   }
 
@@ -483,7 +516,7 @@ class _TasksPageState extends State<TasksPage> {
                 const Padding(
                   padding: EdgeInsets.all(32),
                   child: Text('No tasks',
-                      style: TextStyle(color: AppColors.textSecondary)),
+                      style: AppTypography.bodySecondary),
                 )
               else
                 Expanded(
@@ -533,6 +566,54 @@ class _TasksPageState extends State<TasksPage> {
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
+  Widget _buildSkeletonView() {
+    return SingleChildScrollView(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(child: SkeletonLoader(height: 44, borderRadius: BorderRadius.circular(14))),
+                const SizedBox(width: 10),
+                Expanded(child: SkeletonLoader(height: 44, borderRadius: BorderRadius.circular(14))),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: const [
+                Expanded(child: SkeletonStatCard()),
+                SizedBox(width: 8),
+                Expanded(child: SkeletonStatCard()),
+                SizedBox(width: 8),
+                Expanded(child: SkeletonStatCard()),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: List.generate(
+                6,
+                (_) => const Padding(
+                  padding: EdgeInsets.only(bottom: 10),
+                  child: SkeletonTaskCard(),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final showDeptButton = _isSupervisorOrAbove(_userRoleId) &&
@@ -542,8 +623,37 @@ class _TasksPageState extends State<TasksPage> {
       backgroundColor: AppColors.bgLight,
       appBar: _buildAppBar(),
       body: _statsLoading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
+          ? _buildSkeletonView()
+          : _statsError != null
+              ? RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(32),
+                    children: [
+                      const SizedBox(height: 60),
+                      Icon(Icons.wifi_off_rounded,
+                          size: 48, color: Colors.grey.shade400),
+                      const SizedBox(height: 16),
+                      Text(
+                        _statsError!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Center(
+                        child: TextButton(
+                          onPressed: _loadMyStats,
+                          child: const Text('Try Again'),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : RefreshIndicator(
               onRefresh: _onRefresh,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -590,17 +700,10 @@ class _TasksPageState extends State<TasksPage> {
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('My Tasks',
-              style: TextStyle(color: AppColors.textPrimary,
-                  fontWeight: FontWeight.bold, fontSize: 22)),
-          Text(subtitle,
-              style: const TextStyle(
-                  color: AppColors.textSecondary, fontSize: 12)),
+          const Text('My Tasks', style: AppTypography.appBarTitle),
+          Text(subtitle, style: AppTypography.appBarSubtitle),
         ],
       ),
-      elevation:       0,
-      backgroundColor: Colors.white,
-      iconTheme: const IconThemeData(color: Colors.black),
     );
   }
 
@@ -857,7 +960,7 @@ class _TasksPageState extends State<TasksPage> {
             Icon(Icons.people_outline, size: 36, color: AppColors.textDisabled),
             SizedBox(height: 8),
             Text('No team data for this period',
-                style: TextStyle(color: AppColors.textSecondary)),
+                style: AppTypography.bodySecondary),
           ]),
         ),
       );
@@ -1019,7 +1122,7 @@ class _TasksPageState extends State<TasksPage> {
                 Icon(Icons.task_alt, size: 40, color: AppColors.textSecondary),
                 SizedBox(height: 8),
                 Text('No recent tasks found',
-                    style: TextStyle(color: AppColors.textSecondary)),
+                    style: AppTypography.bodySecondary),
               ]),
             )
           else
@@ -1199,14 +1302,14 @@ class _TasksPageState extends State<TasksPage> {
             child: const Icon(Icons.star_outline, color: AppColors.primary, size: 26),
           ),
           const SizedBox(width: 14),
-          const Expanded(
+          Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Great work!',
                   style: TextStyle(color: AppColors.primary,
                       fontWeight: FontWeight.bold, fontSize: 15)),
-              SizedBox(height: 2),
+              const SizedBox(height: 2),
               Text('Keep up the good work and complete more tasks.',
-                  style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                  style: AppTypography.bodySecondary.copyWith(fontSize: 13)),
             ]),
           ),
           const SizedBox(width: 8),
@@ -1628,20 +1731,14 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        backgroundColor:  Colors.white,
-        elevation:        0,
-        surfaceTintColor: Colors.white,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18,
-              color: AppColors.textPrimary),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
           onPressed: () => Navigator.pop(context),
         ),
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(widget.userName,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
+          Text(widget.userName, style: AppTypography.appBarTitle),
           Text('${widget.deptName} — $month ${widget.year}',
-              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              style: AppTypography.appBarSubtitle),
         ]),
       ),
       body: _isLoading
@@ -1735,7 +1832,7 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
           Icon(Icons.task_alt, size: 40, color: AppColors.textDisabled),
           SizedBox(height: 8),
           Text('No tasks in this period',
-              style: TextStyle(color: AppColors.textSecondary)),
+              style: AppTypography.bodySecondary),
         ]),
       );
     }
@@ -1844,6 +1941,25 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
           builder: (_) => TicketDetailPage(
             task:     task,
             userRole: widget.userRole,
+            onClose:  () => setState(() {}),
+            onReassign: (_) => setState(() {}),
+            onNoteAdded: (note) {
+              setState(() {
+                final srId = task["service_request_id"] ??
+                    (task["raw"] is Map ? task["raw"]["service_request_id"] : null);
+                final idx = _tasks.indexWhere((t) {
+                  final tid = t["service_request_id"] ??
+                      (t["raw"] is Map ? t["raw"]["service_request_id"] : null);
+                  return tid != null && tid == srId;
+                });
+                if (idx != -1) {
+                  _tasks[idx]["note"] = note;
+                  if (_tasks[idx]["raw"] is Map) {
+                    (_tasks[idx]["raw"] as Map)["note"] = note;
+                  }
+                }
+              });
+            },
           ),
         ),
       ),

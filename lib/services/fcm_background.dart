@@ -99,6 +99,17 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       return;
 
     case 'ORDER_STATUS_CHANGED':
+      final orderStatus = (message.data['order_status'] ?? message.data['status'] ?? '').toString().toUpperCase();
+      if (orderStatus == 'READY') {
+        await _startServiceIfNeeded();
+      }
+      return;
+
+    case 'ORDER_READY':
+    case 'FOOD_ORDER_READY':
+    case 'DELIVERY_READY':
+    case 'DELIVERY_NOTIFICATION':
+      await _startServiceIfNeeded();
       return;
 
     // ── Service task alerts ────────────────────────────────────────────────

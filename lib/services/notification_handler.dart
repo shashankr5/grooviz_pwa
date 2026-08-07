@@ -1,19 +1,9 @@
-// notification_handler.dart
-//
-// CHANGES IN THIS VERSION:
-//  • New FCM type: PULSE — reads alert_type from data, calls appropriate
-//    ensureRunning() so the play-once foreground service fires fresh audio.
-//  • New FCM type: ESCALATION_ALERT — calls ensureEscalationRunning()
-//    (plays once) + refreshes badge via TaskAlertService.resetEscalationCount.
-//  • New FCM type: ACCEPTED — reads service_request_id, calls
-//    TaskAlertService.resetServiceCount(0) for cross-device foreground
-//    service stop.
-//  • createNotificationChannel() now adds delivery_alert_channel
-//    (delivery_notification sound) and escalation_alert_channel
-//    (escalation_notification sound).
-
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import '../main.dart';
+import '../pages/delivery_page.dart';
+import '../pages/main_navigation.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
 
@@ -56,8 +46,6 @@ Future<void> createNotificationChannel() async {
   final plugin = localNotifications
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
 
-  // ── Existing channels ────────────────────────────────────────────────────
-
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'high_importance_channel', 'High Importance Notifications',
     description: 'Alerts for new food orders.',
@@ -78,7 +66,6 @@ Future<void> createNotificationChannel() async {
     importance: Importance.high, playSound: false,
   ));
 
-  // ── NEW: Delivery alert channel ─────────────────────────────────────────
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'delivery_alert_channel', 'Delivery Alerts',
     description: 'Alerts for room service delivery orders.',
@@ -86,7 +73,6 @@ Future<void> createNotificationChannel() async {
     sound: RawResourceAndroidNotificationSound('delivery_notification'),
   ));
 
-  // ── NEW: Escalation alert channel ───────────────────────────────────────
   await plugin?.createNotificationChannel(const AndroidNotificationChannel(
     'escalation_alert_channel', 'Escalation Alerts',
     description: 'Alerts for escalated tasks requiring immediate attention.',
@@ -94,8 +80,6 @@ Future<void> createNotificationChannel() async {
     sound: RawResourceAndroidNotificationSound('escalation_notification'),
   ));
 }
-
-// ── Notification detail presets ───────────────────────────────────────────
 
 const _foodOrderDetails = NotificationDetails(
   android: AndroidNotificationDetails(
@@ -117,7 +101,6 @@ const _taskAlertDetails = NotificationDetails(
   iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
 
-// NEW
 const _deliveryAlertDetails = NotificationDetails(
   android: AndroidNotificationDetails(
     'delivery_alert_channel', 'Delivery Alerts',
@@ -128,7 +111,6 @@ const _deliveryAlertDetails = NotificationDetails(
   iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
 
-// NEW
 const _escalationAlertDetails = NotificationDetails(
   android: AndroidNotificationDetails(
     'escalation_alert_channel', 'Escalation Alerts',
@@ -138,8 +120,6 @@ const _escalationAlertDetails = NotificationDetails(
   ),
   iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
 );
-
-// ── Main foreground notification handler ─────────────────────────────────
 
 Future<void> _showNotification(RemoteMessage message) async {
   final data  = message.data;
@@ -154,9 +134,6 @@ Future<void> _showNotification(RemoteMessage message) async {
   bool isEscalationType = false;
 
   switch (type) {
-
-    // ── Food order alerts ────────────────────────────────────────────────
-
     case 'NEW_FOOD_ORDER':
       await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
@@ -175,10 +152,22 @@ Future<void> _showNotification(RemoteMessage message) async {
       break;
 
     case 'ORDER_STATUS_CHANGED':
-      // READY / PREPARING — no alert action.
+      final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
+      if (orderStatus == 'READY') {
+        isDeliveryType = true;
+        await TaskAlertService.ensureDeliveryRunning();
+        TaskAlertService.notifyNewDelivery();
+      }
       break;
 
-    // ── Service task alerts ──────────────────────────────────────────────
+    case 'ORDER_READY':
+    case 'FOOD_ORDER_READY':
+    case 'DELIVERY_READY':
+    case 'DELIVERY_NOTIFICATION':
+      isDeliveryType = true;
+      await TaskAlertService.ensureDeliveryRunning();
+      TaskAlertService.notifyNewDelivery();
+      break;
 
     case 'NEW_SERVICE_TASK':
       isTaskType = true;
@@ -190,8 +179,6 @@ Future<void> _showNotification(RemoteMessage message) async {
       isTaskType = true;
       TaskAlertService.notifyNewTask();
       break;
-
-    // ── Delivery alerts ──────────────────────────────────────────────────
 
     case 'NEW_DELIVERY_TASK':
       isDeliveryType = true;
@@ -208,12 +195,6 @@ Future<void> _showNotification(RemoteMessage message) async {
       isDeliveryType = true;
       TaskAlertService.notifyNewDelivery();
       break;
-
-    // ── NEW: Lambda pulse ────────────────────────────────────────────────
-    //
-    // The Lambda EventBridge job fires this every interval to re-ring
-    // unaccepted tasks. alert_type maps to the appropriate sound.
-    // Each PULSE call replays the sound once (play-once mode).
 
     case 'PULSE':
       final alertType = (data['alert_type'] ?? 'service').toString();
@@ -236,12 +217,6 @@ Future<void> _showNotification(RemoteMessage message) async {
       }
       break;
 
-    // ── NEW: Escalation alert ────────────────────────────────────────────
-    //
-    // Sent only to the escalation recipient. Plays escalation sound once.
-    // badge_count in the payload allows an immediate badge update without
-    // a separate API call.
-
     case 'ESCALATION_ALERT':
       isEscalationType = true;
       await TaskAlertService.ensureEscalationRunning();
@@ -249,17 +224,9 @@ Future<void> _showNotification(RemoteMessage message) async {
       TaskAlertService.resetEscalationCount(badgeCount);
       break;
 
-    // ── NEW: Cross-device accept stop ────────────────────────────────────
-    //
-    // Lambda broadcasts this to all dept connections after any device
-    // accepts a task. Stops the foreground service on every non-acceptor.
-
     case 'ACCEPTED':
       isTaskType = true;
-      // Stop the alert — server has confirmed acceptance.
-      // resetServiceCount(0) stops the foreground service immediately.
       TaskAlertService.resetServiceCount(0);
-      // Also trigger a page refresh so the task list updates.
       TaskAlertService.notifyNewTask();
       break;
 
@@ -267,7 +234,6 @@ Future<void> _showNotification(RemoteMessage message) async {
       print('Foreground FCM: unhandled type=$type');
   }
 
-  // Pick the right notification channel for the tray notification
   NotificationDetails details;
   if (isEscalationType) {
     details = _escalationAlertDetails;
@@ -289,36 +255,91 @@ Future<void> _showNotification(RemoteMessage message) async {
 void _handleMessage(RemoteMessage message) {
   print('👆 Notification tapped | type=${message.data['type']}');
   switch (message.data['type']) {
+
+    // ── Food order taps → Food Orders tab ─────────────────────────────────
     case 'NEW_FOOD_ORDER':
     case 'ORDER_ACCEPTED':
     case 'ORDER_CANCELLED':
       OrderAlertService.notifyNewOrder();
+      _navigateToFood();
       break;
+
+    // ── Service task taps → Home tab ───────────────────────────────────────
     case 'NEW_SERVICE_TASK':
     case 'SERVICE_TASK_ACCEPTED':
     case 'ACCEPTED':
       TaskAlertService.notifyNewTask();
+      _navigateToHome();
       break;
+
+    case 'ESCALATION_ALERT':
+      TaskAlertService.notifyNewTask();
+      _navigateToHome();
+      break;
+
+    // ── Delivery taps → Delivery page (push) ───────────────────────────────
     case 'NEW_DELIVERY_TASK':
     case 'DELIVERY_ACCEPTED':
     case 'DELIVERY_DELIVERED':
+    case 'ORDER_READY':
+    case 'FOOD_ORDER_READY':
+    case 'DELIVERY_READY':
+    case 'DELIVERY_NOTIFICATION':
       TaskAlertService.notifyNewDelivery();
+      _navigateToDelivery();
       break;
-    case 'ESCALATION_ALERT':
-      // Tapping the escalation notification navigates to the home page;
-      // the escalation badge is already refreshed in _showNotification.
-      TaskAlertService.notifyNewTask();
+
+    case 'ORDER_STATUS_CHANGED':
+      final orderStatus = (message.data['order_status'] ?? message.data['status'] ?? '').toString().toUpperCase();
+      if (orderStatus == 'READY') {
+        TaskAlertService.notifyNewDelivery();
+        _navigateToDelivery();
+      }
       break;
+
+    // ── PULSE — route by alert_type ────────────────────────────────────────
     case 'PULSE':
-      // Re-fire the appropriate stream so pages reload.
       final alertType = (message.data['alert_type'] ?? 'service').toString();
       if (alertType == 'food') {
         OrderAlertService.notifyNewOrder();
+        _navigateToFood();
       } else if (alertType == 'delivery') {
         TaskAlertService.notifyNewDelivery();
+        _navigateToDelivery();
       } else {
         TaskAlertService.notifyNewTask();
+        _navigateToHome();
       }
       break;
+  }
+}
+
+// ── Navigate to Home tab (service tasks) ─────────────────────────────────────
+void _navigateToHome() {
+  if (MainNavigation.tabSwitchCallback != null) {
+    MainNavigation.tabSwitchCallback!('home');
+  } else {
+    pendingDeepLinkRoute = 'home';
+  }
+}
+
+// ── Navigate to Food Orders tab ───────────────────────────────────────────────
+void _navigateToFood() {
+  if (MainNavigation.tabSwitchCallback != null) {
+    MainNavigation.tabSwitchCallback!('food');
+  } else {
+    pendingDeepLinkRoute = 'food';
+  }
+}
+
+// ── Navigate to Delivery page (push) ─────────────────────────────────────────
+// Case I — app foregrounded/backgrounded: push immediately.
+// Case II — cold start (app was killed): stash route, consumed post-frame.
+void _navigateToDelivery() {
+  final navState = navigatorKey.currentState;
+  if (navState != null) {
+    navState.push(MaterialPageRoute(builder: (_) => const DeliveryPage()));
+  } else {
+    pendingDeepLinkRoute = 'delivery';
   }
 }

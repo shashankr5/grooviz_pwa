@@ -151,7 +151,14 @@ class WebSocketService {
         return;
       }
 
-      // ORDER_STATUS_CHANGED (READY/PREPARING) → no alert action.
+      if (type == 'ORDER_STATUS_CHANGED' || type == 'ORDER_STATUS_UPDATED') {
+        final newStatus = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
+        if (newStatus == 'READY') {
+          TaskAlertService.ensureDeliveryRunning();
+          TaskAlertService.notifyNewDelivery();
+        }
+        return;
+      }
 
       // ── ETA update ────────────────────────────────────────────────────
       // ORDER_ETA_UPDATED is already broadcast to stream listeners above.
@@ -159,26 +166,7 @@ class WebSocketService {
       // No side-effect needed here.
 
       // ── Rush Hour sync ─────────────────────────────────────────────────
-      //
-      // Sent by the update_food_order_status Lambda when any device
-      // activates or deactivates rush hour. All F&B devices in the same
-      // enterprise receive this and update their local UI state via
-      // FoodOrdersPage._handleSocketRushHourUpdate().
-      //
-      // Payload shape:
-      //   {
-      //     type:                 'RUSH_HOUR_UPDATED',
-      //     rush_hour_active:     1 | 0,
-      //     rush_hour_ends_at:    '2026-05-23 14:30:00' | null,
-      //     rush_hour_extra_min:  10,
-      //     enterprise_id:        '42'
-      //   }
-      //
-      // No sound or badge side-effect required — the stream broadcast
-      // above is sufficient; FoodOrdersPage listens and reacts.
       if (type == 'RUSH_HOUR_UPDATED') {
-        // No side-effect beyond the stream broadcast above.
-        // FoodOrdersPage._handleSocketRushHourUpdate() handles it.
         return;
       }
 
@@ -197,7 +185,7 @@ class WebSocketService {
 
       // ── Delivery alerts ────────────────────────────────────────────────
 
-      if (type == 'NEW_DELIVERY_TASK') {
+      if (type == 'NEW_DELIVERY_TASK' || type == 'ORDER_READY' || type == 'FOOD_ORDER_READY' || type == 'DELIVERY_READY') {
         TaskAlertService.ensureDeliveryRunning();
         TaskAlertService.notifyNewDelivery();
         return;

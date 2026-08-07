@@ -5,6 +5,9 @@ import 'dart:math';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../constants/api_timeouts.dart';
+import '../constants/storage_keys.dart';
+import '../utils/logger.dart';
 
 /// FCM acquisition states — exposed so UI can react.
 enum FCMStatus { idle, acquiring, ready, failed }
@@ -23,9 +26,10 @@ class FCMService {
   static Stream<FCMStatus> get statusStream => _statusController.stream;
   static FCMStatus _currentStatus = FCMStatus.idle;
 
-  static const String _keyFcmToken = 'fcm_token';
-  static const String _keyStoredVersion = 'fcm_stored_app_version';
-  static const String _keyNeedsReregistration = 'fcm_needs_reregistration';
+  // Keys delegated to StorageKeys — no duplication.
+  static const _keyFcmToken            = StorageKeys.fcmToken;
+  static const _keyStoredVersion        = StorageKeys.fcmStoredAppVersion;
+  static const _keyNeedsReregistration  = StorageKeys.fcmNeedsReregistration;
 
   // ─── PUBLIC ENTRY POINT ───────────────────────────────────────────────────
 
@@ -64,7 +68,7 @@ class FCMService {
   /// window on a device with any network; if it doesn't, the user likely
   /// has no connectivity at all.
   static Future<String?> ensureFCMToken({
-    Duration timeout = const Duration(seconds: 30),
+    Duration timeout = ApiTimeouts.fcmTimeout,
     bool preferFresh = false,
   }) async {
     final cached = await getCachedFCMToken();
@@ -325,5 +329,9 @@ class FCMService {
       (await SharedPreferences.getInstance())
           .setString(_keyFcmToken, token);
 
-  static void _log(String msg) => print('[FCMService] $msg');
+  static Future<void> deregisterToken() async {
+    // Stub to make logout_helper compile in Phase A. Real implementation deferred to Red phase.
+  }
+
+  static void _log(String msg) => AppLogger.d(msg, category: LogCategory.fcm);
 }

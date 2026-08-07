@@ -5,7 +5,11 @@ import '../services/profile_service.dart';
 import '../services/logout_service.dart';
 import '../services/order_alert_service.dart';
 import '../utils/user_session_helper.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+
+import '../components/app_dialog.dart';
 
 import 'login_page.dart';
 import 'privacy_page.dart';
@@ -103,6 +107,18 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _isPressed = false);
 
     if (!mounted) return;
+
+    final confirm = await AppDialog.show(
+      context,
+      title: 'Log Out?',
+      message: "You'll need to log in again to access your tasks.",
+      confirmLabel: 'Log Out',
+      cancelLabel: 'Cancel',
+      isDestructive: true,
+    );
+
+    if (confirm != true || !mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -272,7 +288,7 @@ class _ProfilePageState extends State<ProfilePage> {
   /// - If > 4 → fixed-height scrollable list showing 4 items at a time.
   Widget _buildDepartmentsSection() {
     if (departments.isEmpty) {
-      return const Text(
+      return Text(
         "—",
         style: TextStyle(
           fontWeight: FontWeight.w600,
@@ -315,16 +331,7 @@ class _ProfilePageState extends State<ProfilePage> {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        title: const Text(
-          "Profile",
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.w600,
-            fontSize: 22,
-          ),
-        ),
+        title: const Text("Profile", style: AppTypography.appBarTitle),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -370,7 +377,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 name.isNotEmpty
                                     ? name.substring(0, 1).toUpperCase()
                                     : "?",
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: AppColors.primary,
                                   fontSize: 26,
                                   fontWeight: FontWeight.w700,
@@ -385,7 +392,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               children: [
                                 Text(
                                   name,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.w700,
                                     color: AppColors.textPrimary,
@@ -395,7 +402,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 const SizedBox(height: 4),
                                 Text(
                                   designation,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     color: AppColors.textSecondary,
                                     fontSize: 14,
                                   ),
@@ -460,7 +467,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                     ),
                                   ),
                                   const SizedBox(width: 8),
-                                  const Text(
+                                  Text(
                                     "Departments",
                                     style: TextStyle(
                                       color: AppColors.textSecondary,
@@ -506,7 +513,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         color: AppColors.primary.withOpacity(0.08),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.lock_outline_rounded,
                         color: AppColors.primary,
                         size: 20,
@@ -586,3 +593,4 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 }
+

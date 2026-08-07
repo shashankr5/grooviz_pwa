@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'password_security_page.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
 
 class PrivacyPage extends StatefulWidget {
   const PrivacyPage({super.key});
@@ -31,17 +33,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        title: const Text(
-          "Privacy",
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.w600,
-            fontSize: 22,
-          ),
-        ),
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
+        title: const Text("Privacy", style: AppTypography.appBarTitle),
       ),
 
       body: Column(
@@ -68,7 +60,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           "Privacy & Security Settings",
                           style: TextStyle(
                             fontSize: 18,
@@ -92,28 +84,24 @@ class _PrivacyPageState extends State<PrivacyPage> {
                           },
                         ),
 
-                        const Divider(color: AppColors.border),
+                        Divider(color: AppColors.border),
                         _item(
                           icon: Icons.security_outlined,
                           title: "App Permissions",
                           subtitle: "Control camera, storage & notifications access",
+                          onTap: () {
+                            // Native settings or dialog
+                          },
                         ),
                       ],
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  Text(
+                    appVersion,
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
                 ],
-              ),
-            ),
-          ),
-
-          /// ✅ Version at bottom
-          Padding(
-            padding: const EdgeInsets.only(bottom: 16),
-            child: Text(
-              appVersion.isEmpty ? "" : "App Version $appVersion",
-              style: TextStyle(
-                color: Colors.grey.shade600,
-                fontSize: 13,
               ),
             ),
           ),
@@ -140,7 +128,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
       ),
       title: Text(
         title,
-        style: const TextStyle(
+        style: TextStyle(
           fontWeight: FontWeight.w600,
           fontSize: 16,
           color: AppColors.textPrimary,
@@ -148,9 +136,9 @@ class _PrivacyPageState extends State<PrivacyPage> {
       ),
       subtitle: Text(
         subtitle,
-        style: const TextStyle(color: AppColors.textSecondary),
+        style: AppTypography.bodySecondary,
       ),
-      trailing: const Icon(
+      trailing: Icon(
         Icons.chevron_right,
         color: AppColors.textSecondary,
       ),
@@ -158,3 +146,5 @@ class _PrivacyPageState extends State<PrivacyPage> {
     );
   }
 }
+
+

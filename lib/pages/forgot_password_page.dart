@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import '../services/login_service.dart';
-import '../utils/app_colors.dart';
+
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
+import '../utils/validators.dart';
 import 'otp_verify_page.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
@@ -39,8 +42,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text("OTP sent successfully"),
+      SnackBar(
+        content: const Text("OTP sent successfully"),
         backgroundColor: AppColors.secondary,
       ),
     );
@@ -60,13 +63,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
-        title: const Text(
-          "Forgot Password",
-          style: TextStyle(color: AppColors.textPrimary),
-        ),
+        title: const Text("Forgot Password", style: AppTypography.appBarTitle),
       ),
       body: Padding(
         padding: const EdgeInsets.all(24),
@@ -95,20 +92,17 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                   fillColor: AppColors.bgLight,
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: AppColors.border),
+                    borderSide: BorderSide(color: AppColors.border),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(
+                    borderSide: BorderSide(
                       color: AppColors.primary,
                       width: 1.5,
                     ),
                   ),
                 ),
-                validator: (val) =>
-                    val == null || val.trim().length != 10
-                        ? "Enter valid 10-digit number"
-                        : null,
+                validator: Validators.validateMobileNumber,
               ),
 
               const SizedBox(height: 30),
@@ -144,3 +138,5 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 }
+
+

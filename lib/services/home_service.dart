@@ -1,22 +1,12 @@
 // services/home_service.dart
-//
-// CHANGES IN THIS VERSION:
-//  • NEW: notifyReassign() — calls ScreenSync_notify_reassign_mobile after
-//    a successful reassign so the new assignee gets FCM immediately.
-//  • NEW: getEscalationHistoryForTask() — calls the new dedicated SP
-//    ScreenSync_get_escalation_history_for_task_mobile which returns the
-//    full audit trail for a single service request (including resolved
-//    entries). Replaces the old pattern of calling getEscalatedTasks()
-//    and filtering client-side in TicketDetailPage.
-//  • UPDATED: closeServiceRequest() — now requires department_id and
-//    enterprise_id in the payload so the Lambda can broadcast TASK_CLOSED
-//    via WebSocket to all dept devices.
-
 import 'dart:developer' as dev;
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/date_formatter.dart';
+import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
+import '../constants/api_timeouts.dart';
 
 class HomeService {
   final Dio _dio;
@@ -25,9 +15,9 @@ class HomeService {
       : _dio = Dio(
           BaseOptions(
             baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
+            connectTimeout: ApiTimeouts.connectTimeout,
+            receiveTimeout: ApiTimeouts.receiveTimeout,
+            sendTimeout: ApiTimeouts.sendTimeout,
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': ApiConstants.apiKey,
@@ -87,7 +77,8 @@ class HomeService {
       return {"success": true, "tasks": _mapTasks(resultList)};
     } catch (e) {
       dev.log("ERROR (getTasks): $e");
-      return {"success": false, "message": "Network error"};
+      // FIX-10/11/12 (Bugs 10-12): friendly message instead of raw "Network error"
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -157,26 +148,8 @@ class HomeService {
   }
 
   static String _formatTime(String? timestamp) {
-    if (timestamp == null) return "-";
-    try {
-      final dt = DateTime.parse(timestamp);
-      return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} • ${dt.day}/${dt.month}";
-    } catch (_) {
-      return "-";
-    }
+    return DateFormatter.formatTimeDayMonth(timestamp);
   }
-
-  // ── TRIGGER ESCALATION CHECK ──────────────────────────────────────────────
-  //
-  // Calls the check_and_escalate Lambda/SP which finds all overdue tasks and
-  // escalates them to the next role in the hierarchy.
-  //
-  // Call this every 60 seconds from HomePage (or wherever tasks are shown).
-  // This is a client-side fallback — server-side SQS self-enqueue is preferred.
-  // If SQS is already working, you can remove the periodic call.
-  //
-  // Safe to call frequently — the SP is idempotent (won't re-escalate an
-  // already-escalated task).
 
   Future<void> triggerEscalationCheck() async {
     try {
@@ -199,7 +172,6 @@ class HomeService {
 
       dev.log("📥 Escalation check response: ${response.data}");
     } catch (e) {
-      // Non-fatal — log and continue. Don't surface this error to the user.
       dev.log("triggerEscalationCheck error (non-fatal): $e");
     }
   }
@@ -269,7 +241,12 @@ class HomeService {
       return {"success": true, "message": statusMessage, "staff": staff ?? []};
     } catch (e) {
       dev.log("Staff API Error: $e");
-      return {"success": false, "message": "Error: $e", "staff": []};
+      // FIX-11/12 (Bugs 11-12): was "Error: $e" — raw exception shown to user
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "staff": [],
+      };
     }
   }
 
@@ -313,23 +290,10 @@ class HomeService {
       return {"success": true, "message": msg, "updatedTask": updatedTask};
     } catch (e) {
       dev.log("ERROR (reassignTicket): $e");
-      return {"success": false, "message": "Error: $e"};
+      // FIX-11/12 (Bugs 11-12): was "Error: $e"
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
-
-  // ── NOTIFY REASSIGN ───────────────────────────────────────────────────────
-  //
-  // Call this AFTER a successful reassignTicket() call.
-  // Sends NEW_SERVICE_TASK FCM to the newly assigned user only.
-  // Fire-and-forget — failure is non-fatal; the reassign already succeeded.
-  //
-  // Parameters:
-  //   taskId       — service_request_id
-  //   assignedTo   — user_id of the newly assigned staff member
-  //   enterpriseId — from task raw data
-  //   departmentId — from task raw data
-  //   taskName     — task question/name shown in the notification body
-  //   roomId       — room number string shown in the notification body
 
   Future<void> notifyReassign({
     required int    taskId,
@@ -361,7 +325,6 @@ class HomeService {
       );
       dev.log("📥 notifyReassign response: ${response.data}");
     } catch (e) {
-      // Non-fatal — the reassign already succeeded; notification is best-effort.
       dev.log("notifyReassign error (non-fatal): $e");
     }
   }
@@ -418,16 +381,17 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (addNote): $e");
-      return {"success": false, "message": "Error: $e", "note": null};
+      // FIX-11 (Bug 11): was "Error: $e" — this is the exact bug you saw:
+      // raw DioException text shown in the add-note SnackBar when offline.
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "note": null,
+      };
     }
   }
 
   // ── CLOSE SERVICE REQUEST ─────────────────────────────────────────────────
-  //
-  // CHANGE: Now requires department_id and enterprise_id.
-  // The close_service_request Lambda uses these to broadcast TASK_CLOSED
-  // via WebSocket to all department devices so their task lists update
-  // in real time without a manual pull-to-refresh.
 
   Future<Map<String, dynamic>> closeServiceRequest({
     required int serviceRequestId,
@@ -447,8 +411,8 @@ class HomeService {
       final payload = {
         "user_id":            userId,
         "service_request_id": serviceRequestId,
-        "department_id":      departmentId,   // NEW — needed for WS TASK_CLOSED broadcast
-        "enterprise_id":      enterpriseId,   // NEW — needed for WS TASK_CLOSED broadcast
+        "department_id":      departmentId,
+        "enterprise_id":      enterpriseId,
         "stage":              "dev",
       };
 
@@ -482,7 +446,12 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (closeServiceRequest): $e");
-      return {"success": false, "message": "Error: $e", "data": null};
+      // FIX-11/12 (Bugs 11-12): was "Error: $e"
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "data": null,
+      };
     }
   }
 
@@ -548,7 +517,12 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (acceptTask): $e");
-      return {"success": false, "message": "Error: $e", "updatedTask": null};
+      // FIX-11/12 (Bugs 11-12): was "Error: $e"
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "updatedTask": null,
+      };
     }
   }
 
@@ -576,7 +550,9 @@ class HomeService {
       final statusList = response.data["STATUS"] as List?;
       if (statusList == null ||
           statusList.isEmpty ||
-          statusList[0]["status"] != "S") return 0;
+          statusList[0]["status"] != "S") {
+        return 0;
+      }
 
       final resultList = response.data["RESULT"] as List?;
       if (resultList == null || resultList.isEmpty) return 0;
@@ -633,7 +609,12 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (getEscalatedTasks): $e");
-      return {"success": false, "message": "Network error", "tasks": []};
+      // FIX-10/11/12 (Bugs 10-12): friendly message instead of raw "Network error"
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "tasks": [],
+      };
     }
   }
 
@@ -679,19 +660,6 @@ class HomeService {
   }
 
   // ── GET ESCALATION HISTORY FOR TASK ──────────────────────────────────────
-  //
-  // NEW method — replaces the old pattern of calling getEscalatedTasks() and
-  // filtering client-side in TicketDetailPage._loadEscalationHistory().
-  //
-  // Uses the dedicated SP get_escalation_history_for_task_mobile which:
-  //   - Takes user_id + service_request_id
-  //   - Returns ALL escalation_log rows for that SR (no resolved_at IS NULL
-  //     filter), giving the full audit trail
-  //   - Joins roles, rooms, and users tables for resolved-by name
-  //   - Ordered by escalation_level ASC, escalated_at ASC
-  //
-  // TicketDetailPage should call this for all roles that can see the
-  // escalation history section (Supervisor and above).
 
   Future<Map<String, dynamic>> getEscalationHistoryForTask({
     required int serviceRequestId,
@@ -754,7 +722,11 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (getEscalationHistoryForTask): $e");
-      return {"success": false, "message": "Network error", "history": []};
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "history": [],
+      };
     }
   }
 
@@ -814,7 +786,16 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (getTeamPerformance): $e");
-      return {"success": false, "message": "Network error", "team": []};
+      // FIX-10 (Bug 10): This is the exact call behind the Activity screen
+      // silently showing stale/wrong-month data — was returning generic
+      // "Network error" with no UI ever surfacing it. tasks_page.dart's
+      // failure branch must now render this message (see tasks_page.dart
+      // patch) instead of only clearing the loading flag.
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "team": [],
+      };
     }
   }
 
@@ -870,7 +851,7 @@ class HomeService {
       };
     } catch (e) {
       dev.log("ERROR (getEscalationReport): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -903,7 +884,7 @@ class HomeService {
       return {"success": true, "orders": _mapReadyOrders(resultList)};
     } catch (e) {
       dev.log("❌ ERROR (getReadyOrdersForRoomService): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -990,7 +971,7 @@ class HomeService {
       return {"success": true, "message": "Status updated"};
     } catch (e) {
       dev.log("❌ ERROR (updateRoomServiceStatus): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -1023,7 +1004,7 @@ class HomeService {
       return {"success": true, "orders": _mapAcceptedOrders(resultList)};
     } catch (e) {
       dev.log("❌ ERROR (getAcceptedOrdersForRoomService): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -1075,7 +1056,7 @@ class HomeService {
       return {"success": true, "orders": _mapDeliveredOrders(resultList)};
     } catch (e) {
       dev.log("❌ ERROR (getDeliveredOrdersForRoomService): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 

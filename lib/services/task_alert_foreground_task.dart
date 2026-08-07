@@ -6,7 +6,6 @@
 // Audio asset: assets/audio/task_notification.wav
 // (can be the same bell or a different tone — your choice)
 
-import 'dart:isolate';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
@@ -17,7 +16,7 @@ class TaskAlertTaskHandler extends TaskHandler {
   late AudioPlayer _player;
 
   @override
-  Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {
+  Future<void> onStart(DateTime timestamp, TaskStarter taskStarter) async {
     try {
       _player = AudioPlayer();
 
@@ -38,13 +37,13 @@ class TaskAlertTaskHandler extends TaskHandler {
   }
 
   @override
-  Future<void> onDestroy(DateTime timestamp, SendPort? sendPort) async {
+  Future<void> onDestroy(DateTime timestamp) async {
     await _player.stop();
     await _player.dispose();
   }
 
   @override
-  void onRepeatEvent(DateTime timestamp, SendPort? sendPort) {}
+  void onRepeatEvent(DateTime timestamp) {}
 }
 
 @pragma('vm:entry-point')

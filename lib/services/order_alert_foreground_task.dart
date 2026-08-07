@@ -1,5 +1,4 @@
 // order_alert_foreground_task.dart
-import 'dart:isolate';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
@@ -10,7 +9,7 @@ class OrderAlertTaskHandler extends TaskHandler {
   late AudioPlayer _player;
 
   @override
-  Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {
+  Future<void> onStart(DateTime timestamp, TaskStarter taskStarter) async {
     try {
       _player = AudioPlayer();
 
@@ -33,11 +32,11 @@ class OrderAlertTaskHandler extends TaskHandler {
   }
 
   @override
-  Future<void> onDestroy(DateTime timestamp, SendPort? sendPort) async {
+  Future<void> onDestroy(DateTime timestamp) async {
     await _player.stop();
     await _player.dispose();
   }
 
   @override
-  void onRepeatEvent(DateTime timestamp, SendPort? sendPort) {}
+  void onRepeatEvent(DateTime timestamp) {}
 }

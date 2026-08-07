@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import 'dart:convert';
 import '../utils/user_session_helper.dart';
+import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
+import '../constants/api_timeouts.dart';
 
 class RoomsService {
   final Dio _dio;
@@ -13,9 +15,9 @@ class RoomsService {
       : _dio = Dio(
           BaseOptions(
             baseUrl: ApiConstants.baseUrl,
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            sendTimeout: const Duration(seconds: 60),
+            connectTimeout: ApiTimeouts.connectTimeout,
+            receiveTimeout: ApiTimeouts.receiveTimeout,
+            sendTimeout: ApiTimeouts.sendTimeout,
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': ApiConstants.apiKey,
@@ -87,7 +89,7 @@ class RoomsService {
       };
     } catch (e) {
       dev.log("❌ ERROR (getRooms): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -212,7 +214,7 @@ class RoomsService {
       };
     } catch (e) {
       dev.log("❌ ERROR (updateGuestPhoto): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -294,7 +296,7 @@ class RoomsService {
       };
     } catch (e) {
       dev.log("❌ ERROR (getContents): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
@@ -355,7 +357,7 @@ class RoomsService {
       };
     } catch (e) {
       dev.log("❌ ERROR (deleteContent): $e");
-      return {"success": false, "message": "Network error"};
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 }

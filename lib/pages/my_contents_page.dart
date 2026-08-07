@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 import 'camera_content_page.dart';
 import '../services/rooms_service.dart';
-import '../utils/app_colors.dart';
+
+import '../components/app_dialog.dart';
+import '../components/empty_state_widget.dart';
+import '../components/loading_widget.dart';
+import '../utils/app_snackbar.dart';
+import '../theme/app_typography.dart';
+import '../theme/app_colors.dart';
 
 class MyContentsPage extends StatefulWidget {
   const MyContentsPage({super.key});
@@ -68,22 +74,12 @@ class _MyContentsPageState extends State<MyContentsPage> {
     final id = item["id"];
     if (id == null) return false;
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Delete Content?"),
-        content: const Text("This cannot be undone."),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text("Cancel")),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child:
-                const Text("Delete", style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
+    final confirm = await AppDialog.show(
+      context,
+      title: "Delete Content?",
+      message: "This cannot be undone.",
+      confirmLabel: "Delete",
+      isDestructive: true,
     );
 
     if (confirm != true) return false;
@@ -92,23 +88,13 @@ class _MyContentsPageState extends State<MyContentsPage> {
 
     if (!mounted) return false;
 
-    if (result["success"]) {
+    if (result["success"] == true) {
       // Remove in-place — stays on MyContentsPage
       setState(() => _contents.removeWhere((e) => e["id"] == id));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: AppColors.secondary,
-        ),
-      );
+      AppSnackBar.show(context, result["message"] ?? "Content deleted");
       return true;
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result["message"]),
-          backgroundColor: AppColors.error,
-        ),
-      );
+      AppSnackBar.show(context, result["message"] ?? "Failed to delete content", isError: true);
       return false;
     }
   }
@@ -124,12 +110,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
     return Scaffold(
       backgroundColor: AppColors.bgLight,
       appBar: AppBar(
-        title: const Text("My Contents",
-            style: TextStyle(
-                color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
-        elevation: 1,
+        title: const Text("My Contents", style: AppTypography.appBarTitle),
       ),
       body: Column(
         children: [
@@ -150,7 +131,7 @@ class _MyContentsPageState extends State<MyContentsPage> {
         decoration: InputDecoration(
           hintText: "Search contents...",
           prefixIcon:
-              const Icon(Icons.search, color: AppColors.textSecondary),
+              Icon(Icons.search, color: AppColors.textSecondary),
           filled: true,
           fillColor: AppColors.bgLight,
           border: OutlineInputBorder(
@@ -163,13 +144,13 @@ class _MyContentsPageState extends State<MyContentsPage> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const LoadingWidget();
     }
 
     if (_error != null) {
       return Center(
           child: Text(_error!,
-              style: const TextStyle(color: AppColors.error)));
+              style: TextStyle(color: AppColors.error)));
     }
 
     if (_filtered.isEmpty) {
@@ -180,8 +161,8 @@ class _MyContentsPageState extends State<MyContentsPage> {
             Icon(Icons.image_not_supported_outlined,
                 size: 56, color: Colors.grey.shade300),
             const SizedBox(height: 12),
-            const Text("No content available",
-                style: TextStyle(color: Colors.grey, fontSize: 15)),
+            Text("No content available",
+                style: AppTypography.bodySecondary.copyWith(color: Colors.grey, fontSize: 15)),
           ],
         ),
       );
@@ -240,7 +221,7 @@ class ContentCard extends StatelessWidget {
                 children: [
                   Text(
                     content["fullName"] ?? "",
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
                         color: AppColors.textPrimary),
@@ -390,7 +371,7 @@ class ContentCard extends StatelessWidget {
                         ),
                         child: Text(
                           "Room ${room["room_number"]}",
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: AppColors.primary,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
@@ -408,3 +389,5 @@ class ContentCard extends StatelessWidget {
     );
   }
 }
+
+

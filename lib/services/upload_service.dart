@@ -2,7 +2,7 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import '../utils/user_session_helper.dart';
-import '../constants/api_constants.dart';
+import '../constants/api_timeouts.dart';
 
 class UploadService {
   final Dio _dio = Dio();
@@ -50,8 +50,8 @@ class UploadService {
             "Accept": "application/json",
           },
           // Give large PNG uploads enough time to complete
-          sendTimeout: const Duration(seconds: 120),
-          receiveTimeout: const Duration(seconds: 60),
+          sendTimeout: ApiTimeouts.uploadSendTimeout,
+          receiveTimeout: ApiTimeouts.uploadReceiveTimeout,
         ),
       );
 

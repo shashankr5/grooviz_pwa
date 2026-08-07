@@ -4,6 +4,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import '../constants/storage_keys.dart';
 
 class DeviceInfo {
   static final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
@@ -23,11 +24,11 @@ class DeviceInfo {
   /// Persistent install ID
   static Future<String> _getInstallationId() async {
     final prefs = await SharedPreferences.getInstance();
-    String? id = prefs.getString("installation_id");
+    String? id = prefs.getString(StorageKeys.installationId);
 
     if (id == null || id.isEmpty) {
       id = _uuid.v4();       
-      await prefs.setString("installation_id", id);
+      await prefs.setString(StorageKeys.installationId, id);
     }
 
     return id; 
@@ -36,25 +37,25 @@ class DeviceInfo {
   /// Guaranteed non-null device identifier
   static Future<String> _getDeviceIdentifier() async {
     final prefs = await SharedPreferences.getInstance();
-    final cached = prefs.getString("device_identifier");
+    final cached = prefs.getString(StorageKeys.deviceIdentifier);
     if (cached != null && cached.isNotEmpty) return cached;
     try {
       if (Platform.isAndroid) {
         final android = await _deviceInfo.androidInfo;
         final id = (android.id.isNotEmpty == true) ? android.id : "android_${_uuid.v4()}";
-        await prefs.setString("device_identifier", id);  // SAVE HERE
+        await prefs.setString(StorageKeys.deviceIdentifier, id);  // SAVE HERE
         return id;
       } else {
         final ios = await _deviceInfo.iosInfo;
         final id = (ios.identifierForVendor?.isNotEmpty == true)
             ? ios.identifierForVendor!
             : "ios_${_uuid.v4()}";
-        await prefs.setString("device_identifier", id);  // SAVE HERE
+        await prefs.setString(StorageKeys.deviceIdentifier, id);  // SAVE HERE
         return id;
       }
     } catch (e) {
       final fallback = "device_${_uuid.v4()}";
-      await prefs.setString("device_identifier", fallback);
+      await prefs.setString(StorageKeys.deviceIdentifier, fallback);
       return fallback;
     }
   }
@@ -66,7 +67,7 @@ class DeviceInfo {
         return "${android.manufacturer} ${android.model}";
       } else {
         final ios = await _deviceInfo.iosInfo;
-        return ios.utsname.machine ?? "iPhone";
+        return ios.utsname.machine;
       }
     } catch (e) {
       return "Unknown Device";
