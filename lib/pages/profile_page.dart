@@ -477,23 +477,58 @@ class _ProfilePageState extends State<ProfilePage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  name,
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.textPrimary,
+                                 Text(
+                                   name,
+                                   style: const TextStyle(
+                                     fontSize: 20,
+                                     fontWeight: FontWeight.w700,
+                                     color: AppColors.textPrimary,
+                                   ),
+                                   overflow: TextOverflow.ellipsis,
+                                 ),
+                                 const SizedBox(height: 4),
+                                 Text(
+                                   designation,
+                                   style: const TextStyle(
+                                     color: AppColors.textSecondary,
+                                     fontSize: 14,
+                                   ),
+                                 ),
+                                if (enterpriseName.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          AppColors.primary.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                          color: AppColors.primary
+                                              .withValues(alpha: 0.25)),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.business_rounded,
+                                            size: 13, color: AppColors.primary),
+                                        const SizedBox(width: 5),
+                                        Flexible(
+                                          child: Text(
+                                            enterpriseName,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.primary,
+                                              letterSpacing: 0.3,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  designation,
-                                  style: TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontSize: 14,
-                                  ),
-                                ),
+                                ],
                               ],
                             ),
                           ),
@@ -521,10 +556,6 @@ class _ProfilePageState extends State<ProfilePage> {
                               if (role.isNotEmpty) ...[
                                 const SizedBox(height: 14),
                                 _infoRow(Icons.badge_outlined, "Role", role),
-                              ],
-                              if (enterpriseName.isNotEmpty) ...[
-                                const SizedBox(height: 14),
-                                _infoRow(Icons.business_outlined, "Enterprise", enterpriseName),
                               ],
                             ],
                           ),

@@ -20,7 +20,7 @@ class RoleChangeWatcher with WidgetsBindingObserver {
   Timer? _periodicTimer;
 
   static const _kDebounceDelay = Duration(seconds: 3);
-  static const _kPollInterval  = Duration(seconds: 20);
+  static const _kPollInterval  = Duration(minutes: 30);
 
   RoleChangeWatcher({required this.onRoleChanged});
 

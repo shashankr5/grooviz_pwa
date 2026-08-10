@@ -1,16 +1,15 @@
 // components/home/timeline_task_card.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_typography.dart';
-import '../../utils/date_formatter.dart';
 
-class TimelineTaskCard extends StatelessWidget {
+class TimelineTaskCard extends StatefulWidget {
   final Map<String, dynamic> task;
   final bool isSupervisor;
   final VoidCallback onTap;
   final VoidCallback? onAccept;
   final VoidCallback? onReassign;
-
   final bool isAccepting;
 
   const TimelineTaskCard({
@@ -24,47 +23,135 @@ class TimelineTaskCard extends StatelessWidget {
   });
 
   @override
+  State<TimelineTaskCard> createState() => _TimelineTaskCardState();
+}
+
+class _TimelineTaskCardState extends State<TimelineTaskCard>
+    with SingleTickerProviderStateMixin {
+  Timer? _tickerTimer;
+  late AnimationController _blinkController;
+  late Animation<double> _blinkAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _blinkAnimation =
+        Tween<double>(begin: 0.2, end: 1.0).animate(_blinkController);
+
+    _startTickerIfNeeded();
+  }
+
+  void _startTickerIfNeeded() {
+    _tickerTimer?.cancel();
+    _tickerTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tickerTimer?.cancel();
+    _blinkController.dispose();
+    super.dispose();
+  }
+
+  DateTime? _parseTimestamp(dynamic val) {
+    if (val == null) return null;
+    try {
+      if (val is DateTime) return val;
+      final str = val.toString().trim();
+      if (str.isEmpty || str == 'null') return null;
+      return DateTime.tryParse(str.replaceAll(' ', 'T'));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final task = widget.task;
     final String roomStr = (task['room'] ?? '-').toString();
     final String titleStr = (task['title'] ?? 'Service Request').toString();
     final String guestName = (task['guest'] ?? 'Guest').toString();
     final String statusStr = (task['status'] ?? 'Open').toString();
     final String timeStr = (task['time'] ?? '').toString();
-    final String assignedTo = (task['assignedTo'] ?? task['assigned_to_name'] ?? task['raw']?['assigned_to_name'] ?? '-').toString();
-    final bool isAlreadyAssigned = (assignedTo != '-' &&
-                                    assignedTo != 'Unassigned' &&
-                                    assignedTo.trim().isNotEmpty) ||
-                                   task['isAccepted'] == true ||
-                                   (task['assigned_to'] != null &&
-                                    task['assigned_to'].toString() != '0' &&
-                                    task['assigned_to'].toString() != 'null') ||
-                                   (task['raw']?['assigned_to'] != null &&
-                                    task['raw']?['assigned_to'].toString() != '0' &&
-                                    task['raw']?['assigned_to'].toString() != 'null');
+    final String assignedTo = (task['assignedTo'] ??
+            task['assigned_to_name'] ??
+            task['raw']?['assigned_to_name'] ??
+            '-')
+        .toString();
 
-    final bool isEscalated = task['is_escalated'] == 1 || task['isEscalated'] == true;
+    final bool isAlreadyAssigned = (assignedTo != '-' &&
+            assignedTo != 'Unassigned' &&
+            assignedTo.trim().isNotEmpty) ||
+        task['isAccepted'] == true ||
+        (task['assigned_to'] != null &&
+            task['assigned_to'].toString() != '0' &&
+            task['assigned_to'].toString() != 'null') ||
+        (task['raw']?['assigned_to'] != null &&
+            task['raw']?['assigned_to'].toString() != '0' &&
+            task['raw']?['assigned_to'].toString() != 'null');
+
+    final bool isEscalated =
+        task['is_escalated'] == 1 || task['isEscalated'] == true;
 
     final String requestId = (task['service_request_id'] ??
-                              task['task_id'] ??
-                              task['id'] ??
-                              task['raw']?['service_request_id'] ??
-                              '').toString();
+            task['task_id'] ??
+            task['id'] ??
+            task['raw']?['service_request_id'] ??
+            '')
+        .toString();
+
+    // ── Resolution SLA Timer Logic ─────────────────────────────────────────
+    final String nextEscRaw = (task['next_escalation_at'] ??
+            task['raw']?['next_escalation_at'] ??
+            '')
+        .toString();
+    final DateTime? nextEscAt = _parseTimestamp(nextEscRaw);
+
+    final bool isInProgress = statusStr.toLowerCase() == 'in progress';
+    int? remainingSecs;
+    if (isInProgress && nextEscAt != null) {
+      remainingSecs = nextEscAt.difference(DateTime.now()).inSeconds;
+    }
+
+    final bool isWarningMin =
+        remainingSecs != null && remainingSecs > 0 && remainingSecs <= 60;
+    final bool isResolutionOverdue =
+        remainingSecs != null && remainingSecs <= 0;
+
+    if (isWarningMin) {
+      if (!_blinkController.isAnimating) {
+        _blinkController.repeat(reverse: true);
+      }
+    } else {
+      if (_blinkController.isAnimating) {
+        _blinkController.stop();
+        _blinkController.value = 1.0;
+      }
+    }
 
     final Color statusCol = AppColors.statusColor(statusStr);
     final Color statusBg = AppColors.statusLightColor(statusStr);
 
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isEscalated
+            color: isEscalated || isResolutionOverdue
                 ? AppColors.error
-                : AppColors.border.withOpacity(0.6),
-            width: isEscalated ? 1.5 : 1.0,
+                : AppColors.border.withValues(alpha: 0.6),
+            width: isEscalated || isResolutionOverdue ? 1.5 : 1.0,
           ),
           boxShadow: [
             BoxShadow(
@@ -81,7 +168,8 @@ class TimelineTaskCard extends StatelessWidget {
             if (isEscalated)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
                 decoration: const BoxDecoration(
                   color: AppColors.error,
                   borderRadius: BorderRadius.only(
@@ -151,7 +239,8 @@ class TimelineTaskCard extends StatelessWidget {
                                 color: AppColors.bg,
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(
-                                    color: AppColors.border.withOpacity(0.6)),
+                                    color: AppColors.border
+                                        .withValues(alpha: 0.6)),
                               ),
                               child: Text(
                                 '#$requestId',
@@ -166,23 +255,97 @@ class TimelineTaskCard extends StatelessWidget {
                         ],
                       ),
 
-                      // Status Pill
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: statusBg,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          statusStr.toUpperCase(),
-                          style: AppTypography.caption.copyWith(
-                            color: statusCol,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
+                      // Status Pill & Live Resolution Timer
+                      Row(
+                        children: [
+                          if (isInProgress && remainingSecs != null) ...[
+                            AnimatedBuilder(
+                              animation: _blinkAnimation,
+                              builder: (ctx, child) {
+                                final opacity = isWarningMin
+                                    ? _blinkAnimation.value
+                                    : 1.0;
+                                final color = isResolutionOverdue
+                                    ? AppColors.error
+                                    : (isWarningMin
+                                        ? Colors.orange.shade800
+                                        : AppColors.primary);
+                                final bgColor = isResolutionOverdue
+                                    ? AppColors.errorLight
+                                    : (isWarningMin
+                                        ? Colors.orange.shade50
+                                        : AppColors.primaryLight);
+
+                                final absSecs = remainingSecs!.abs();
+                                final mins = (absSecs / 60).floor();
+                                final secs = (absSecs % 60);
+                                final timeFormatted =
+                                    '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+
+                                final label = isResolutionOverdue
+                                    ? '+$timeFormatted'
+                                    : timeFormatted;
+
+                                return Opacity(
+                                  opacity: opacity,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: bgColor,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                          color: color.withValues(alpha: 0.3),
+                                          width: 1.0),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          isResolutionOverdue
+                                              ? Icons.error_outline_rounded
+                                              : (isWarningMin
+                                                  ? Icons.bolt_rounded
+                                                  : Icons.timer_outlined),
+                                          size: 12,
+                                          color: color,
+                                        ),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          label,
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                            color: color,
+                                            letterSpacing: 0.2,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                            const SizedBox(width: 6),
+                          ],
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: statusBg,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              statusStr.toUpperCase(),
+                              style: AppTypography.caption.copyWith(
+                                color: statusCol,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ],
                   ),
@@ -206,7 +369,8 @@ class TimelineTaskCard extends StatelessWidget {
                   // Row 3: Guest & Timestamp Meta
                   Row(
                     children: [
-                      if (guestName.isNotEmpty && guestName != 'Unknown Guest') ...[
+                      if (guestName.isNotEmpty &&
+                          guestName != 'Unknown Guest') ...[
                         const Icon(Icons.person_outline,
                             color: AppColors.textSecondary, size: 14),
                         const SizedBox(width: 4),
@@ -258,7 +422,7 @@ class TimelineTaskCard extends StatelessWidget {
                   // Row 5: Quick Action Buttons — ONLY shown when NOT assigned to anyone
                   if (!isAlreadyAssigned &&
                       (statusStr.toLowerCase() == 'open' ||
-                       statusStr.toLowerCase() == 'pending')) ...[
+                          statusStr.toLowerCase() == 'pending')) ...[
                     const SizedBox(height: 14),
                     const Divider(height: 1, color: AppColors.borderLight),
                     const SizedBox(height: 12),
@@ -266,21 +430,22 @@ class TimelineTaskCard extends StatelessWidget {
                     Row(
                       children: [
                         // Quick Accept Button
-                        if (onAccept != null)
+                        if (widget.onAccept != null)
                           Expanded(
                             child: ElevatedButton.icon(
-                              onPressed: isAccepting ? null : onAccept,
+                              onPressed:
+                                  widget.isAccepting ? null : widget.onAccept,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: AppColors.primary,
                                 foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 13),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 13),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 elevation: 0,
                               ),
-                              icon: isAccepting
+                              icon: widget.isAccepting
                                   ? const SizedBox(
                                       width: 18,
                                       height: 18,
@@ -292,7 +457,9 @@ class TimelineTaskCard extends StatelessWidget {
                                   : const Icon(Icons.check_circle_rounded,
                                       size: 18, color: Colors.white),
                               label: Text(
-                                isAccepting ? 'Accepting...' : 'Accept Request',
+                                widget.isAccepting
+                                    ? 'Accepting...'
+                                    : 'Accept Request',
                                 style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w700,
@@ -302,18 +469,18 @@ class TimelineTaskCard extends StatelessWidget {
                             ),
                           ),
 
-                        if (onAccept != null && onReassign != null)
+                        if (widget.onAccept != null && widget.onReassign != null)
                           const SizedBox(width: 10),
 
                         // Quick Reassign Button (Supervisor+)
-                        if (onReassign != null && isSupervisor)
+                        if (widget.onReassign != null && widget.isSupervisor)
                           OutlinedButton.icon(
-                            onPressed: onReassign,
+                            onPressed: widget.onReassign,
                             style: OutlinedButton.styleFrom(
                               padding: const EdgeInsets.symmetric(
                                   vertical: 13, horizontal: 16),
-                              side: const BorderSide(
-                                  color: AppColors.border),
+                              side:
+                                  const BorderSide(color: AppColors.border),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -341,3 +508,4 @@ class TimelineTaskCard extends StatelessWidget {
     );
   }
 }
+

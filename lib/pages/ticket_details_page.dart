@@ -956,9 +956,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                     const SizedBox(height: 12),
                   ],
 
+                  _buildResolutionSlaBanner(),
+                  if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
+                    const SizedBox(height: 12),
+
                   _buildInfoCard(),
 
                   const SizedBox(height: 12),
+
 
                   _buildNoteCard(),
 
@@ -1109,6 +1114,101 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                   fontSize: 12),
             ),
           ]),
+        ),
+      ]),
+    );
+  }
+
+  // ── Resolution SLA Banner ──────────────────────────────────────────────────
+
+  Widget _buildResolutionSlaBanner() {
+    final status = (_task['status'] ?? 'Open').toString();
+    if (status.toLowerCase() != 'in progress') return const SizedBox.shrink();
+
+    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
+    final nextEscRaw =
+        (raw['next_escalation_at'] ?? _task['next_escalation_at'] ?? '').toString();
+    if (nextEscRaw.isEmpty || nextEscRaw == 'null') return const SizedBox.shrink();
+
+    final DateTime? nextEscAt =
+        DateTime.tryParse(nextEscRaw.replaceAll(' ', 'T'));
+    if (nextEscAt == null) return const SizedBox.shrink();
+
+    final remainingSecs = nextEscAt.difference(DateTime.now()).inSeconds;
+    final isWarningMin = remainingSecs > 0 && remainingSecs <= 60;
+    final isOverdue = remainingSecs <= 0;
+
+    final absSecs = remainingSecs.abs();
+    final mins = (absSecs / 60).floor();
+    final secs = (absSecs % 60);
+    final timeFormatted =
+        '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+
+    final Color bgColor = isOverdue
+        ? AppColors.errorLight
+        : (isWarningMin ? Colors.orange.shade50 : AppColors.primaryLight);
+    final Color borderColor = isOverdue
+        ? AppColors.error.withValues(alpha: 0.4)
+        : (isWarningMin
+            ? Colors.orange.shade300
+            : AppColors.primary.withValues(alpha: 0.4));
+    final Color iconColor = isOverdue
+        ? AppColors.error
+        : (isWarningMin ? Colors.orange.shade800 : AppColors.primary);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor, width: 1.5),
+      ),
+      child: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: iconColor.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            isOverdue
+                ? Icons.timer_off_outlined
+                : (isWarningMin ? Icons.bolt_rounded : Icons.timer_outlined),
+            color: iconColor,
+            size: 22,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isOverdue
+                    ? 'Resolution Overdue (+$timeFormatted)'
+                    : (isWarningMin
+                        ? '⚡ Critical: Close Within $timeFormatted'
+                        : 'Resolution Timer: $timeFormatted Remaining'),
+                style: TextStyle(
+                  color: iconColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                isOverdue
+                    ? 'Task sits unclosed past SLA deadline. Supervisor has been notified.'
+                    : (isWarningMin
+                        ? 'Task must be closed in under 1 minute to prevent supervisor escalation!'
+                        : 'Staff accepted task. Resolution SLA clock is active.'),
+                style: TextStyle(
+                  color: iconColor.withValues(alpha: 0.85),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
         ),
       ]),
     );
