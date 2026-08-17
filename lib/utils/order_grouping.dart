@@ -25,14 +25,25 @@ import '../utils/food_order_status.dart';
 DateTime parseOrderDate(String s) {
   if (s.trim().isEmpty) return DateTime.now();
   try {
-    final str = s.trim().replaceFirst(' ', 'T');
+    var str = s.trim().replaceFirst(' ', 'T');
+    // Truncate microsecond precision if present
+    if (str.contains('.')) {
+      final parts = str.split('.');
+      if (parts[1].length > 3) {
+        final ms = parts[1].replaceAll(RegExp(r'[^\d]'), '');
+        final cleanMs = ms.length >= 3 ? ms.substring(0, 3) : ms;
+        final tzSuffix = str.endsWith('Z') || str.endsWith('z') ? 'Z' : '';
+        str = '${parts[0]}.$cleanMs$tzSuffix';
+      }
+    }
+
     if (str.endsWith('Z') || str.endsWith('z')) {
       return DateTime.parse(str).toLocal();
     }
     if (str.contains('+') || (str.contains('-') && str.indexOf('-') > 8)) {
       return DateTime.parse(str).toLocal();
     }
-    // Plain local timestamp from server — parse directly as local time
+    // Parse database timestamp directly as local hotel time
     return DateTime.parse(str);
   } catch (_) {
     try {

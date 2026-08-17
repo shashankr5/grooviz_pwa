@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/date_formatter.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import '../services/notification_handler.dart';
@@ -140,19 +141,19 @@ class _DeliveryPageState extends State<DeliveryPage>
   Future<void> _loadAllOrders() async {
     if (mounted) {
       setState(() {
-        isLoading = true;
+        isLoading = readyOrders.isEmpty;
         errorMessage = null;
       });
     }
     try {
-      await Future.wait([
-        _loadReadyOrders(),
-        _loadAcceptedOrders(),
-        _loadDeliveredOrders(),
-      ]);
+      // Load active 'Ready' tab first so UI renders immediately
+      await _loadReadyOrders();
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
+    // Fetch Accepted and Delivered in background without blocking screen
+    _loadAcceptedOrders();
+    _loadDeliveredOrders();
   }
 
   Future<void> _loadReadyOrders() async {
@@ -277,6 +278,8 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
+  String? _actionLoadingOrderNo;
+
   void _showGenericError() {
     if (!mounted) return;
     AppSnackBar.show(
@@ -284,49 +287,73 @@ class _DeliveryPageState extends State<DeliveryPage>
   }
 
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
-    // Optimistic UI: immediately switch to Accepted tab
-    setState(() {
-      selectedFilter = 'Accepted';
-      _tabController.animateTo(1);
-    });
+    final orderNo = (order['orderNumber'] ?? '').toString();
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty) return;
 
-    final res = await HomeService().updateRoomServiceStatus(
-        orderNumber: order['orderNumber'] as String, action: 'Accept');
+    setState(() => _actionLoadingOrderNo = orderNo);
 
-    if (!mounted) return;
+    try {
+      final res = await HomeService().updateRoomServiceStatus(
+          orderNumber: orderNo, action: 'Accept');
 
-    if (res['success'] != true && res['success'] != 1) {
-      _showGenericError();
-      return;
+      if (!mounted) return;
+
+      if (res['success'] != true && res['success'] != 1) {
+        _showGenericError();
+        return;
+      }
+
+      await TaskAlertService.stopOneDeliveryAlert();
+      await _loadAllOrders();
+
+      if (!mounted) return;
+
+      // Switch tab ONLY AFTER API call succeeds and data reloads
+      setState(() {
+        selectedFilter = 'Accepted';
+        _tabController.animateTo(1);
+      });
+
+      AppSnackBar.show(context, 'Order accepted ✅');
+    } finally {
+      if (mounted) setState(() => _actionLoadingOrderNo = null);
     }
-
-    await TaskAlertService.stopOneDeliveryAlert();
-    await _loadAllOrders();
-    if (mounted) AppSnackBar.show(context, 'Order accepted ✅');
   }
 
   Future<void> _deliverOrder(Map<String, dynamic> order) async {
     final confirm = await _showDeliverConfirmSheet(order);
     if (confirm != true) return;
 
-    // Optimistic UI
-    setState(() {
-      selectedFilter = 'Delivered';
-      _tabController.animateTo(2);
-    });
+    final orderNo = (order['orderNumber'] ?? '').toString();
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty) return;
 
-    final res = await HomeService().updateRoomServiceStatus(
-        orderNumber: order['orderNumber'] as String, action: 'Delivered');
+    setState(() => _actionLoadingOrderNo = orderNo);
 
-    if (!mounted) return;
+    try {
+      final res = await HomeService().updateRoomServiceStatus(
+          orderNumber: orderNo, action: 'Delivered');
 
-    if (res['success'] != true && res['success'] != 1) {
-      _showGenericError();
-      return;
+      if (!mounted) return;
+
+      if (res['success'] != true && res['success'] != 1) {
+        _showGenericError();
+        return;
+      }
+
+      await _loadAllOrders();
+
+      if (!mounted) return;
+
+      // Switch tab ONLY AFTER API call succeeds and data reloads
+      setState(() {
+        selectedFilter = 'Delivered';
+        _tabController.animateTo(2);
+      });
+
+      AppSnackBar.show(context, 'Order delivered successfully 🎉');
+    } finally {
+      if (mounted) setState(() => _actionLoadingOrderNo = null);
     }
-
-    await _loadAllOrders();
-    if (mounted) AppSnackBar.show(context, 'Order delivered successfully 🎉');
   }
 
   /// Premium confirmation sheet with order preview
@@ -912,8 +939,8 @@ class _DeliveryPageState extends State<DeliveryPage>
     switch (uiStatus) {
       case 'Ready':
         statusColor = AppColors.orange;
-        roomBgColor = const Color(0xFFEEF2FF); // indigo.shade50
-        roomTextColor = const Color(0xFF4F46E5); // indigo
+        roomBgColor = AppColors.orangeLight;
+        roomTextColor = AppColors.orange;
         break;
       case 'Accepted':
         statusColor = AppColors.info;
@@ -935,7 +962,7 @@ class _DeliveryPageState extends State<DeliveryPage>
     final urgency = _elapsedWithUrgency(orderTimeDt);
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -943,13 +970,13 @@ class _DeliveryPageState extends State<DeliveryPage>
         boxShadow: [
           BoxShadow(
             color: AppColors.shadow,
-            blurRadius: 8,
-            offset: const Offset(0, 3),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -957,32 +984,28 @@ class _DeliveryPageState extends State<DeliveryPage>
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Room badge (primary visual anchor)
+                // Compact Room badge matching HomePage style
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                   decoration: BoxDecoration(
                     color: roomBgColor,
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('Room',
+                      Text('Room ',
                           style: TextStyle(
-                              fontSize: 10,
-                              color: roomTextColor.withOpacity(0.7),
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.5)),
-                      const SizedBox(height: 2),
+                              fontSize: 12,
+                              color: roomTextColor.withOpacity(0.8),
+                              fontWeight: FontWeight.w600)),
                       Text(
                         roomNo,
                         style: TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w800,
-                            color: roomTextColor,
-                            height: 1.0,
-                            letterSpacing: -0.5),
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: roomTextColor),
                       ),
                     ],
                   ),
@@ -993,43 +1016,27 @@ class _DeliveryPageState extends State<DeliveryPage>
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     _statusPill(uiStatus, statusColor),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
                     Text(
                       '#$orderNo',
                       style: const TextStyle(
-                          fontSize: 14,
+                          fontSize: 12,
                           fontWeight: FontWeight.w800,
                           color: AppColors.textPrimary),
                     ),
-                    const SizedBox(height: 6),
-                    // Elapsed time with urgency color (Ready only)
-                    if (uiStatus == 'Ready' && urgency['text'] != '—')
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.schedule_rounded,
-                              size: 13, color: urgency['color'] as Color),
-                          const SizedBox(width: 4),
-                          Text(
-                            urgency['text'] as String,
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: urgency['color'] as Color),
-                          ),
-                        ],
-                      )
-                    else if (orderTime != null && orderTime.isNotEmpty)
+                    const SizedBox(height: 2),
+                    // Formatted timestamp (DD/MM/YYYY • H:MM AM/PM)
+                    if (orderTime != null && orderTime.isNotEmpty)
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           const Icon(Icons.access_time_rounded,
-                              size: 12, color: AppColors.textSecondary),
-                          const SizedBox(width: 4),
+                              size: 11, color: AppColors.textSecondary),
+                          const SizedBox(width: 3),
                           Text(
-                            _formatDateTime(orderTime),
+                            DateFormatter.formatDateTimeAmPm(orderTime),
                             style: const TextStyle(
-                                fontSize: 11,
+                                fontSize: 10,
                                 color: AppColors.textSecondary),
                           ),
                         ],
@@ -1041,21 +1048,21 @@ class _DeliveryPageState extends State<DeliveryPage>
 
             // ── Guest name (if present) ───────────────────────────────────
             if (guestName.isNotEmpty) ...[
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
               Row(children: [
                 Container(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(4),
                   decoration: const BoxDecoration(
                       color: AppColors.surfaceAlt, shape: BoxShape.circle),
                   child: const Icon(Icons.person_rounded,
-                      size: 14, color: AppColors.textSecondary),
+                      size: 12, color: AppColors.textSecondary),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 Flexible(
                   child: Text(
                     guestName,
                     style: const TextStyle(
-                        fontSize: 14,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textSecondary),
                     overflow: TextOverflow.ellipsis,
@@ -1065,23 +1072,23 @@ class _DeliveryPageState extends State<DeliveryPage>
             ],
 
             const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
+              padding: EdgeInsets.symmetric(vertical: 8),
               child: Divider(height: 1, color: AppColors.borderLight),
             ),
 
             // ── Items header ──────────────────────────────────────────────
             const Row(children: [
               Icon(Icons.receipt_long_rounded,
-                  size: 14, color: AppColors.textSecondary),
-              SizedBox(width: 6),
+                  size: 12, color: AppColors.textSecondary),
+              SizedBox(width: 4),
               Text('Order Items',
                   style: TextStyle(
-                      fontSize: 11,
+                      fontSize: 10,
                       color: AppColors.textSecondary,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.5)),
             ]),
-            const SizedBox(height: 12),
+            const SizedBox(height: 6),
 
             // ── Receipt-style items list ──────────────────────────────────
             ...items.map<Widget>((item) {
@@ -1089,34 +1096,34 @@ class _DeliveryPageState extends State<DeliveryPage>
               final name = (item['name'] ?? '').toString();
               final qty = item['qty'];
               return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.only(bottom: 6),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     vegIndicator(isVeg),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         name,
                         style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                             color: AppColors.textPrimary,
-                            height: 1.3),
+                            height: 1.2),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
+                          horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
                           color: AppColors.surfaceAlt,
-                          borderRadius: BorderRadius.circular(8)),
+                          borderRadius: BorderRadius.circular(6)),
                       child: Text('×$qty',
                           style: const TextStyle(
-                              fontSize: 14,
+                              fontSize: 12,
                               fontWeight: FontWeight.w800,
                               color: AppColors.textPrimary)),
                     ),
@@ -1125,44 +1132,72 @@ class _DeliveryPageState extends State<DeliveryPage>
               );
             }),
 
-            // ── Action buttons (full-width, confident) ────────────────────
-            const SizedBox(height: 16),
+            // ── Action buttons ───────────────────────────────────────────
+            const SizedBox(height: 8),
             if (uiStatus == 'Ready')
               SizedBox(
                 width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () => _acceptOrder(order),
-                  icon: const Icon(Icons.check_circle_rounded, size: 18),
-                  label: const Text('Accept Order',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700, fontSize: 15)),
+                child: ElevatedButton(
+                  onPressed:
+                      _actionLoadingOrderNo == orderNo ? null : () => _acceptOrder(order),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.success,
                     foregroundColor: Colors.white,
                     elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                        borderRadius: BorderRadius.circular(12)),
                   ),
+                  child: _actionLoadingOrderNo == orderNo
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.check_circle_rounded, size: 16),
+                            SizedBox(width: 6),
+                            Text('Accept Order',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w700, fontSize: 13)),
+                          ],
+                        ),
                 ),
               ),
             if (uiStatus == 'Accepted')
               SizedBox(
                 width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () => _deliverOrder(order),
-                  icon: const Icon(Icons.task_alt_rounded, size: 18),
-                  label: const Text('Mark as Delivered',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700, fontSize: 15)),
+                child: ElevatedButton(
+                  onPressed:
+                      _actionLoadingOrderNo == orderNo ? null : () => _deliverOrder(order),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
                     elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                        borderRadius: BorderRadius.circular(12)),
                   ),
+                  child: _actionLoadingOrderNo == orderNo
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.task_alt_rounded, size: 16),
+                            SizedBox(width: 6),
+                            Text('Mark as Delivered',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w700, fontSize: 13)),
+                          ],
+                        ),
                 ),
               ),
           ],
@@ -1173,25 +1208,16 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   Widget _statusPill(String label, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: color.withOpacity(0.12),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: color.withOpacity(0.35), width: 1.5),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Text(label,
-              style: TextStyle(
-                  color: color, fontWeight: FontWeight.w800, fontSize: 12)),
-        ],
+      child: Text(
+        label,
+        style: TextStyle(
+            color: color, fontWeight: FontWeight.w800, fontSize: 11),
       ),
     );
   }

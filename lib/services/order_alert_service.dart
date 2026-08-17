@@ -68,7 +68,7 @@ class OrderAlertService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(AlertSoundKey.prefKey, soundName);
-      await prefs.setString(AlertSoundKey.loopKey, 'true');
+      await prefs.setString(AlertSoundKey.loopKey, 'false');
 
       final isRunning = await FlutterForegroundTask.isRunningService;
       if (isRunning) {

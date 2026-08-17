@@ -48,7 +48,6 @@ class UnifiedAlertTaskHandler extends TaskHandler {
     try {
       final prefs     = await SharedPreferences.getInstance();
       final soundName = prefs.getString(AlertSoundKey.prefKey) ?? AlertSoundKey.food;
-      final shouldLoop = prefs.getString(AlertSoundKey.loopKey) != 'false';
 
       final assetPath = 'assets/audio/$soundName.wav';
       final tempDir   = await getTemporaryDirectory();
@@ -66,37 +65,37 @@ class UnifiedAlertTaskHandler extends TaskHandler {
       }
 
       // ── Configure AudioSession for Operational Alerts ────────────────────
-      _audioSession = await AudioSession.instance;
-      await _audioSession!.configure(const AudioSessionConfiguration(
-        avAudioSessionCategory: AVAudioSessionCategory.playback,
-        androidAudioAttributes: AndroidAudioAttributes(
-          contentType: AndroidAudioContentType.sonification,
-          usage: AndroidAudioUsage.notificationRingtone,
-        ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
-        androidWillPauseWhenDucked: false,
-      ));
-      await _audioSession!.setActive(true);
+      try {
+        _audioSession = await AudioSession.instance;
+        await _audioSession!.configure(const AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playback,
+          androidAudioAttributes: AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.sonification,
+            usage: AndroidAudioUsage.notificationRingtone,
+          ),
+          androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
+          androidWillPauseWhenDucked: false,
+        ));
+        await _audioSession!.setActive(true);
+      } catch (e) {
+        print('UnifiedAlertTaskHandler AudioSession setup notice: $e');
+      }
 
       _player = AudioPlayer();
       await _player!.setFilePath(file.path);
+      await _player!.setLoopMode(LoopMode.off);
 
-      if (shouldLoop) {
-        // Pulse-style: loop until next FCM arrives and service restarts
-        await _player!.setLoopMode(LoopMode.one);
-        await _player!.play();
-      } else {
-        // Play-once (escalation / delivery): play then stop player;
-        // foreground service stays alive as a silent watcher.
-        await _player!.setLoopMode(LoopMode.off);
-        await _player!.play();
-        await _player!.processingStateStream.firstWhere(
-          (state) => state == ProcessingState.completed,
-        );
-        await _player!.stop();
-      }
+      // Single-Chime Server Pulse (Industry Standard):
+      // Play alert chime once per pulse, trigger one 200ms haptic vibration, then stop player.
+      // The foreground service remains active as a silent watcher for the next FCM pulse.
+      await _player!.play();
+      HapticFeedback.vibrate();
+      await _player!.processingStateStream.firstWhere(
+        (state) => state == ProcessingState.completed,
+      );
+      await _player!.stop();
 
-      print('UnifiedAlertTaskHandler: played $soundName (loop=$shouldLoop)');
+      print('UnifiedAlertTaskHandler: played $soundName once');
     } catch (e) {
       print('UnifiedAlertTaskHandler.onStart error: $e');
       // Don't stop service — stay alive as watcher even if audio fails

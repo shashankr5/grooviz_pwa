@@ -7,12 +7,16 @@ class OrderAlertSound {
   static bool _isPlaying = false;
   static Timer? _autoStopTimer;
 
+  static bool _isPreparing = false;
+
   static Future<void> start({Duration maxDuration = const Duration(seconds: 30)}) async {
-    if (_isPlaying) return;
+    if (_isPlaying || _isPreparing) return;
+    _isPreparing = true;
 
     try {
+      await _player.stop();
       await _player.setAsset('assets/audio/bell_notification.wav');
-      _player.setLoopMode(LoopMode.all);
+      await _player.setLoopMode(LoopMode.all);
       await _player.play();
       _isPlaying = true;
 
@@ -25,7 +29,9 @@ class OrderAlertSound {
       });
 
     } catch (e) {
-      print('❌ Failed to start alert sound: $e');
+      print('⚠️ Alert sound start skipped/interrupted safely: $e');
+    } finally {
+      _isPreparing = false;
     }
   }
 

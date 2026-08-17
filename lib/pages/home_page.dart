@@ -79,10 +79,26 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String selectedFilter     = "All";
   String selectedDateFilter = "All Days";
+  DateTime? selectedCustomDate;
   String userName       = "";
   String userRole       = "";
   String enterpriseName = "";
   int?   loggedInUserId;
+
+  String _monthName(int month) {
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
+    return months[month - 1];
+  }
+
+  String _getFormattedDateFilterText() {
+    if (selectedDateFilter == "Custom" && selectedCustomDate != null) {
+      return "${selectedCustomDate!.day} ${_monthName(selectedCustomDate!.month)} ${selectedCustomDate!.year.toString().substring(2)}";
+    }
+    return selectedDateFilter;
+  }
 
   bool  _isLoading       = true;
   bool  _deptLoaded      = false;
@@ -133,14 +149,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // If SQS is already working reliably, this can be removed without
   // breaking anything (the SP is idempotent).
   Timer? _escalationTimer;
+  Timer? _scrollFabTimer;
 
   // ── Scroll-to-top/bottom FAB ─────────────────────────────────────────────
   final ScrollController _scrollController = ScrollController();
-  // true  → user is near the bottom → button scrolls to top   (↑ icon)
-  // false → user is near the top    → button scrolls to bottom (↓ icon)
-  bool _scrollAtBottom = false;
-  // Only show the FAB once there is actually content to scroll.
-  bool _showScrollFab  = false;
+  final ValueNotifier<bool> _showScrollFabNotifier = ValueNotifier(false);
+  final ValueNotifier<bool> _scrollAtBottomNotifier = ValueNotifier(false);
 
   int get currentSectionCount {
     if (selectedFilter == "Escalated") {
@@ -157,27 +171,15 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     localNotifications.cancel(NotifId.serviceTask);
     localNotifications.cancel(NotifId.escalation);
     updateGroupSummary();
-    // FIX-9 (Bug 9): Reload on app resume. This is a safety net — the real
-    // fix is that WebSocketService().connect() must actually be called
-    // (see login_page.dart) so onNewTask/onNewDelivery fire live. Resume
-    // reload additionally covers the case where the socket dropped while
-    // backgrounded and hasn't finished reconnecting yet.
     WidgetsBinding.instance.addObserver(this);
     _loadUserId();
     _loadUserName();
     _loadUserRole();
     _loadTasks();
-    _loadUserDepartments(); // triggers _loadDeliveryCounts() internally when isRoomServiceUser = true
+    _loadUserDepartments();
     _loadEscalationBadge();
     _subscribeToAlerts();
 
-    // CHANGE: Start periodic escalation check every 60 seconds,
-    // but ONLY for Manager / GM / Admin — staff don't need to hit
-    // checkAndEscalate. Role is loaded asynchronously, so we wait for it
-    // in _loadUserRole() before deciding whether to start the timer.
-    // (Timer start moved into _loadUserRole() callback below.)
-
-    // Scroll FAB listener — only rebuilds when the relevant booleans flip.
     _scrollController.addListener(_onScroll);
   }
 
@@ -187,32 +189,45 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final offset = pos.pixels;
     final max    = pos.maxScrollExtent;
 
-    // Show the FAB only while the user is in the "middle" of the list —
-    // hidden at the top edge and hidden at the bottom edge.
-    const edge   = 80.0; // px from top/bottom where the FAB disappears
-    final show   = max > edge * 2 && offset > edge && offset < max - edge;
-    // Point toward the farther end — ↑ when past midpoint, ↓ before midpoint.
-    final atBtm  = offset >= max / 2;
+    // Show FAB only after scrolling past ~3-4 cards (380px) and before bottom edge
+    const edge = 380.0;
+    final show = max > edge * 1.5 && offset > edge && offset < max - 80.0;
+    final atBtm = offset >= max / 2;
 
-    if (show != _showScrollFab || atBtm != _scrollAtBottom) {
-      setState(() {
-        _showScrollFab  = show;
-        _scrollAtBottom = atBtm;
+    if (atBtm != _scrollAtBottomNotifier.value) {
+      _scrollAtBottomNotifier.value = atBtm;
+    }
+
+    if (show) {
+      if (!_showScrollFabNotifier.value) {
+        _showScrollFabNotifier.value = true;
+      }
+      // Reset the 5-second inactivity timer
+      _scrollFabTimer?.cancel();
+      _scrollFabTimer = Timer(const Duration(seconds: 5), () {
+        if (mounted) {
+          _showScrollFabNotifier.value = false;
+        }
       });
+    } else {
+      _scrollFabTimer?.cancel();
+      if (_showScrollFabNotifier.value) {
+        _showScrollFabNotifier.value = false;
+      }
     }
   }
 
-  /// Jump to the top and reset FAB state when the user switches filters.
-  void _resetScroll() {
+
+  /// Scroll smoothly down to the Service Requests list header.
+  void _scrollToTasksList() {
     if (_scrollController.hasClients) {
-      _scrollController.jumpTo(0);
+      final offset = isRoomServiceUser ? 420.0 : 260.0;
+      _scrollController.animateTo(
+        offset,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+      );
     }
-    // Reset FAB state immediately — the scroll listener will confirm once
-    // the frame settles, but this prevents a 1-frame flicker of the wrong icon.
-    setState(() {
-      _scrollAtBottom = false;
-      _showScrollFab  = false;
-    });
   }
 
   @override
@@ -266,8 +281,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _escalationListSub?.cancel();
     _roleChangeSub?.cancel();
     _escalationTimer?.cancel();
+    _scrollFabTimer?.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _showScrollFabNotifier.dispose();
+    _scrollAtBottomNotifier.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -685,12 +703,17 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
           });
     }
     final dateFiltered = list.where((t) {
-      final createdAt = t["raw"]?["created_at"] ?? "";
+      final createdAt = (t["raw"]?["created_at"] ?? t["raw"]?["timestamp"] ?? "").toString();
+      if (createdAt.isEmpty) return false;
       final date      = _parseTimestamp(createdAt);
+      if (selectedDateFilter == "Custom" && selectedCustomDate != null) {
+        return date.year == selectedCustomDate!.year &&
+               date.month == selectedCustomDate!.month &&
+               date.day == selectedCustomDate!.day;
+      }
       switch (selectedDateFilter) {
         case "Today":     return isToday(date);
         case "Yesterday": return isYesterday(date);
-        case "Older":     return !isToday(date) && !isYesterday(date);
         default:          return true;
       }
     }).toList();
@@ -716,7 +739,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ── Date filter bottom sheet ──────────────────────────────────────────────
 
   void _showDateFilterSheet() {
-    final options = ["All Days", "Today", "Yesterday", "Older"];
+    final options = ["All Days", "Today", "Yesterday", "Choose Date"];
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -744,11 +767,44 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             ),
             ...options.map((opt) {
-              final isSelected = selectedDateFilter == opt;
+              final isSelected = opt == "Choose Date"
+                  ? selectedDateFilter == "Custom"
+                  : selectedDateFilter == opt;
               return InkWell(
-                onTap: () {
-                  setState(() => selectedDateFilter = opt);
-                  Navigator.pop(context);
+                onTap: () async {
+                  if (opt == "Choose Date") {
+                    Navigator.pop(context);
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: selectedCustomDate ?? DateTime.now(),
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now(),
+                      builder: (context, child) {
+                        return Theme(
+                          data: Theme.of(context).copyWith(
+                            colorScheme: const ColorScheme.light(
+                              primary: AppColors.primary,
+                              onPrimary: Colors.white,
+                              onSurface: AppColors.textPrimary,
+                            ),
+                          ),
+                          child: child!,
+                        );
+                      },
+                    );
+                    if (picked != null) {
+                      setState(() {
+                        selectedDateFilter = "Custom";
+                        selectedCustomDate = picked;
+                      });
+                    }
+                  } else {
+                    setState(() {
+                      selectedDateFilter = opt;
+                      selectedCustomDate = null;
+                    });
+                    Navigator.pop(context);
+                  }
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
@@ -766,11 +822,15 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         size: 20,
                       ),
                       const SizedBox(width: 12),
-                      Text(opt,
-                          style: AppTypography.bodyPrimary.copyWith(
-                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                            color: isSelected ? AppColors.primary : AppColors.textPrimary,
-                          )),
+                      Text(
+                        opt == "Choose Date" && selectedCustomDate != null
+                            ? "${selectedCustomDate!.day} ${_monthName(selectedCustomDate!.month)} ${selectedCustomDate!.year}"
+                            : opt,
+                        style: AppTypography.bodyPrimary.copyWith(
+                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                          color: isSelected ? AppColors.primary : AppColors.textPrimary,
+                        ),
+                      ),
                       const Spacer(),
                       if (isSelected)
                         const Icon(Icons.check_rounded, color: AppColors.primary, size: 18),
@@ -832,28 +892,46 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: _buildAppBar(),
-      floatingActionButton: _showScrollFab
-          ? FloatingActionButton.small(
-              onPressed: () {
-                _scrollController.animateTo(
-                  _scrollAtBottom ? 0 : _scrollController.position.maxScrollExtent,
-                  duration: const Duration(milliseconds: 400),
-                  curve: Curves.easeInOut,
-                );
-              },
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              elevation: 4,
-              tooltip: _scrollAtBottom ? 'Back to top' : 'Jump to bottom',
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              child: Icon(
-                _scrollAtBottom
-                    ? Icons.keyboard_arrow_up_rounded
-                    : Icons.keyboard_arrow_down_rounded,
-                size: 22,
+      floatingActionButton: ValueListenableBuilder<bool>(
+        valueListenable: _showScrollFabNotifier,
+        builder: (_, showFab, __) {
+          return AnimatedScale(
+            scale: showFab ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+            child: AnimatedOpacity(
+              opacity: showFab ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 200),
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _scrollAtBottomNotifier,
+                builder: (_, atBtm, __) {
+                  return FloatingActionButton.small(
+                    onPressed: () {
+                      _scrollController.animateTo(
+                        atBtm ? 0 : _scrollController.position.maxScrollExtent,
+                        duration: const Duration(milliseconds: 350),
+                        curve: Curves.easeOutCubic,
+                      );
+                    },
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    elevation: 4,
+                    tooltip: atBtm ? 'Back to top' : 'Jump to bottom',
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    child: Icon(
+                      atBtm
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      size: 22,
+                    ),
+                  );
+                },
               ),
-            )
-          : null,
+            ),
+          );
+        },
+      ),
       body: Stack(
         children: [
           _errorMessage != null ? _buildError() : _buildContent(),
@@ -986,7 +1064,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
               onFilterSelected: (filter) {
                 setState(() => selectedFilter = filter);
                 if (filter == "Escalated") _loadEscalatedTasks();
-                _resetScroll();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _scrollToTasksList();
+                });
               },
             ),
           ),
@@ -1149,7 +1229,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   size: 14, color: AppColors.textSecondary),
                               const SizedBox(width: 6),
                               Text(
-                                selectedDateFilter,
+                                _getFormattedDateFilterText(),
                                 style: AppTypography.bodyPrimary.copyWith(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,

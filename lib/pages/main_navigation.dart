@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
+import 'services_page.dart';
 import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
@@ -38,9 +39,10 @@ class _MainNavigationState extends State<MainNavigation>
   late final RoleChangeWatcher _roleWatcher;
   StreamSubscription<String>? _sessionChangeSub;
 
-  final GlobalKey<HomePageState>       _homeKey  = GlobalKey<HomePageState>();
-  final GlobalKey<FoodOrdersPageState> _foodKey  = GlobalKey<FoodOrdersPageState>();
-  final GlobalKey<TasksPageState>      _tasksKey = GlobalKey<TasksPageState>();
+  final GlobalKey<HomePageState>       _homeKey     = GlobalKey<HomePageState>();
+  final GlobalKey<FoodOrdersPageState> _foodKey     = GlobalKey<FoodOrdersPageState>();
+  final GlobalKey<TasksPageState>      _tasksKey    = GlobalKey<TasksPageState>();
+  final GlobalKey<ServicesPageState>   _servicesKey = GlobalKey<ServicesPageState>();
 
   // ── Nav config ────────────────────────────────────────────────────────────
 
@@ -61,6 +63,15 @@ class _MainNavigationState extends State<MainNavigation>
         icon: Icon(Icons.fastfood_outlined, size: 26),
         activeIcon: Icon(Icons.fastfood, size: 26),
         label: 'Food',
+      ),
+    ),
+    _NavEntry(
+      key: 'services',
+      page: ServicesPage(key: _servicesKey),
+      item: const BottomNavigationBarItem(
+        icon: Icon(Icons.room_service_outlined, size: 26),
+        activeIcon: Icon(Icons.room_service, size: 26),
+        label: 'Services',
       ),
     ),
     _NavEntry(
@@ -101,15 +112,15 @@ class _MainNavigationState extends State<MainNavigation>
       return {'food', 'profile'};
     }
     if (d == 'front office') {
-      return {'home', 'tasks', 'camera'};
+      return {'home', 'tasks', 'services', 'camera'};
     }
     if (d == 'it' ||
         d == 'house keeping' ||
         d == 'maintenance' ||
         (d.contains('room') && d.contains('service'))) {
-      return {'home', 'tasks'};
+      return {'home', 'tasks', 'services'};
     }
-    return {'home', 'food', 'tasks'};
+    return {'home', 'food', 'tasks', 'services'};
   }
 
   List<String> get _visibleKeys {

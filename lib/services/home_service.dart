@@ -105,7 +105,7 @@ class HomeService {
         "title":       m["question"] ?? "Service Request",
         "subtitle":    m["answer"]   ?? "Awaiting response",
         "description": m["answer"]   ?? "",
-        "time":        _formatTime(m["timestamp"]),
+        "time":        _formatTime(m["timestamp"] ?? m["created_at"]),
         "guest":       _nonEmpty(m["guest_name"]) ?? "Unknown Guest",
         "guestNote":
             "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
@@ -121,6 +121,8 @@ class HomeService {
         "alert_pending": m["alert_pending"] ?? 0,
         "escalation_time_minutes": m["escalation_time_minutes"],
         "accepted_at":  m["accepted_at"],
+        "created_at":   m["created_at"],
+        "timestamp":    m["timestamp"],
         "department_id": m["department_id"],
         "enterprise_id": m["enterprise_id"],
         "raw":          m,

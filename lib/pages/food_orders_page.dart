@@ -1633,8 +1633,12 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                                       order['orderNo']?.toString() ?? '';
                                   final prevExpires =
                                       order['etaExpiresAt'] as DateTime?;
-                                  final newExpires = (prevExpires ?? DateTime.now())
-                                      .add(const Duration(minutes: 2));
+                                  final baseTime =
+                                      (prevExpires != null && prevExpires.isAfter(DateTime.now()))
+                                          ? prevExpires
+                                          : DateTime.now();
+                                  final newExpires =
+                                      baseTime.add(const Duration(minutes: 2));
                                   final prevTaps =
                                       (order['etaTapCount'] as num?)?.toInt() ?? 0;
                                   final newTaps = prevTaps + 1;

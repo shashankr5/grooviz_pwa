@@ -16,6 +16,7 @@ class ApiConstants {
   // ── Home Page ─────────────────────────────────────────────────
   static const String tasks          = "$baseUrl/ScreenSync_get_tasks_mobile";
   static const String acceptTask     = "$baseUrl/ScreenSync_task_accept_mobile";
+  static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile";
 
   // ── Ticket Details ────────────────────────────────────────────
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";

@@ -156,4 +156,46 @@ class TaskService {
     }
   }
 
+  /// Fetches all service department requests using ScreenSync_get_all_services_mobile
+  Future<Map<String, dynamic>> getAllServices({String stage = 'prod'}) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.getAllServices,
+        data: {
+          'user_id': userId,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      List<dynamic> resultList = data['RESULT'] ?? [];
+
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Success',
+          'services': resultList,
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to fetch services',
+          'services': [],
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (getAllServices): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+        'services': [],
+      };
+    }
+  }
 }

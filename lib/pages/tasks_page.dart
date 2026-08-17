@@ -401,7 +401,7 @@ class TasksPageState extends State<TasksPage> {
       builder: (_) => _DeptFilterSheet(
         selectedDept:  _selectedDept,
         departments:   _availableFilterDepts,
-        showAllOption: !_isDeptScopedRole(_userRoleId),
+        showAllOption: true,
         onSelected: (dept) {
           _onDeptSelected(dept);
           Navigator.pop(context);
@@ -796,16 +796,6 @@ class TasksPageState extends State<TasksPage> {
         filterStatus: null,
       ),
       _StatCardData(
-        count:        '$completedTasks',
-        label:        'Completed',
-        icon:         Icons.check_circle_outline,
-        iconBg:       AppColors.successLight,
-        iconColor:    AppColors.success,
-        accentColor:  AppColors.success,
-        // FIX 3: Tap opens sheet filtered to Closed tasks
-        filterStatus: 'completed',
-      ),
-      _StatCardData(
         count:        '$inProgressTasks',
         label:        'In Progress',
         icon:         Icons.timelapse_outlined,
@@ -814,6 +804,16 @@ class TasksPageState extends State<TasksPage> {
         accentColor:  AppColors.primary,
         // FIX 3: Tap opens sheet filtered to In Progress tasks
         filterStatus: 'inProgress',
+      ),
+      _StatCardData(
+        count:        '$completedTasks',
+        label:        'Completed',
+        icon:         Icons.check_circle_outline,
+        iconBg:       AppColors.successLight,
+        iconColor:    AppColors.success,
+        accentColor:  AppColors.success,
+        // FIX 3: Tap opens sheet filtered to Closed tasks
+        filterStatus: 'completed',
       ),
       if (showEscalated)
         _StatCardData(

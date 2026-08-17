@@ -15,8 +15,10 @@ class KOTPrinterService {
         ? enterpriseName.trim().toUpperCase()
         : 'GROOVIZ F&B';
 
-    sb.writeln('          KITCHEN ORDER TICKET          ');
-    sb.writeln('         ${headerName.padLeft((30 + headerName.length) ~/ 2).padRight(30)}');
+    final paddedHeader = headerName.length <= 30
+        ? headerName.padLeft((30 + headerName.length) ~/ 2).padRight(30)
+        : headerName;
+    sb.writeln('         $paddedHeader');
     sb.writeln(doubleDivider);
     sb.writeln('Order #:  ${ticket.orderNumber}');
     sb.writeln('Room #:   ${ticket.roomNumber}');

@@ -493,14 +493,20 @@ class _KOTPreviewSheetState extends State<KOTPreviewSheet>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Center(child: Text('KITCHEN ORDER TICKET',
-              style: TextStyle(fontFamily: 'monospace', fontSize: 14,
-                  fontWeight: FontWeight.bold, letterSpacing: 1.2,
-                  color: Colors.black87))),
-          Center(child: Text(
-              _enterpriseName.isNotEmpty ? _enterpriseName.toUpperCase() : 'GROOVIZ F&B ROOM SERVICE',
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 10,
-                  color: Colors.black54))),
+          // Hotel/Enterprise Name Header (Bold Black Text)
+          Center(
+            child: Text(
+              _enterpriseName.isNotEmpty ? _enterpriseName.toUpperCase() : 'GROOVIZ HOTEL',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+                color: Colors.black,
+              ),
+            ),
+          ),
           const SizedBox(height: 10),
           _buildDashedLine(),
           const SizedBox(height: 12),

@@ -45,7 +45,7 @@ class TaskAlertService {
   static Future<bool> startServiceAlert()    => ensureServiceRunning();
   static Future<bool> ensureServiceRunning() => _ensureRunning(
         soundName:         AlertSoundKey.task,
-        shouldLoop:        true,
+        shouldLoop:        false,
         notificationTitle: 'New Service Request',
         notificationText:  'Tap to view pending tasks',
       );
@@ -73,7 +73,7 @@ class TaskAlertService {
   static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
   static Future<bool> ensureDeliveryRunning() => _ensureRunning(
         soundName:         AlertSoundKey.delivery,   // CHANGED from .task
-        shouldLoop:        true,
+        shouldLoop:        false,
         notificationTitle: 'Order Ready for Delivery',
         notificationText:  'Tap to view delivery queue',
       );

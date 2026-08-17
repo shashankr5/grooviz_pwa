@@ -81,6 +81,7 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     final String guestName = (task['guest'] ?? 'Guest').toString();
     final String statusStr = (task['status'] ?? 'Open').toString();
     final String timeStr = (task['time'] ?? '').toString();
+
     final String assignedTo = (task['assignedTo'] ??
             task['assigned_to_name'] ??
             task['raw']?['assigned_to_name'] ??
@@ -352,17 +353,80 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
 
                   const SizedBox(height: 12),
 
-                  // Row 2: Task Title
-                  Text(
-                    titleStr,
-                    style: AppTypography.title.copyWith(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  // Parse "Order #SRV20260814140331419 - Ayurvedic Massage x1"
+                  () {
+                    final regExp = RegExp(
+                      r'^Order\s+(#[A-Za-z0-9]+)\s*-\s*(.*?)(?:\s+x\s*(\d+))?$',
+                      caseSensitive: false,
+                    );
+                    final match = regExp.firstMatch(titleStr.trim());
+
+                    String displayTitle = titleStr;
+                    String? parsedOrderId;
+                    int? quantity;
+
+                    if (match != null) {
+                      parsedOrderId = match.group(1);
+                      displayTitle = match.group(2) ?? titleStr;
+                      final qtyStr = match.group(3);
+                      if (qtyStr != null) {
+                        quantity = int.tryParse(qtyStr);
+                      }
+                    }
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                displayTitle,
+                                style: AppTypography.title.copyWith(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textPrimary,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (quantity != null) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primaryLight,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  'Qty: $quantity',
+                                  style: AppTypography.caption.copyWith(
+                                    color: AppColors.primary,
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (parsedOrderId != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            'Order $parsedOrderId',
+                            style: AppTypography.caption.copyWith(
+                              color: AppColors.textSecondary,
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ],
+                    );
+                  }(),
 
                   const SizedBox(height: 8),
 
