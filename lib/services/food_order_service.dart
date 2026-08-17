@@ -70,33 +70,57 @@ class FoodOrderService {
         return {"success": false, "message": "Server error"};
       }
 
-      // ── Result Set 1: Active orders (Pending / Preparing / Ready) ─────────
-      // Lambda returns STATUS[0].response as a JSON string (same as get_food_orders_for_fnb)
       final statusList = response.data["STATUS"] as List?;
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final statusFlag     = statusList[0]["status"];
+      final statusFlag     = statusList[0]["status"] ?? "F";
       final responseString = statusList[0]["response"];
 
-      if (statusFlag != "S" || responseString == null) {
-        return {"success": false, "message": "Invalid server response"};
+      if (statusFlag != "S" && statusFlag != "Success") {
+        return {"success": false, "message": statusList[0]["message"] ?? "Invalid server response"};
       }
 
-      final decoded   = json.decode(responseString);
-      final ordersRaw = decoded["orders"] as List? ?? [];
-      final orders    = _mapFoodOrders(ordersRaw);
+      List<Map<String, dynamic>> orders = [];
+      List<Map<String, dynamic>> cancelledOrders = [];
+      String message = "Success";
 
-      // ── Result Set 2: Cancelled orders ────────────────────────────────────
-      final cancelledRaw = (response.data["CANCELLED"] ?? []) as List;
-      dev.log("📥 Cancelled orders count: ${cancelledRaw.length}");
+      if (responseString != null) {
+        // OLD get_food_orders_for_fnb format: responseString contains nested stringified JSON
+        final decoded   = json.decode(responseString);
+        final ordersRaw = decoded["orders"] as List? ?? [];
+        orders    = _mapFoodOrders(ordersRaw);
+        message   = decoded["message"] ?? "Success";
 
-      final cancelledOrders = _mapCancelledOrders(cancelledRaw);
+        final cancelledRaw = (response.data["CANCELLED"] ?? []) as List;
+        cancelledOrders = _mapCancelledOrders(cancelledRaw);
+      } else {
+        // NEW get_food_orders_mobile format: RESULT contains the flat list of all orders
+        final resultList = (response.data["RESULT"] ?? []) as List;
+        message = statusList[0]["message"] ?? "Success";
+
+        // Separate active and cancelled orders based on status
+        final activeRaw = [];
+        final cancelledRaw = [];
+
+        for (var item in resultList) {
+          final itemMap = Map<String, dynamic>.from(item);
+          final statusVal = (itemMap["status"] ?? itemMap["delivery_status"] ?? "").toString().trim().toUpperCase();
+          if (statusVal == "CANCELLED" || statusVal == "C") {
+            cancelledRaw.add(item);
+          } else {
+            activeRaw.add(item);
+          }
+        }
+
+        orders = _mapFoodOrders(activeRaw);
+        cancelledOrders = _mapCancelledOrders(cancelledRaw);
+      }
 
       return {
         "success":         true,
-        "message":         decoded["message"] ?? "Success",
+        "message":         message,
         "orders":          orders,
         "cancelledOrders": cancelledOrders,
       };
@@ -112,19 +136,22 @@ class FoodOrderService {
   static List<Map<String, dynamic>> _mapFoodOrders(List raw) {
     return raw.map<Map<String, dynamic>>((o) {
       final m = Map<String, dynamic>.from(o);
+      final foodItemName = m["food_name"] ?? m["food_item"] ?? "-";
+      final statusVal = m["status"] ?? m["delivery_status"] ?? m["order_status"] ?? "PENDING";
+      final orderTimeVal = m["created_at"] ?? m["order_time"];
       return {
         "orderRequestId":      m["order_request_id"],
         "orderNumber":         m["order_number"]          ?? "-",
         "roomNumber":          m["room_number"]            ?? "-",
         "roomId":              m["room_id"],
         "guestName":           m["guest_name"]             ?? "Guest",
-        "foodItem":            m["food_item"]              ?? "-",
+        "foodItem":            foodItemName,
         "quantity":            m["quantity"]               ?? 0,
         "cookingInstructions": (m["cooking_instructions"]  ?? "").toString().trim(),
-        "status":              _statusText(m["order_status"]),
-        "statusColor":         _statusColor(m["order_status"]),
+        "status":              _statusText(statusVal),
+        "statusColor":         _statusColor(statusVal),
         "cancelReason":        m["cancel_reason"]          ?? "",
-        "orderTime":           _formatTime(m["order_time"]),
+        "orderTime":           _formatTime(orderTimeVal),
         "extraEtaMinutes":     _safeInt(m["extra_eta_minutes"]),
         "etaLocked":           _safeBool(m["eta_locked"]),
         "raw":                 m,
@@ -137,19 +164,21 @@ class FoodOrderService {
   static List<Map<String, dynamic>> _mapCancelledOrders(List raw) {
     return raw.map<Map<String, dynamic>>((o) {
       final m = Map<String, dynamic>.from(o);
+      final foodItemName = m["food_name"] ?? m["food_item"] ?? "-";
+      final orderTimeVal = m["created_at"] ?? m["order_time"];
       return {
         "orderRequestId":      m["order_request_id"],
         "orderNumber":         m["order_number"]          ?? "-",
         "roomNumber":          m["room_number"]            ?? "-",
         "roomId":              m["room_id"],
         "guestName":           m["guest_name"]             ?? "Guest",
-        "foodItem":            m["food_item"]              ?? "-",
+        "foodItem":            foodItemName,
         "quantity":            m["quantity"]               ?? 0,
         "cookingInstructions": (m["cooking_instructions"]  ?? "").toString().trim(),
         "status":              FoodOrderStatus.cancelled.label,
         "statusColor":         const Color(0xFFD32F2F),
         "cancelReason":        m["cancel_reason"]          ?? "",
-        "orderTime":           _formatTime(m["order_time"]),
+        "orderTime":           _formatTime(orderTimeVal),
         "extraEtaMinutes":     _safeInt(m["extra_eta_minutes"]),
         "etaLocked":           _safeBool(m["eta_locked"]),
         "raw": {

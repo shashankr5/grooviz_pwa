@@ -80,7 +80,7 @@ class ApiConstants {
   static const String updateRoomServiceStatus = "$baseUrl/ScreenSync_update_room_service_status_mobile";
 
   // ── Food Orders — F&B Tab ─────────────────────────────────────
-  static const String foodOrderDetails      = "$baseUrl/ScreenSync_get_food_orders_for_fnb";
+  static const String foodOrderDetails      = "$baseUrl/ScreenSync_get_food_orders_mobile";
   static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile";
   static const String orderSummary          = "$baseUrl/ScreenSync_get_order_summary_mobile";
 
