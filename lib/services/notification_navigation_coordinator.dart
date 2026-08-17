@@ -26,9 +26,14 @@ class NotificationNavigationCoordinator {
 
     final isLoggedIn = await UserSessionHelper.isLoggedIn();
 
-    // 1. Authentication Check — if logged out, stash for post-login
-    if (!isLoggedIn) {
-      print('🧭 [NotificationNavigationCoordinator] User logged out. Stashing payload.');
+    // 1. Authentication & Navigation State Readiness Check
+    // If the navigator key is not ready or the tab controller callback is not registered,
+    // we must stash the payload so that it is processed after the layout completes.
+    final navState = navigatorKey.currentState;
+    final isNavReady = navState != null && MainNavigation.tabSwitchCallback != null;
+
+    if (!isLoggedIn || !isNavReady) {
+      print('🧭 [NotificationNavigationCoordinator] App not ready (isLoggedIn=$isLoggedIn, isNavReady=$isNavReady). Stashing payload.');
       _pendingPayload = payload;
       return;
     }
