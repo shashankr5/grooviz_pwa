@@ -30,6 +30,11 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/user_session_helper.dart';
+import '../utils/report_pdf_helper.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:printing/printing.dart';
+import 'dart:typed_data';
+import 'package:dio/dio.dart';
 
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
@@ -701,6 +706,37 @@ class TasksPageState extends State<TasksPage> {
           const Text('My Tasks', style: AppTypography.appBarTitle),
           Text(subtitle, style: AppTypography.appBarSubtitle),
         ],
+      ),
+      actions: [
+        if (_isSupervisorOrAbove(_userRoleId))
+          IconButton(
+            icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
+            onPressed: _showExportReportDialog,
+            tooltip: 'Export PDF Report',
+          ),
+      ],
+    );
+  }
+
+  void _showExportReportDialog() async {
+    final name = await UserSessionHelper.getUserName() ?? 'Management';
+    final enterpriseIdVal = await UserSessionHelper.getEnterpriseId();
+    final enterpriseId = enterpriseIdVal != null ? "HT${enterpriseIdVal.toString().padLeft(3, '0')}" : "HT001";
+    final tier = 6 - (_userRoleId ?? 6);
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ExportReportBottomSheet(
+        userTierLevel: tier,
+        departmentName: _selectedDept ?? 'All Departments',
+        homeService: _homeService,
+        userRole: _userRole,
+        userName: name,
+        enterpriseId: enterpriseId,
       ),
     );
   }
@@ -1980,4 +2016,367 @@ class _DrillCard {
     required this.icon,
     this.highlight = false,
   });
+}
+
+class _ExportReportBottomSheet extends StatefulWidget {
+  final int userTierLevel;
+  final String departmentName;
+  final HomeService homeService;
+  final String userRole;
+  final String userName;
+  final String enterpriseId;
+
+  const _ExportReportBottomSheet({
+    required this.userTierLevel,
+    required this.departmentName,
+    required this.homeService,
+    required this.userRole,
+    required this.userName,
+    required this.enterpriseId,
+  });
+
+  @override
+  _ExportReportBottomSheetState createState() => _ExportReportBottomSheetState();
+}
+
+class _ExportReportBottomSheetState extends State<_ExportReportBottomSheet> {
+  String _selectedPeriod = '';
+  DateTime? _startDate;
+  DateTime? _endDate;
+  bool _loading = false;
+  List<dynamic>? _fetchedTasks;
+
+  String _formatDateShort(DateTime? dt) {
+    if (dt == null) return '';
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return "${dt.day} ${months[dt.month - 1]} ${dt.year}";
+  }
+
+  void _selectPeriod(String period) async {
+    final now = DateTime.now();
+    DateTime start;
+    DateTime end;
+
+    if (period == 'Today') {
+      start = DateTime(now.year, now.month, now.day);
+      end = DateTime(now.year, now.month, now.day, 23, 59, 59);
+    } else if (period == 'This Week') {
+      final weekday = now.weekday;
+      final monday = now.subtract(Duration(days: weekday - 1));
+      start = DateTime(monday.year, monday.month, monday.day);
+      final sunday = monday.add(const Duration(days: 6));
+      end = DateTime(sunday.year, sunday.month, sunday.day, 23, 59, 59);
+    } else if (period == 'This Month') {
+      start = DateTime(now.year, now.month, 1);
+      final nextMonth = DateTime(now.year, now.month + 1, 1);
+      end = nextMonth.subtract(const Duration(seconds: 1));
+    } else if (period == 'This Quarter') {
+      final quarterIndex = ((now.month - 1) / 3).floor();
+      final qStartMonth = quarterIndex * 3 + 1;
+      start = DateTime(now.year, qStartMonth, 1);
+      final qEndMonth = qStartMonth + 3;
+      final nextQuarter = DateTime(now.year, qEndMonth, 1);
+      end = nextQuarter.subtract(const Duration(seconds: 1));
+    } else {
+      return;
+    }
+
+    setState(() {
+      _selectedPeriod = period;
+      _startDate = start;
+      _endDate = end;
+      _loading = true;
+      _fetchedTasks = null;
+    });
+
+    final result = await widget.homeService.fetchTasksForRange(DateRange(start, end));
+    if (!mounted) return;
+
+    setState(() {
+      _fetchedTasks = result['tasks'] ?? [];
+      _loading = false;
+    });
+  }
+
+  void _selectCustomRange() async {
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF1976D2),
+              onPrimary: Colors.white,
+              onSurface: Color(0xFF1E293B),
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked == null) return;
+
+    final start = DateTime(picked.start.year, picked.start.month, picked.start.day);
+    final end = DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59);
+
+    setState(() {
+      _selectedPeriod = 'Custom';
+      _startDate = start;
+      _endDate = end;
+      _loading = true;
+      _fetchedTasks = null;
+    });
+
+    final result = await widget.homeService.fetchTasksForRange(DateRange(start, end));
+    if (!mounted) return;
+
+    setState(() {
+      _fetchedTasks = result['tasks'] ?? [];
+      _loading = false;
+    });
+  }
+
+  void _generateReport() async {
+    if (_startDate == null || _endDate == null || _fetchedTasks == null) return;
+
+    Navigator.pop(context);
+
+    final startStr = "${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')}";
+    final endStr = "${_endDate!.year}-${_endDate!.month.toString().padLeft(2, '0')}-${_endDate!.day.toString().padLeft(2, '0')}";
+
+    if (widget.userTierLevel >= 3) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const Center(
+          child: Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(16)),
+            ),
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(
+                    color: Color(0xFF1976D2),
+                    strokeWidth: 3,
+                  ),
+                  SizedBox(height: 18),
+                  Text(
+                    'Compiling your report...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final result = await widget.homeService.generateExecutiveReport(
+        startDate: startStr,
+        endDate: endStr,
+        templateId: 'exec_report_v1',
+      );
+
+      Navigator.of(context, rootNavigator: true).pop();
+
+      if (result['success'] == true && result['presignedUrl'] != null) {
+        final String presignedUrl = result['presignedUrl'];
+        await Printing.layoutPdf(
+          onLayout: (format) async {
+            final res = await Dio().get<List<int>>(
+              presignedUrl,
+              options: Options(responseType: ResponseType.bytes),
+            );
+            return Uint8List.fromList(res.data!);
+          },
+          name: ReportPdfHelper.getReportFilename(
+            enterpriseId: widget.enterpriseId,
+            departmentName: widget.departmentName,
+            roleLabel: widget.userRole,
+            period: _selectedPeriod,
+          ),
+          dynamicLayout: false,
+        );
+        // Fallback or secondary launch
+        try {
+          await launchUrl(Uri.parse(presignedUrl), mode: LaunchMode.externalApplication);
+        } catch (_) {}
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('⚠️ Lambda Error: ${result['message'] ?? 'Failed'}'),
+            backgroundColor: const Color(0xFFD32F2F),
+          ),
+        );
+      }
+    } else {
+      await ReportPdfHelper.exportReport(
+        context: context,
+        tasks: _fetchedTasks!,
+        userRole: widget.userRole,
+        userName: widget.userName,
+        monthYear: "${_formatDateShort(_startDate)} – ${_formatDateShort(_endDate)}",
+        departmentName: widget.departmentName,
+        userTierLevel: widget.userTierLevel,
+        enterpriseId: widget.enterpriseId,
+        periodLabel: _selectedPeriod,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showMonth = widget.userTierLevel >= 2;
+    final showQuarter = widget.userTierLevel >= 3;
+    final showCustom = widget.userTierLevel >= 3;
+    final hasPreview = _startDate != null && _endDate != null;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Export Report PDF',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.grey),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Select the reporting timeframe. Options are automatically filtered by your authorization tier.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildPeriodChip('Today'),
+              _buildPeriodChip('This Week'),
+              if (showMonth) _buildPeriodChip('This Month'),
+              if (showQuarter) _buildPeriodChip('This Quarter'),
+              if (showCustom)
+                ActionChip(
+                  avatar: const Icon(Icons.date_range_outlined, size: 16, color: Color(0xFF1976D2)),
+                  label: const Text('Custom Range'),
+                  labelStyle: const TextStyle(color: Color(0xFF1976D2), fontWeight: FontWeight.w600, fontSize: 13),
+                  backgroundColor: const Color(0xFFE3F2FD),
+                  side: BorderSide.none,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                  onPressed: _selectCustomRange,
+                ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1976D2)),
+                  ),
+                  SizedBox(width: 12),
+                  Text(
+                    'Querying database metrics...',
+                    style: TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic),
+                  ),
+                ],
+              ),
+            )
+          else if (hasPreview)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8F9FA),
+                borderRadius: const BorderRadius.all(Radius.circular(12)),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, size: 18, color: Color(0xFF1976D2)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '${widget.departmentName} · ${_formatDateShort(_startDate)} – ${_formatDateShort(_endDate)} · ${_fetchedTasks?.length ?? 0} tasks',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1E293B),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1976D2),
+              foregroundColor: Colors.white,
+              minimumSize: const Size(double.infinity, 48),
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.all(Radius.circular(12)),
+              ),
+              elevation: 0,
+            ),
+            onPressed: (_fetchedTasks != null && !_loading) ? _generateReport : null,
+            child: const Text(
+              'Generate & Export PDF',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPeriodChip(String label) {
+    final isSelected = _selectedPeriod == label;
+    return ChoiceChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (_) => _selectPeriod(label),
+      selectedColor: const Color(0xFF1976D2),
+      labelStyle: TextStyle(color: isSelected ? Colors.white : const Color(0xFF475569), fontWeight: FontWeight.w600, fontSize: 13),
+      backgroundColor: const Color(0xFFF1F5F9),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(8)),
+      ),
+      side: BorderSide.none,
+      showCheckmark: false,
+    );
+  }
 }

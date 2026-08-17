@@ -9,6 +9,12 @@ import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
 import '../constants/app_config.dart';
 
+class DateRange {
+  final DateTime startDate;
+  final DateTime endDate;
+  DateRange(this.startDate, this.endDate);
+}
+
 class HomeService {
   final Dio _dio;
 
@@ -78,7 +84,100 @@ class HomeService {
       return {"success": true, "tasks": _mapTasks(resultList)};
     } catch (e) {
       dev.log("ERROR (getTasks): $e");
-      // FIX-10/11/12 (Bugs 10-12): friendly message instead of raw "Network error"
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
+    }
+  }
+
+  // ── FETCH TASKS FOR DATE RANGE ─────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> fetchTasksForRange(DateRange range) async {
+    try {
+      final int? userId       = await UserSessionHelper.getUserId();
+      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
+
+      if (userId == null || userId == 0) {
+        return {"success": false, "message": "User ID missing"};
+      }
+      if (enterpriseId == null || enterpriseId == 0) {
+        return {"success": false, "message": "Enterprise ID missing"};
+      }
+
+      final payload = {
+        "user_id":       userId,
+        "enterprise_id": enterpriseId,
+        "start_date":    "${range.startDate.year}-${range.startDate.month.toString().padLeft(2, '0')}-${range.startDate.day.toString().padLeft(2, '0')}",
+        "end_date":      "${range.endDate.year}-${range.endDate.month.toString().padLeft(2, '0')}-${range.endDate.day.toString().padLeft(2, '0')}",
+        "stage":         AppConfig.stage,
+      };
+
+      dev.log("Fetching tasks for date range: ${payload['start_date']} to ${payload['end_date']}...");
+      final response = await _dio.post(ApiConstants.tasks, data: payload);
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error"};
+      }
+
+      final status = response.data["STATUS"];
+      if (status == null || status.isEmpty || status[0]["status"] != "S") {
+        return {
+          "success": false,
+          "message": status?[0]["message"] ?? "Failed",
+        };
+      }
+
+      final resultList = response.data["RESULT"];
+      if (resultList == null) {
+        return {"success": false, "message": "No tasks returned"};
+      }
+
+      return {"success": true, "tasks": _mapTasks(resultList)};
+    } catch (e) {
+      dev.log("ERROR (fetchTasksForRange): $e");
+      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
+    }
+  }
+
+  // ── GENERATE EXECUTIVE REPORT ──────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> generateExecutiveReport({
+    required String startDate,
+    required String endDate,
+    required String templateId,
+  }) async {
+    try {
+      final int? userId       = await UserSessionHelper.getUserId();
+      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
+
+      if (userId == null || enterpriseId == null) {
+        return {"success": false, "message": "Session credentials missing"};
+      }
+
+      final payload = {
+        "userId":       userId,
+        "enterpriseId": enterpriseId,
+        "templateId":   templateId,
+        "startDate":    startDate,
+        "endDate":      endDate,
+        "stage":        AppConfig.stage,
+      };
+
+      dev.log("Requesting executive report lambda...");
+      final response = await _dio.post(
+        "${ApiConstants.baseUrl}/generate_executive_report",
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {"success": false, "message": "Server error: ${response.statusCode}"};
+      }
+
+      if (response.data["success"] == true) {
+        return {"success": true, "presignedUrl": response.data["presignedUrl"]};
+      } else {
+        return {"success": false, "message": response.data["message"] ?? "Failed"};
+      }
+    } catch (e) {
+      dev.log("ERROR (generateExecutiveReport): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
