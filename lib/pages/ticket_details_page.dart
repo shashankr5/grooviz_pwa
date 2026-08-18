@@ -28,6 +28,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
+import '../services/task_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
@@ -271,12 +272,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     return int.tryParse(v.toString());
   }
 
-  bool get _isEscalated =>
-      (_task['is_escalated'] ??
-              (_task['raw'] as Map?)?['is_escalated'] ??
-              0) ==
-          1 ||
-      _task['task_flag'] == 'Escalated';
+  bool get _isEscalated {
+    final isEscVal = (_task['is_escalated'] ??
+            (_task['raw'] as Map?)?['is_escalated'] ??
+            0);
+    if (isEscVal == 1 || isEscVal == true) return true;
+    if (_task['task_flag'] == 'Escalated') return true;
+
+    // Check service request specific fields
+    final escId = _task['escalation_instance_id'] ?? (_task['raw'] as Map?)?['escalation_instance_id'];
+    final escStatus = _task['escalation_status'] ?? (_task['raw'] as Map?)?['escalation_status'];
+    if (escId != null && escStatus != null) return true;
+
+    return false;
+  }
 
   bool get _canTakeOver {
     if (!_isEscalated) return false;
@@ -291,6 +300,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   bool get _isClosed =>
       (_task['status'] ?? '').toString().toLowerCase() == 'closed' ||
       ((_task['raw'] as Map?)?['closed'] ?? 0) == 1;
+
+  bool get _isServiceRequest =>
+      widget.task['is_service_request'] == true ||
+      (_task['raw'] as Map?)?['is_service_request'] == true ||
+      widget.task['service_request_id'] != null ||
+      (_task['raw'] as Map?)?['service_request_id'] != null;
 
   int get _serviceRequestId =>
       ((_task['service_request_id'] ??
@@ -373,10 +388,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (confirm != true) return;
 
     setState(() => _isLoading = true);
-    final result = await _homeService.reassignTicket(
-      ticketId:       _serviceRequestId,
-      assignedUserId: userId,
-    );
+    final result = _isServiceRequest
+        ? await TaskService().reassignService(
+            taskId: _serviceRequestId,
+            reassignTo: userId,
+          )
+        : await _homeService.reassignTicket(
+            ticketId: _serviceRequestId,
+            assignedUserId: userId,
+          );
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -431,11 +451,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (confirm != true) return;
 
     setState(() => _isLoading = true);
-    final result = await _homeService.closeServiceRequest(
-      serviceRequestId: _serviceRequestId,
-      departmentId:     _departmentId,   // CHANGE: now required
-      enterpriseId:     _enterpriseId,   // CHANGE: now required
-    );
+    final result = _isServiceRequest
+        ? await TaskService().closeService(
+            serviceRequestId: _serviceRequestId,
+          )
+        : await _homeService.closeServiceRequest(
+            serviceRequestId: _serviceRequestId,
+            departmentId:     _departmentId,
+            enterpriseId:     _enterpriseId,
+          );
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -462,10 +486,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (text.isEmpty) return;
 
     setState(() => _isLoading = true);
-    final result = await _homeService.addNote(
-      serviceRequestId: _serviceRequestId,
-      noteText:         text,
-    );
+    final result = _isServiceRequest
+        ? await TaskService().addServiceNote(
+            serviceRequestId: _serviceRequestId,
+            noteText:         text,
+          )
+        : await _homeService.addNote(
+            serviceRequestId: _serviceRequestId,
+            noteText:         text,
+          );
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -723,11 +752,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                         onTap: () async {
                                         Navigator.pop(ctx);
                                         setState(() => _isLoading = true);
-                                        final res = await _homeService
-                                            .reassignTicket(
-                                          ticketId:       _serviceRequestId,
-                                          assignedUserId: staff['userId'] as int,
-                                        );
+                                        final res = _isServiceRequest
+                                             ? await TaskService().reassignService(
+                                                 taskId: _serviceRequestId,
+                                                 reassignTo: staff['userId'] as int,
+                                               )
+                                             : await _homeService.reassignTicket(
+                                                 ticketId:       _serviceRequestId,
+                                                 assignedUserId: staff['userId'] as int,
+                                               );
                                         if (!mounted) return;
                                         setState(() => _isLoading = false);
                                         if (res['success'] != true) {

@@ -217,6 +217,16 @@ Future<void> _showNotification(RemoteMessage message) async {
       TaskAlertService.notifyNewTask();
       break;
 
+    case 'SERVICE_STATUS_UPDATE':
+    case 'SERVICE_GUEST_UPDATE':
+      TaskAlertService.notifyNewTask();
+      break;
+
+    case 'TASK_REASSIGNED':
+      await TaskAlertService.ensureServiceRunning();
+      TaskAlertService.notifyNewTask();
+      break;
+
     case 'NEW_DELIVERY_TASK':
       await TaskAlertService.ensureDeliveryRunning();
       TaskAlertService.notifyNewDelivery();

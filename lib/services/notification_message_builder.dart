@@ -150,6 +150,35 @@ class NotificationMessageBuilder {
           icon:      NotifIcon.fallback,
         );
 
+      // ── Service Status Updates ────────────────────────────────────────────
+      case 'SERVICE_STATUS_UPDATE':
+      case 'SERVICE_GUEST_UPDATE':
+        final fallbackBody = data['body']?.toString() ??
+                             data['message']?.toString() ?? 'Tap to view';
+        return NotifMessage(
+          title:     data['title']?.toString() ?? '🔧 Service Request Update',
+          body:      fallbackBody,
+          bigText:   fallbackBody,
+          ticker:    'Service status update',
+          notifId:   NotifId.serviceTask,
+          channelId: NotifChannel.task,
+          color:     NotifColor.serviceTask,
+          icon:      NotifIcon.task,
+        );
+
+      case 'TASK_REASSIGNED':
+        final srId = data['service_request_id']?.toString() ?? '';
+        return NotifMessage(
+          title:     '🔄 Task Reassigned',
+          body:      'Service request #${srId} has been assigned to you',
+          bigText:   'A service request has been reassigned to you. Tap to review and begin working.',
+          ticker:    'Task reassigned to you',
+          notifId:   NotifId.serviceTask,
+          channelId: NotifChannel.task,
+          color:     NotifColor.serviceTask,
+          icon:      NotifIcon.task,
+        );
+
       // ── Default / Unknown ─────────────────────────────────────────────────
       default:
         final fallbackBody = data['body']?.toString() ??

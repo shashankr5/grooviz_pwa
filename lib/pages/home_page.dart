@@ -1003,25 +1003,68 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ── Error / content widgets ───────────────────────────────────────────────
 
   Widget _buildError() {
+    final isDeptError = _errorMessage?.toLowerCase().contains('department') ?? false;
+
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline, size: 48, color: AppColors.error),
-          const SizedBox(height: 12),
-          Text(_errorMessage ?? "Something went wrong",
-              style: AppTypography.bodySecondary),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _loadTasks,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isDeptError ? AppColors.warningLight : AppColors.errorLight,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                isDeptError ? Icons.info_outline_rounded : Icons.error_outline_rounded,
+                size: 48,
+                color: isDeptError ? AppColors.warning : AppColors.error,
+              ),
             ),
-            child: const Text("Retry"),
-          ),
-        ],
+            const SizedBox(height: 20),
+            Text(
+              isDeptError ? "Configuration Required" : "Error Occurred",
+              style: AppTypography.title.copyWith(
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _errorMessage ?? "Something went wrong",
+              textAlign: TextAlign.center,
+              style: AppTypography.bodySecondary.copyWith(
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: 160,
+              height: 44,
+              child: ElevatedButton(
+                onPressed: _loadTasks,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Text(
+                  isDeptError ? "Refresh Status" : "Retry",
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -14,9 +14,14 @@ class ApiConstants {
   static const String profile        = "$baseUrl/ScreenSync_get_profile_mobile";
 
   // ── Home Page ─────────────────────────────────────────────────
-  static const String tasks          = "$baseUrl/ScreenSync_get_tasks_mobile";
+  static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile";
   static const String acceptTask     = "$baseUrl/ScreenSync_task_accept_mobile";
   static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile";
+  static const String acceptServiceOrder = "$baseUrl/ScreenSync_accept_service_order_mobile";
+  static const String updateServiceRequestStatus = "$baseUrl/ScreenSync_update_service_request_status_mobile";
+  static const String reassignService = "$baseUrl/ScreenSync_reassign_service_mobile";
+  static const String addServiceNote = "$baseUrl/ScreenSync_add_service_note_mobile";
+  static const String closeService = "$baseUrl/ScreenSync_close_service_mobile";
 
   // ── Ticket Details ────────────────────────────────────────────
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";

@@ -80,6 +80,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     case 'DELIVERY_NOTIFICATION':
     case 'PULSE':
     case 'ESCALATION_ALERT':
+    case 'TASK_REASSIGNED':
       await _startServiceIfNeeded();
       break;
 
@@ -102,6 +103,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
       if (orderStatus == 'READY') {
         await _startServiceIfNeeded();
+      }
+      break;
+
+    case 'SERVICE_STATUS_UPDATE':
+    case 'SERVICE_GUEST_UPDATE':
+      final newStatus = (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
+      if (newStatus == 'DELIVERED' || newStatus == 'COMPLETED' || newStatus == 'CANCELLED') {
+        await _stopServiceIfRunning();
       }
       break;
   }

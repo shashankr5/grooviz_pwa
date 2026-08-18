@@ -198,4 +198,235 @@ class TaskService {
       };
     }
   }
+
+  /// Accept/Reject/Cancel/Complete a service order
+  Future<Map<String, dynamic>> acceptServiceOrder({
+    required int orderId,
+    required String action, // ACCEPT, REJECT, CANCEL, COMPLETE
+    String? remarks,
+    List<Map<String, dynamic>>? items,
+    String stage = 'prod',
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      final enterpriseId = await UserSessionHelper.getEnterpriseId();
+      if (userId == null || enterpriseId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.acceptServiceOrder,
+        data: {
+          'user_id': userId,
+          'enterprise_id': enterpriseId,
+          'order_id': orderId,
+          'action': action,
+          if (remarks != null) 'remarks': remarks,
+          if (items != null) 'items': items,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Action processed successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to process order action',
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (acceptServiceOrder): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
+
+  /// Update the progress/delivery status of a service request
+  Future<Map<String, dynamic>> updateServiceRequestStatus({
+    required int serviceRequestId,
+    required String status, // IN_PROGRESS, OUT_FOR_DELIVERY, DELIVERED, COMPLETED, CANCELLED
+    String? remarks,
+    String stage = 'prod',
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.updateServiceRequestStatus,
+        data: {
+          'user_id': userId,
+          'service_request_id': serviceRequestId,
+          'status': status,
+          if (remarks != null) 'remarks': remarks,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Status updated successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to update request status',
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (updateServiceRequestStatus): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
+
+  /// Reassign a service request to another staff member
+  Future<Map<String, dynamic>> reassignService({
+    required int taskId,
+    required int reassignTo,
+    String stage = 'prod',
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.reassignService,
+        data: {
+          'user_id': userId,
+          'task_id': taskId,
+          'reassign_to': reassignTo,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Task reassigned successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to reassign task',
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (reassignService): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
+
+  /// Add a note to a service request
+  Future<Map<String, dynamic>> addServiceNote({
+    required int serviceRequestId,
+    required String noteText,
+    String stage = 'prod',
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.addServiceNote,
+        data: {
+          'user_id': userId,
+          'service_request_id': serviceRequestId,
+          'note_text': noteText,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Note added successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to add note',
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (addServiceNote): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
+
+  /// Close a service request
+  Future<Map<String, dynamic>> closeService({
+    required int serviceRequestId,
+    String stage = 'prod',
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {'success': false, 'message': 'User session not found'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.closeService,
+        data: {
+          'user_id': userId,
+          'service_request_id': serviceRequestId,
+          'stage': stage,
+        },
+      );
+
+      final data = response.data;
+      List<dynamic> statusList = data['STATUS'] ?? [];
+      
+      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        return {
+          'success': true,
+          'message': statusList[0]['message'] ?? 'Service closed successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to close service',
+        };
+      }
+    } catch (e) {
+      dev.log("❌ ERROR (closeService): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
 }

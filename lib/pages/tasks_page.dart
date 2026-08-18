@@ -100,6 +100,7 @@ class TasksPageState extends State<TasksPage> {
   int?         _userId;
   int?         _userRoleId;
   List<String> _myDepts    = [];
+  bool         _canSendReports = false;
 
   // ── Month / dept filter ───────────────────────────────────────────────────
   int     _selectedMonth = DateTime.now().month;
@@ -163,6 +164,8 @@ class TasksPageState extends State<TasksPage> {
     final roleId = await UserSessionHelper.getRoleId();
     final userId = await UserSessionHelper.getUserId();
     final depts  = await UserSessionHelper.getDepartments();
+    final profile = await UserSessionHelper.getUserProfile();
+    final sendReports = profile?['send_reports']?.toString().toUpperCase() ?? 'N';
     if (!mounted) return;
 
     setState(() {
@@ -170,6 +173,7 @@ class TasksPageState extends State<TasksPage> {
       _userRoleId = roleId ?? _deriveRoleId(role);
       _userId     = userId;
       _myDepts    = depts;
+      _canSendReports = sendReports == 'Y';
 
       if (_isDeptScopedRole(_userRoleId)) {
         _availableFilterDepts = List.from(depts)..sort();
@@ -634,9 +638,16 @@ class TasksPageState extends State<TasksPage> {
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(32),
                     children: [
-                      const SizedBox(height: 60),
-                      Icon(Icons.wifi_off_rounded,
-                          size: 48, color: Colors.grey.shade400),
+                      SizedBox(height: MediaQuery.of(context).size.height * 0.15),
+                      Icon(
+                        _statsError!.toLowerCase().contains('department')
+                            ? Icons.info_outline_rounded
+                            : Icons.wifi_off_rounded,
+                        size: 52,
+                        color: _statsError!.toLowerCase().contains('department')
+                            ? AppColors.warning
+                            : Colors.grey.shade400,
+                      ),
                       const SizedBox(height: 16),
                       Text(
                         _statsError!,
@@ -644,13 +655,22 @@ class TasksPageState extends State<TasksPage> {
                         style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 15,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                       const SizedBox(height: 16),
                       Center(
                         child: TextButton(
                           onPressed: _loadMyStats,
-                          child: const Text('Try Again'),
+                          child: Text(
+                            _statsError!.toLowerCase().contains('department')
+                                ? 'Refresh Status'
+                                : 'Try Again',
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -708,7 +728,7 @@ class TasksPageState extends State<TasksPage> {
         ],
       ),
       actions: [
-        if (_isSupervisorOrAbove(_userRoleId))
+        if (_isSupervisorOrAbove(_userRoleId) && _canSendReports)
           IconButton(
             icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
             onPressed: _showExportReportDialog,

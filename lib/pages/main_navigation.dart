@@ -11,6 +11,7 @@ import 'camera_content_page.dart';
 import 'login_page.dart';
 import '../utils/notification_permission_manager.dart';
 import '../utils/user_session_helper.dart';
+import '../services/logout_service.dart';
 
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
@@ -263,8 +264,6 @@ class _MainNavigationState extends State<MainNavigation>
           if (initDepts.isEmpty && deptList.isNotEmpty) {
             await UserSessionHelper.saveInitialDepartments(deptList);
           }
-
-          SessionChangeService.instance.notifyRoleChange(role);
         } else {
           debugPrint('[MainNavigation] getProfile() failed during baseline seed: ${result['message']}');
         }
@@ -336,7 +335,7 @@ class _MainNavigationState extends State<MainNavigation>
       builder: (_) => _RoleChangedSheet(
         reason:   reason,
         onLogout: () async {
-          await UserSessionHelper.clearSession();
+          await LogoutService().logout();
           _navigateToLogin();
         },
       ),

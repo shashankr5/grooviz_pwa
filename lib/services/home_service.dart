@@ -216,7 +216,7 @@ class HomeService {
                 "-")
             .toString(),
         "note":         m["note_text"],
-        "is_escalated": m["is_escalated"] ?? 0,
+        "is_escalated": (m["is_escalated"] == 1 || m["is_escalated"] == true || m["escalation_instance_id"] != null) ? 1 : 0,
         "alert_pending": m["alert_pending"] ?? 0,
         "escalation_time_minutes": m["escalation_time_minutes"],
         "accepted_at":  m["accepted_at"],
