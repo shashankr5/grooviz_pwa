@@ -7,6 +7,7 @@ import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 
 class RoomsService {
   final Dio _dio;
@@ -51,7 +52,7 @@ class RoomsService {
       final payload = {
         "user_id": userId,
         "enterprise_id": enterpriseId.toString(),
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Fetching Rooms");
@@ -177,7 +178,7 @@ class RoomsService {
         "enterprise_id": enterpriseId,
         "device_ids": deviceIds, // ✅ CORRECT (ARRAY)
         "file_path": filePath,
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Updating Guest Photo");
@@ -231,7 +232,7 @@ class RoomsService {
       final payload = {
         "user_id": userId, // ✅ FIX: no toString
         "enterprise_id": enterpriseId.toString(),
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Fetching Guest Contents");
@@ -320,7 +321,7 @@ class RoomsService {
         "user_id": userId,
         "content_id": contentId,
         "enterprise_id": enterpriseId.toString(),
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("🗑 Deleting Content");

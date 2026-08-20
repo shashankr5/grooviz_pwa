@@ -5,6 +5,7 @@ import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 import 'home_service.dart';
 
 class TaskService {
@@ -71,7 +72,7 @@ class TaskService {
       final payload = {
         "user_id": userId,
         "enterprise_id": enterpriseId,
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Fetching task summary (TaskService)…");
@@ -157,9 +158,10 @@ class TaskService {
   }
 
   /// Fetches all service department requests using ScreenSync_get_all_services_mobile
-  Future<Map<String, dynamic>> getAllServices({String stage = 'prod'}) async {
+  Future<Map<String, dynamic>> getAllServices({String stage = AppConfig.stage}) async {
     try {
       final userId = await UserSessionHelper.getUserId();
+      final enterpriseId = await UserSessionHelper.getEnterpriseId();
       if (userId == null) {
         return {'success': false, 'message': 'User session not found'};
       }
@@ -168,6 +170,7 @@ class TaskService {
         ApiConstants.getAllServices,
         data: {
           'user_id': userId,
+          'enterprise_id': enterpriseId,
           'stage': stage,
         },
       );
@@ -205,7 +208,7 @@ class TaskService {
     required String action, // ACCEPT, REJECT, CANCEL, COMPLETE
     String? remarks,
     List<Map<String, dynamic>>? items,
-    String stage = 'prod',
+    String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
@@ -250,12 +253,31 @@ class TaskService {
     }
   }
 
-  /// Update the progress/delivery status of a service request
+  // ── Update service request status (Accept / Close) ─────────────────────────
+  //
+  // Canonical action method for ALL status transitions on a service request:
+  //   • status = "IN_PROGRESS" → Staff/Supervisor accepts the task
+  //   • status = "CLOSED"      → Any authorised user closes the task
+  //
+  // SP: ScreenSync_update_service_request_status_mobile
+  // The SP handles escalation resolution atomically — do NOT call
+  // EscalationService.resolveEscalation() after this method.
+  //
+  // Returns:
+  //   success              bool
+  //   message              String
+  //   current_status       "In Progress" | "Closed"
+  //   escalation_status    String? — updated escalation state from SP
+  //   next_escalation_at   String? — null when task accepted/closed
+  //   closed_by_user_name  String?
+  //   current_assigned_to  String?
+  //   accepted_by_user_name String?
+  //   status_data          Map    — full STATUS[0] row for any extra SP fields
   Future<Map<String, dynamic>> updateServiceRequestStatus({
     required int serviceRequestId,
-    required String status, // IN_PROGRESS, OUT_FOR_DELIVERY, DELIVERED, COMPLETED, CANCELLED
+    required String status,    // "IN_PROGRESS" | "CLOSED"
     String? remarks,
-    String stage = 'prod',
+    String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
@@ -263,31 +285,64 @@ class TaskService {
         return {'success': false, 'message': 'User session not found'};
       }
 
+      dev.log("📤 updateServiceRequestStatus: sr=$serviceRequestId status=$status");
+
       final response = await _dio.post(
         ApiConstants.updateServiceRequestStatus,
         data: {
-          'user_id': userId,
+          'user_id':            userId,
           'service_request_id': serviceRequestId,
-          'status': status,
-          if (remarks != null) 'remarks': remarks,
-          'stage': stage,
+          'status':             status,
+          if (remarks != null && remarks.isNotEmpty) 'remarks': remarks,
+          'stage':              stage,
         },
       );
 
-      final data = response.data;
-      List<dynamic> statusList = data['STATUS'] ?? [];
-      
-      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
-        return {
-          'success': true,
-          'message': statusList[0]['message'] ?? 'Status updated successfully',
-        };
-      } else {
+      final data       = response.data as Map<String, dynamic>? ?? {};
+      final statusList = (data['STATUS'] as List?) ?? [];
+
+      if (statusList.isEmpty) {
+        return {'success': false, 'message': 'Invalid server response'};
+      }
+
+      final sd = Map<String, dynamic>.from(statusList[0] as Map);
+
+      if (sd['status'] != 'S') {
         return {
           'success': false,
-          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to update request status',
+          'message': sd['message'] ?? 'Failed to update status',
         };
       }
+
+      // Normalise current_status from the SP's raw value
+      final rawCurrentStatus = (sd['current_status'] as String?) ?? status;
+      String normalised;
+      switch (rawCurrentStatus.toUpperCase()) {
+        case 'IN_PROGRESS':
+        case 'INPROGRESS':
+        case 'IN PROGRESS':
+          normalised = 'In Progress';
+          break;
+        case 'CLOSED':
+          normalised = 'Closed';
+          break;
+        default:
+          normalised = rawCurrentStatus;
+      }
+
+      dev.log("✅ updateServiceRequestStatus: sr=$serviceRequestId → $normalised");
+
+      return {
+        'success':               true,
+        'message':               sd['message'] ?? 'Status updated',
+        'current_status':        normalised,
+        'escalation_status':     sd['escalation_status'],
+        'next_escalation_at':    sd['next_escalation_at'],
+        'closed_by_user_name':   sd['closed_by_user_name'],
+        'current_assigned_to':   sd['current_assigned_to'],
+        'accepted_by_user_name': sd['accepted_by_user_name'],
+        'status_data':           sd, // full STATUS[0] row
+      };
     } catch (e) {
       dev.log("❌ ERROR (updateServiceRequestStatus): $e");
       return {
@@ -297,11 +352,13 @@ class TaskService {
     }
   }
 
+
   /// Reassign a service request to another staff member
   Future<Map<String, dynamic>> reassignService({
     required int taskId,
     required int reassignTo,
-    String stage = 'prod',
+    int? departmentId,
+    String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
@@ -309,23 +366,32 @@ class TaskService {
         return {'success': false, 'message': 'User session not found'};
       }
 
+      final payload = {
+        'user_id':            userId,
+        'task_id':            taskId,
+        'service_request_id': taskId,
+        'reassign_to':        reassignTo,
+        'reassigned_to':      reassignTo,
+        if (departmentId != null && departmentId > 0) 'department_id': departmentId,
+        'stage':              stage,
+      };
+
+      dev.log("📤 reassignService: $payload");
+
       final response = await _dio.post(
         ApiConstants.reassignService,
-        data: {
-          'user_id': userId,
-          'task_id': taskId,
-          'reassign_to': reassignTo,
-          'stage': stage,
-        },
+        data: payload,
       );
 
       final data = response.data;
-      List<dynamic> statusList = data['STATUS'] ?? [];
+      List<dynamic> statusList = (data['RESULT'] ?? data['STATUS'] ?? []) as List;
+
       
       if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
         return {
           'success': true,
           'message': statusList[0]['message'] ?? 'Task reassigned successfully',
+          'updatedTask': statusList[0],
         };
       } else {
         return {
@@ -346,12 +412,12 @@ class TaskService {
   Future<Map<String, dynamic>> addServiceNote({
     required int serviceRequestId,
     required String noteText,
-    String stage = 'prod',
+    String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null) {
-        return {'success': false, 'message': 'User session not found'};
+        return {'success': false, 'message': 'User session not found', 'note': null};
       }
 
       final response = await _dio.post(
@@ -366,16 +432,19 @@ class TaskService {
 
       final data = response.data;
       List<dynamic> statusList = data['STATUS'] ?? [];
-      
+      List<dynamic> resultList = data['RESULT'] ?? [];
+
       if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
         return {
           'success': true,
           'message': statusList[0]['message'] ?? 'Note added successfully',
+          'note': resultList.isNotEmpty ? resultList[0] : null,
         };
       } else {
         return {
           'success': false,
           'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to add note',
+          'note': null,
         };
       }
     } catch (e) {
@@ -383,6 +452,7 @@ class TaskService {
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
+        'note': null,
       };
     }
   }
@@ -390,12 +460,12 @@ class TaskService {
   /// Close a service request
   Future<Map<String, dynamic>> closeService({
     required int serviceRequestId,
-    String stage = 'prod',
+    String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null) {
-        return {'success': false, 'message': 'User session not found'};
+        return {'success': false, 'message': 'User session not found', 'data': null};
       }
 
       final response = await _dio.post(
@@ -408,17 +478,21 @@ class TaskService {
       );
 
       final data = response.data;
-      List<dynamic> statusList = data['STATUS'] ?? [];
-      
-      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+      List<dynamic> statusList = (data['STATUS'] ?? data['RESULT'] ?? []) as List;
+      List<dynamic> resultList = (data['RESULT'] ?? data['STATUS'] ?? []) as List;
+
+      if (statusList.isNotEmpty && (statusList[0]['status'] == 'S' || statusList[0]['status'] == '200')) {
+
         return {
           'success': true,
           'message': statusList[0]['message'] ?? 'Service closed successfully',
+          'data': resultList.isNotEmpty ? resultList[0] : null,
         };
       } else {
         return {
           'success': false,
           'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to close service',
+          'data': null,
         };
       }
     } catch (e) {
@@ -426,7 +500,9 @@ class TaskService {
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
+        'data': null,
       };
     }
   }
 }
+

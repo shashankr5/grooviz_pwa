@@ -3,19 +3,28 @@
 // EscalationService — singleton for all escalation-related API calls and
 // in-process event streams.
 //
-// Responsibilities:
-//  • handleEscalationAlert() — called by WebSocketService on ESCALATION_ALERT
-//  • onBadgeUpdate stream    — emits badge count for home_page badge chip
-//  • onListRefresh stream    — emits void so home_page always reloads the list
-//                             (no selectedFilter guard — always unconditional)
-//  • triggerCheck()          — called by 60s timer (Manager+ only)
-//  • resolveEscalation()     — called after accept / close / reassign
-//  • getBadgeCount()         — REST fallback for badge count
-//  • getEscalatedTasks()     — REST fetch of escalated task list
-//  • getTaskStatus()         — per-task escalation status for TicketDetailPage
-//  • getEscalationHistory()  — history list for a single task
+// ARCHITECTURE NOTE (updated):
+//  • Escalation status is now embedded in every get_all_services_mobile RESULT
+//    row (escalation_instance_id, escalation_status, current_stage_name,
+//    next_escalation_at). No separate per-task REST call is needed.
 //
-// All payloads use AppConfig.stage — never hardcodes 'dev'.
+//  • resolveEscalation() has been REMOVED. The SP
+//    ScreenSync_update_service_request_status_mobile handles escalation
+//    resolution atomically inside its DB transaction. A separate round-trip
+//    was redundant and could race with the SP.
+//
+//  • getTaskStatus() has been REMOVED. EscalationStatus is now built from the
+//    task map that _mapTasks() produces — no extra network call.
+//
+//  • triggerCheck() — KEPT. Called by the 60s Manager+ timer in home_page.dart.
+//    Routes to ScreenSync_sp_check_and_escalate_mobile.
+//
+//  • onBadgeUpdate / onListRefresh streams — KEPT. Fed by WebSocket
+//    ESCALATION_ALERT events; consumed by home_page.dart.
+//
+// Deprecated endpoints (commented for reference — DO NOT CALL):
+//  // ScreenSync_get_escalation_status_mobile  → status in RESULT row now
+//  // ScreenSync_sp_resolve_escalation_mobile  → resolved inside update_status SP
 
 import 'dart:async';
 import 'dart:developer' as dev;
@@ -25,53 +34,72 @@ import '../constants/app_config.dart';
 import '../utils/user_session_helper.dart';
 
 // ── EscalationStatus model ────────────────────────────────────────────────────
+//
+// Built from the task map produced by HomeService._mapTasks().
+// All fields originate from the get_all_services_mobile RESULT row —
+// no additional network call is required.
+//
+// Usage:
+//   final es = EscalationStatus.fromTaskMap(task);
+//   if (es.isEscalated) { /* show banner */ }
 
 class EscalationStatus {
-  final int    currentLevel;
-  final int    maxLevel;
-  final int    pulseCount;
-  final int    maxPulses;
-  final String status;
-  final String escalatedToName;
-  final String notifiedUserName;
-  final int    ageMinutes;
-  final int    slaMinutes;
+  final int?      instanceId;       // escalation_instance_id — null = not escalated
+  final String?   status;           // "Working" | "Completed" | "Accepted" | null
+  final int?      currentStageId;
+  final String?   currentStageName; // e.g. "Level 2 – Supervisor"
+  final DateTime? nextEscalationAt; // from task_alert_state.next_escalation_at
+  final String?   currentAssignedTo;
 
   const EscalationStatus({
-    required this.currentLevel,
-    required this.maxLevel,
-    required this.pulseCount,
-    required this.maxPulses,
-    required this.status,
-    required this.escalatedToName,
-    required this.notifiedUserName,
-    required this.ageMinutes,
-    required this.slaMinutes,
+    this.instanceId,
+    this.status,
+    this.currentStageId,
+    this.currentStageName,
+    this.nextEscalationAt,
+    this.currentAssignedTo,
   });
 
-  bool get isEscalated  => currentLevel > 0;
-  bool get isAtMaxLevel => currentLevel >= maxLevel;
-  int  get overdueMinutes => (ageMinutes - slaMinutes).clamp(0, 9999);
+  bool get isEscalated => instanceId != null;
 
-  /// Human-readable SLA label for the TicketDetailPage escalation banner.
-  String get slaLabel {
-    if (overdueMinutes > 0) return '$overdueMinutes min overdue';
-    final remaining = slaMinutes - ageMinutes;
-    if (remaining <= 0) return 'SLA due now';
-    return '$remaining min remaining';
+  /// True if the next escalation deadline has already passed.
+  bool get isOverdue =>
+      nextEscalationAt != null &&
+      DateTime.now().isAfter(nextEscalationAt!);
+
+  /// Remaining minutes until the next escalation fires. Negative = overdue.
+  int get remainingMinutes {
+    if (nextEscalationAt == null) return 9999;
+    return nextEscalationAt!.difference(DateTime.now()).inMinutes;
   }
 
-  factory EscalationStatus.fromMap(Map<String, dynamic> m) {
+  /// Human-readable SLA label shown in the escalation banner / countdown widget.
+  String get slaLabel {
+    if (!isEscalated || nextEscalationAt == null) return '';
+    if (isOverdue) return '${-remainingMinutes} min overdue';
+    if (remainingMinutes == 0) return 'SLA due now';
+    return '$remainingMinutes min remaining';
+  }
+
+  /// Build from the task map returned by HomeService._mapTasks().
+  /// Returns a non-escalated (instanceId == null) sentinel if not escalated.
+  factory EscalationStatus.fromTaskMap(Map<String, dynamic> task) {
+    final instanceId = task['escalation_instance_id'] as int?;
+    if (instanceId == null) return const EscalationStatus();
+
+    final nextEscRaw = task['next_escalation_at'] as String?;
+    DateTime? nextEsc;
+    if (nextEscRaw != null && nextEscRaw.isNotEmpty) {
+      try { nextEsc = DateTime.parse(nextEscRaw).toLocal(); } catch (_) {}
+    }
+
     return EscalationStatus(
-      currentLevel:     (m['current_escalation_level'] as int?) ?? 0,
-      maxLevel:         (m['max_escalation_level']     as int?) ?? 5,
-      pulseCount:       (m['pulse_count']              as int?) ?? 0,
-      maxPulses:        (m['max_pulses']               as int?) ?? 5,
-      status:           (m['escalation_status']        as String?) ?? 'pulsing',
-      escalatedToName:  (m['escalated_to_name']        as String?) ?? '-',
-      notifiedUserName: (m['notified_user_name']       as String?) ?? '-',
-      ageMinutes:       (m['age_minutes']              as int?) ?? 0,
-      slaMinutes:       (m['sla_minutes']              as int?) ?? 0,
+      instanceId:        instanceId,
+      status:            task['escalation_status'] as String?,
+      currentStageId:    task['current_stage_id'] as int?,
+      currentStageName:  task['current_stage_name'] as String?,
+      nextEscalationAt:  nextEsc,
+      currentAssignedTo: (task['raw'] as Map?)?['current_assigned_to'] as String?,
     );
   }
 }
@@ -80,6 +108,17 @@ class EscalationStatus {
 
 class EscalationService {
   EscalationService._();
+
+  // Active endpoint
+  static const String _checkAndEscalateUrl =
+      "${ApiConstants.baseUrl}/ScreenSync_sp_check_and_escalate_mobile";
+
+  // Deprecated — DO NOT USE (kept for historical reference)
+  // static const String _escalationStatusUrl =
+  //     "${ApiConstants.baseUrl}/ScreenSync_get_escalation_status_mobile";
+  // static const String _resolveEscalationUrl =
+  //     "${ApiConstants.baseUrl}/ScreenSync_sp_resolve_escalation_mobile";
+
   static final EscalationService instance = EscalationService._();
 
   late final Dio _dio = Dio(BaseOptions(
@@ -113,23 +152,27 @@ class EscalationService {
   }
 
   // ── Entry point from WebSocketService ────────────────────────────────────
-  // Called in websocket_service.dart _handleMessage() for ESCALATION_ALERT.
+  // Called by websocket_service.dart _handleMessage() for ESCALATION_ALERT.
 
   void handleEscalationAlert(Map<String, dynamic> data) {
     final badge = int.tryParse(
       (data['badge_count'] ?? '0').toString(),
     ) ?? 0;
     _emitBadge(badge);
-    _emitList(); // always — not conditional on selected filter
+    _emitList(); // always unconditional — not guarded by selected filter
     dev.log('EscalationService: ESCALATION_ALERT badge=$badge');
   }
 
   // ── Periodic check — Manager+ only ───────────────────────────────────────
-  // Called by the 60s Timer in home_page.dart initState (Manager+ guard there).
+  // Called by the 60s Timer in home_page.dart (behind Manager+ role guard).
 
   Future<void> triggerCheck() async {
     try {
-      await _dio.post(ApiConstants.checkAndEscalate, data: {
+      final userId       = await UserSessionHelper.getUserId();
+      final enterpriseId = await UserSessionHelper.getEnterpriseId();
+      await _dio.post(_checkAndEscalateUrl, data: {
+        if (userId != null)       'user_id':       userId,
+        if (enterpriseId != null) 'enterprise_id': enterpriseId,
         'stage': AppConfig.stage,
       });
       dev.log('EscalationService.triggerCheck: OK');
@@ -138,139 +181,15 @@ class EscalationService {
     }
   }
 
-  // ── Resolve escalation ────────────────────────────────────────────────────
-  // Call after accept, close, OR reassign.
-  // Sets task_alert_state.next_pulse_at = NULL,
-  //      task_alert_state.next_escalation_at = NULL,
-  //      service_request.is_escalated = 0,
-  //      escalation_log.resolved_at = NOW().
-
+  // ── Legacy resolveEscalation compatibility method ─────────────────────────
+  // Escalation resolution is handled atomically inside the stored procedure.
   Future<void> resolveEscalation({
-    required int    serviceRequestId,
-    required int    resolvedByUserId,
-    required String resolutionType, // 'accept' | 'close' | 'reassign'
+    required int serviceRequestId,
+    required int resolvedByUserId,
+    required String resolutionType,
   }) async {
-    try {
-      final res = await _dio.post(ApiConstants.resolveEscalation, data: {
-        'service_request_id':  serviceRequestId,
-        'resolved_by_user_id': resolvedByUserId,
-        'resolution_type':     resolutionType,
-        'stage':               AppConfig.stage,
-      });
-      dev.log('EscalationService.resolveEscalation: '
-          'sr=$serviceRequestId type=$resolutionType '
-          'status=${res.statusCode}');
-    } catch (e) {
-      // Non-fatal: the main SP (accept/close/reassign) already cleared
-      // is_escalated and alert_pending on service_request.
-      // This call ensures task_alert_state.next_escalation_at = NULL so
-      // the Lambda doesn't re-escalate on the next tick.
-      dev.log('EscalationService.resolveEscalation (non-fatal): $e');
-    }
-  }
-
-  // ── Get badge count ───────────────────────────────────────────────────────
-
-  Future<int> getBadgeCount() async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) return 0;
-
-      final res = await _dio.post(ApiConstants.escalationBadgeCount, data: {
-        'user_id': userId,
-        'stage':   AppConfig.stage,
-      });
-      if (res.statusCode != 200) return 0;
-
-      final statusList = res.data['STATUS'] as List?;
-      if (statusList == null || statusList.isEmpty ||
-          statusList[0]['status'] != 'S') { return 0; }
-
-      final resultList = res.data['RESULT'] as List?;
-      if (resultList == null || resultList.isEmpty) return 0;
-      return (resultList[0]['badge_count'] as int?) ?? 0;
-    } catch (e) {
-      dev.log('EscalationService.getBadgeCount error: $e');
-      return 0;
-    }
-  }
-
-  // ── Get escalated task list ───────────────────────────────────────────────
-
-  Future<List<Map<String, dynamic>>> getEscalatedTasks() async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) return [];
-
-      final res = await _dio.post(ApiConstants.escalatedTasks, data: {
-        'user_id': userId,
-        'stage':   AppConfig.stage,
-      });
-      if (res.statusCode != 200) return [];
-
-      final statusList = res.data['STATUS'] as List?;
-      if (statusList == null || statusList.isEmpty ||
-          statusList[0]['status'] != 'S') { return []; }
-
-      final resultList = res.data['RESULT'] as List? ?? [];
-      return resultList
-          .map((t) => Map<String, dynamic>.from(t as Map))
-          .toList();
-    } catch (e) {
-      dev.log('EscalationService.getEscalatedTasks error: $e');
-      return [];
-    }
-  }
-
-  // ── Get status for a single task (TicketDetailPage) ──────────────────────
-
-  Future<EscalationStatus?> getTaskStatus(int serviceRequestId) async {
-    try {
-      final res = await _dio.post(ApiConstants.escalationStatus, data: {
-        'service_request_id': serviceRequestId,
-        'stage':              AppConfig.stage,
-      });
-      if (res.statusCode != 200) return null;
-
-      final statusList = res.data['STATUS'] as List?;
-      if (statusList == null || statusList.isEmpty ||
-          statusList[0]['status'] != 'S') { return null; }
-
-      final resultList = res.data['RESULT'] as List?;
-      if (resultList == null || resultList.isEmpty) return null;
-      return EscalationStatus.fromMap(
-        Map<String, dynamic>.from(resultList[0] as Map),
-      );
-    } catch (e) {
-      dev.log('EscalationService.getTaskStatus error: $e');
-      return null;
-    }
-  }
-
-  // ── Get escalation history for a task ────────────────────────────────────
-
-  Future<List<Map<String, dynamic>>> getEscalationHistory(
-      int serviceRequestId) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) return [];
-
-      final res = await _dio.post(ApiConstants.escalationHistoryForTask, data: {
-        'service_request_id': serviceRequestId,
-        'user_id':            userId,
-        'stage':              AppConfig.stage,
-      });
-      if (res.statusCode != 200) return [];
-
-      final statusList = res.data['STATUS'] as List?;
-      if (statusList == null || statusList.isEmpty ||
-          statusList[0]['status'] != 'S') { return []; }
-
-      return List<Map<String, dynamic>>.from(res.data['RESULT'] ?? []);
-    } catch (e) {
-      dev.log('EscalationService.getEscalationHistory error: $e');
-      return [];
-    }
+    dev.log(
+        'EscalationService.resolveEscalation (handled in SP): sr=$serviceRequestId type=$resolutionType');
   }
 
   // ── Dispose ───────────────────────────────────────────────────────────────
@@ -281,3 +200,5 @@ class EscalationService {
     _listCtrl.close();
   }
 }
+
+

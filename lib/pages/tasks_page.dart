@@ -28,6 +28,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
+import '../services/profile_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/report_pdf_helper.dart';
@@ -38,13 +39,6 @@ import 'package:dio/dio.dart';
 
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
-import '../theme/app_border.dart';
-import '../theme/app_durations.dart';
-import '../theme/app_spacing.dart';
-import '../constants/app_strings.dart';
-import '../components/app_badge.dart';
-import '../components/app_card.dart';
-import '../components/app_dialog.dart';
 import '../components/skeleton_loader.dart';
 import 'ticket_details_page.dart';
 
@@ -53,7 +47,6 @@ import 'ticket_details_page.dart';
 bool _isGmOrAdmin(int? roleId)         => roleId != null && (roleId == 1 || roleId == 2);
 bool _isManager(int? roleId)           => roleId == 3;
 bool _isDeptHead(int? roleId)          => roleId == 4;
-bool _isSupervisor(int? roleId)        => roleId == 5;
 bool _isStaff(int? roleId)             => roleId == 6;
 bool _isManagementOnly(int? roleId)    => roleId != null && roleId <= 3;
 bool _isSupervisorOrAbove(int? roleId) => roleId != null && roleId <= 5;
@@ -96,10 +89,9 @@ class TasksPageState extends State<TasksPage> {
   final HomeService _homeService = HomeService();
 
   // ── Session ───────────────────────────────────────────────────────────────
-  String       _userRole   = '';
+  String       _userRole       = '';
   int?         _userId;
   int?         _userRoleId;
-  List<String> _myDepts    = [];
   bool         _canSendReports = false;
 
   // ── Month / dept filter ───────────────────────────────────────────────────
@@ -131,6 +123,11 @@ class TasksPageState extends State<TasksPage> {
   bool                       _teamLoading = false;
   List<Map<String, dynamic>> _teamRowsAll = [];
   List<Map<String, dynamic>> _teamRows    = [];
+
+  // ── Advanced Performance & SLA Metrics ────────────────────────────────────
+  double                            _avgResolutionMinutes = 0.0;
+  double                            _escalationRatePct     = 0.0;
+  Map<String, Map<String, dynamic>> _deptPerformance      = {};
 
   // ── Escalation stream ─────────────────────────────────────────────────────
   StreamSubscription<int>? _escSub;
@@ -172,11 +169,10 @@ class TasksPageState extends State<TasksPage> {
       _userRole   = role ?? '';
       _userRoleId = roleId ?? _deriveRoleId(role);
       _userId     = userId;
-      _myDepts    = depts;
       _canSendReports = sendReports == 'Y';
 
+      _availableFilterDepts = List.from(depts)..sort();
       if (_isDeptScopedRole(_userRoleId)) {
-        _availableFilterDepts = List.from(depts)..sort();
         if (_availableFilterDepts.length == 1) {
           _selectedDept = _availableFilterDepts.first;
         }
@@ -241,16 +237,25 @@ class TasksPageState extends State<TasksPage> {
         }
       }
 
+      final myAvgMins = (selfRow['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+      final myTotAssigned = (selfRow['total_assigned'] as int?) ?? 0;
+      final myTotClosed   = (selfRow['total_closed']   as int?) ?? 0;
+      final myTotEsc      = (selfRow['total_escalated'] as int?) ?? escalatedTasks;
+      final myEscRate     = (selfRow['escalation_rate_pct'] as num?)?.toDouble() ??
+          (myTotAssigned > 0 ? (myTotEsc / myTotAssigned * 100) : 0.0);
+
       setState(() {
-        totalTasks      = (selfRow['total_assigned']  as int?) ?? 0;
-        completedTasks  = (selfRow['total_closed']    as int?) ?? 0;
-        escalatedTasks  = (selfRow['total_escalated'] as int?) ?? escalatedTasks;
-        inProgressTasks = (totalTasks - completedTasks).clamp(0, 9999);
-        _allTasks       = allTasksList;
-        _recentTasks    = allTasksList.take(5).toList();
-        _hasMoreTasks   = allTasksList.length > 5;
-        _statsLoading   = false;
-        _statsError     = null;
+        totalTasks            = myTotAssigned;
+        completedTasks        = myTotClosed;
+        escalatedTasks        = myTotEsc;
+        inProgressTasks       = (totalTasks - completedTasks).clamp(0, 9999);
+        _avgResolutionMinutes = myAvgMins;
+        _escalationRatePct    = myEscRate;
+        _allTasks             = allTasksList;
+        _recentTasks          = allTasksList.take(5).toList();
+        _hasMoreTasks         = allTasksList.length > 5;
+        _statsLoading         = false;
+        _statsError           = null;
       });
     } else {
       // FIX-10 (Bug 10): show the error and clear stale figures instead of
@@ -258,15 +263,18 @@ class TasksPageState extends State<TasksPage> {
       // newly-selected month — this was the "wrong month" bug.
       if (mounted) {
         setState(() {
-          _statsLoading   = false;
-          _statsError     = result['message'] as String? ??
+          _statsLoading         = false;
+          _statsError           = result['message'] as String? ??
               'Failed to load activity. Please check your connection.';
-          totalTasks      = 0;
-          completedTasks  = 0;
-          inProgressTasks = 0;
-          _allTasks       = [];
-          _recentTasks    = [];
-          _hasMoreTasks   = false;
+          totalTasks            = 0;
+          completedTasks        = 0;
+          inProgressTasks       = 0;
+          escalatedTasks        = 0;
+          _avgResolutionMinutes = 0.0;
+          _escalationRatePct    = 0.0;
+          _allTasks             = [];
+          _recentTasks          = [];
+          _hasMoreTasks         = false;
         });
       }
     }
@@ -289,13 +297,65 @@ class TasksPageState extends State<TasksPage> {
       final rows = (result['team'] as List? ?? [])
           .cast<Map<String, dynamic>>();
 
-      if (_isManagementOnly(_userRoleId)) {
-        int totAssigned = 0, totClosed = 0, totEscalated = 0;
-        for (final r in rows) {
-          totAssigned  += (r['total_assigned']  as int?) ?? 0;
-          totClosed    += (r['total_closed']    as int?) ?? 0;
-          totEscalated += (r['total_escalated'] as int?) ?? 0;
+      int totAssigned = 0, totClosed = 0, totEscalated = 0;
+      double totalMinsWeighted = 0;
+      int closedWithMins = 0;
+      final Map<String, Map<String, dynamic>> deptsMap = {};
+
+      for (final r in rows) {
+        final assigned = (r['total_assigned'] as int?) ?? 0;
+        final closed   = (r['total_closed']   as int?) ?? 0;
+        final esc      = (r['total_escalated'] as int?) ?? 0;
+        final mins     = (r['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+        final dept     = (r['department_name'] ?? 'General').toString();
+
+        totAssigned  += assigned;
+        totClosed    += closed;
+        totEscalated += esc;
+        if (closed > 0 && mins > 0) {
+          totalMinsWeighted += (mins * closed);
+          closedWithMins    += closed;
         }
+
+        if (!deptsMap.containsKey(dept)) {
+          deptsMap[dept] = {
+            'department_name': dept,
+            'department_id': r['department_id'],
+            'total_assigned': 0,
+            'total_closed': 0,
+            'total_escalated': 0,
+            'total_mins_weighted': 0.0,
+            'staff_count': 0,
+          };
+        }
+        deptsMap[dept]!['total_assigned'] = (deptsMap[dept]!['total_assigned'] as int) + assigned;
+        deptsMap[dept]!['total_closed']   = (deptsMap[dept]!['total_closed'] as int) + closed;
+        deptsMap[dept]!['total_escalated'] = (deptsMap[dept]!['total_escalated'] as int) + esc;
+        deptsMap[dept]!['total_mins_weighted'] = (deptsMap[dept]!['total_mins_weighted'] as double) + (mins * closed);
+        deptsMap[dept]!['staff_count']    = (deptsMap[dept]!['staff_count'] as int) + 1;
+      }
+
+      for (final d in deptsMap.values) {
+        final a = d['total_assigned'] as int;
+        final c = d['total_closed'] as int;
+        final e = d['total_escalated'] as int;
+        final mw = d['total_mins_weighted'] as double;
+        d['escalation_rate_pct'] = a > 0 ? (e / a * 100) : 0.0;
+        d['avg_resolution_minutes'] = c > 0 ? (mw / c) : 0.0;
+      }
+
+      final overallAvgMins = closedWithMins > 0 ? (totalMinsWeighted / closedWithMins) : 0.0;
+      final overallEscRate = totAssigned > 0 ? (totEscalated / totAssigned * 100) : 0.0;
+
+      double curAvgMins = overallAvgMins;
+      double curEscRate = overallEscRate;
+
+      if (_selectedDept != null && deptsMap.containsKey(_selectedDept)) {
+        curAvgMins = (deptsMap[_selectedDept]!['avg_resolution_minutes'] as double?) ?? 0.0;
+        curEscRate = (deptsMap[_selectedDept]!['escalation_rate_pct'] as double?) ?? 0.0;
+      }
+
+      if (_isManagementOnly(_userRoleId)) {
         setState(() {
           totalTasks      = totAssigned;
           completedTasks  = totClosed;
@@ -317,9 +377,12 @@ class TasksPageState extends State<TasksPage> {
       }
 
       setState(() {
-        _teamRowsAll = rows;
-        _teamRows    = _applyDeptFilter(rows);
-        _teamLoading = false;
+        _teamRowsAll          = rows;
+        _teamRows             = _applyDeptFilter(rows);
+        _deptPerformance      = deptsMap;
+        _avgResolutionMinutes = curAvgMins;
+        _escalationRatePct    = curEscRate;
+        _teamLoading          = false;
       });
     } else {
       if (mounted) setState(() => _teamLoading = false);
@@ -336,26 +399,66 @@ class TasksPageState extends State<TasksPage> {
     }).toList();
   }
 
-  int? _deptIdForName(String name) {
-    for (final r in _teamRowsAll) {
-      if ((r['department_name'] ?? '').toString() == name) {
-        return r['department_id'] as int?;
-      }
-    }
-    return null;
-  }
-
   void _onDeptSelected(String? dept) {
     if (_selectedDept == dept) return;
     setState(() {
       _selectedDept = dept;
-      _teamRows = _applyDeptFilter(_teamRowsAll);
+      _teamRows     = _applyDeptFilter(_teamRowsAll);
+      if (dept != null && _deptPerformance.containsKey(dept)) {
+        _avgResolutionMinutes = (_deptPerformance[dept]!['avg_resolution_minutes'] as double?) ?? 0.0;
+        _escalationRatePct    = (_deptPerformance[dept]!['escalation_rate_pct'] as double?) ?? 0.0;
+      } else {
+        int totAssigned = 0, totEscalated = 0, closedWithMins = 0;
+        double totalMinsWeighted = 0;
+        for (final r in _teamRowsAll) {
+          final a = (r['total_assigned'] as int?) ?? 0;
+          final c = (r['total_closed']   as int?) ?? 0;
+          final e = (r['total_escalated'] as int?) ?? 0;
+          final m = (r['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+          totAssigned  += a;
+          totEscalated += e;
+          if (c > 0 && m > 0) {
+            totalMinsWeighted += (m * c);
+            closedWithMins    += c;
+          }
+        }
+        _avgResolutionMinutes = closedWithMins > 0 ? (totalMinsWeighted / closedWithMins) : 0.0;
+        _escalationRatePct    = totAssigned > 0 ? (totEscalated / totAssigned * 100) : 0.0;
+      }
     });
   }
 
   // ── Refresh ───────────────────────────────────────────────────────────────
 
   Future<void> _onRefresh() async {
+    final bool isRecoveringFromError = _statsError != null;
+
+    if (isRecoveringFromError) {
+      try {
+        await ProfileService().getProfile();
+        final role   = await UserSessionHelper.getRole();
+        final roleId = await UserSessionHelper.getRoleId();
+        final userId = await UserSessionHelper.getUserId();
+        final depts  = await UserSessionHelper.getDepartments();
+        final profile = await UserSessionHelper.getUserProfile();
+        final sendReports = profile?['send_reports']?.toString().toUpperCase() ?? 'N';
+        if (mounted) {
+          setState(() {
+            _userRole   = role ?? '';
+            _userRoleId = roleId ?? _deriveRoleId(role);
+            _userId     = userId;
+            _canSendReports = sendReports == 'Y';
+            _availableFilterDepts = List.from(depts)..sort();
+            if (_isDeptScopedRole(_userRoleId)) {
+              if (_availableFilterDepts.length == 1) {
+                _selectedDept = _availableFilterDepts.first;
+              }
+            }
+          });
+        }
+      } catch (_) {}
+    }
+
     await Future.wait([
       _loadMyStats(),
       if (_isSupervisorOrAbove(_userRoleId)) _loadTeamPerformance(),
@@ -476,8 +579,11 @@ class TasksPageState extends State<TasksPage> {
   void _showFilteredTasksSheet(String filter, String sheetTitle) {
     final filtered = _allTasks.where((t) {
       final task  = t as Map<String, dynamic>;
-      final isEsc = (task['is_escalated'] ?? 0) == 1 ||
-          task['task_flag'] == 'Escalated';
+      final isEsc = (task['is_escalated'] == 1 ||
+          task['is_escalated'] == true ||
+          task['task_flag'] == 'Escalated' ||
+          task['escalation_instance_id'] != null ||
+          task['escalation_status'] != null);
       final status =
           (task['task_flag'] ?? task['status'] ?? 'Open').toString();
       switch (filter) {
@@ -683,6 +789,10 @@ class TasksPageState extends State<TasksPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // ── GM / Admin executive header banner ──────────────────
+                    if (_isGmOrAdmin(_userRoleId))
+                      _buildExecutiveHeaderBanner(),
+                    // ── Filter row ──────────────────────────────────────────
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                       child: Row(
@@ -696,15 +806,29 @@ class TasksPageState extends State<TasksPage> {
                       ),
                     ),
                     const SizedBox(height: 10),
+                    // ── Stat cards (role-aware layout) ──────────────────────
                     _buildStatCards(),
+                    // ── Efficiency strip — Supervisor+ only ─────────────────
+                    if (_isSupervisorOrAbove(_userRoleId))
+                      _buildEfficiencyMetricsStrip(),
+                    // ── Staff personal summary (instead of efficiency strip) ─
+                    if (_isStaff(_userRoleId))
+                      _buildStaffPersonalSummary(),
+                    // ── Department benchmark — multi-dept roles ──────────────
+                    if (_isSupervisorOrAbove(_userRoleId) && _deptPerformance.length > 1) ...[
+                      _buildDepartmentPerformanceSection(),
+                    ],
+                    // ── Team list — Supervisor+ ──────────────────────────────
                     if (_isSupervisorOrAbove(_userRoleId)) ...[
                       _buildTeamSectionHeader(),
                       _buildTeamList(),
                     ],
+                    // ── Recent activity — non-management roles ───────────────
                     if (!_isManagementOnly(_userRoleId))
                       _buildRecentActivity(),
+                    // ── Contextual banner ────────────────────────────────────
                     _buildMotivationBanner(),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 32),
                   ],
                 ),
               ),
@@ -715,26 +839,119 @@ class TasksPageState extends State<TasksPage> {
   // ── App Bar ───────────────────────────────────────────────────────────────
 
   AppBar _buildAppBar() {
-    final subtitle = _isSupervisorOrAbove(_userRoleId) && _userRole.isNotEmpty
-        ? '$_userRole — ${_monthNames[_selectedMonth]} $_selectedYear'
-        : 'Your performance overview';
+    final isExec = _isGmOrAdmin(_userRoleId);
+    final subtitle = _isStaff(_userRoleId)
+        ? 'Your performance overview'
+        : '${_monthNames[_selectedMonth]} $_selectedYear';
 
     return AppBar(
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('My Tasks', style: AppTypography.appBarTitle),
+          Text(
+            isExec ? 'Executive Dashboard' : 'My Tasks',
+            style: AppTypography.appBarTitle,
+          ),
           Text(subtitle, style: AppTypography.appBarSubtitle),
         ],
       ),
       actions: [
         if (_isSupervisorOrAbove(_userRoleId) && _canSendReports)
-          IconButton(
-            icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
-            onPressed: _showExportReportDialog,
-            tooltip: 'Export PDF Report',
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
+              onPressed: _showExportReportDialog,
+              tooltip: 'Export PDF Report',
+            ),
           ),
       ],
+    );
+  }
+
+  // ── Executive Header Banner (GM / Admin only) ─────────────────────────────
+
+  Widget _buildExecutiveHeaderBanner() {
+    final month  = _monthNames[_selectedMonth];
+    final period = '$month $_selectedYear';
+    final dept   = _selectedDept ?? 'All Departments';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 0),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF052D50), Color(0xFF0F4C7A)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  dept,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Performance Overview · $period',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.65),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Total count badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Column(
+              children: [
+                Text(
+                  '$totalTasks',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    height: 1.0,
+                  ),
+                ),
+                Text(
+                  'Tasks',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -765,22 +982,35 @@ class TasksPageState extends State<TasksPage> {
 
   Widget _buildMonthTile() {
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(12),
       onTap: _showMonthPickerSheet,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.border),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 6, offset: const Offset(0, 2))],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.calendar_month_outlined, size: 18,
-                color: AppColors.textSecondary),
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.calendar_month_outlined, size: 15,
+                  color: AppColors.primary),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text('${_monthNames[_selectedMonth]} $_selectedYear',
@@ -788,8 +1018,7 @@ class TasksPageState extends State<TasksPage> {
                       color: AppColors.textPrimary),
                   overflow: TextOverflow.ellipsis),
             ),
-            const SizedBox(width: 4),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 18,
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 16,
                 color: AppColors.textSecondary),
           ],
         ),
@@ -801,32 +1030,52 @@ class TasksPageState extends State<TasksPage> {
 
   Widget _buildDeptTile() {
     final label = _selectedDept ?? 'All Departments';
+    final isFiltered = _selectedDept != null;
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(12),
       onTap: _showDeptFilterSheet,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 6, offset: const Offset(0, 2))],
+          color: isFiltered ? AppColors.primary.withValues(alpha: 0.06) : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isFiltered ? AppColors.primary.withValues(alpha: 0.4) : AppColors.border,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.business_outlined, size: 18,
-                color: AppColors.textSecondary),
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: isFiltered
+                    ? AppColors.primary.withValues(alpha: 0.15)
+                    : AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.business_outlined, size: 15,
+                  color: isFiltered ? AppColors.primary : AppColors.textSecondary),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(label,
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isFiltered ? AppColors.primary : AppColors.textPrimary,
+                  ),
                   overflow: TextOverflow.ellipsis),
             ),
-            const SizedBox(width: 4),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 18,
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 16,
                 color: AppColors.textSecondary),
           ],
         ),
@@ -837,50 +1086,37 @@ class TasksPageState extends State<TasksPage> {
   // ── Stat Cards ────────────────────────────────────────────────────────────
 
   Widget _buildStatCards() {
-    final showEscalated =
-        escalatedTasks > 0 || _isManagementOnly(_userRoleId);
+    final showEscalated = escalatedTasks > 0 || _isManagementOnly(_userRoleId);
 
     final cards = [
       _StatCardData(
-        count:        '$totalTasks',
-        label:        _isManagementOnly(_userRoleId) ? 'Team Total' : 'Total Tasks',
-        icon:         Icons.assignment_outlined,
-        iconBg:       AppColors.primary.withOpacity(0.1),
-        iconColor:    AppColors.primary,
-        accentColor:  AppColors.primary,
-        // Total card shows all tasks — no status filter
+        count:       '$totalTasks',
+        label:       _isManagementOnly(_userRoleId) ? 'Team Total' : 'Total Assigned',
+        icon:        Icons.assignment_outlined,
+        accentColor: AppColors.primary,
         filterStatus: null,
       ),
       _StatCardData(
-        count:        '$inProgressTasks',
-        label:        'In Progress',
-        icon:         Icons.timelapse_outlined,
-        iconBg:       const Color(0xFFF0F1FF),
-        iconColor:    AppColors.primary,
-        accentColor:  AppColors.primary,
-        // FIX 3: Tap opens sheet filtered to In Progress tasks
+        count:       '$inProgressTasks',
+        label:       'In Progress',
+        icon:        Icons.timelapse_outlined,
+        accentColor: AppColors.orange,
         filterStatus: 'inProgress',
       ),
       _StatCardData(
-        count:        '$completedTasks',
-        label:        'Completed',
-        icon:         Icons.check_circle_outline,
-        iconBg:       AppColors.successLight,
-        iconColor:    AppColors.success,
-        accentColor:  AppColors.success,
-        // FIX 3: Tap opens sheet filtered to Closed tasks
+        count:       '$completedTasks',
+        label:       'Completed',
+        icon:        Icons.check_circle_outline,
+        accentColor: AppColors.success,
         filterStatus: 'completed',
       ),
       if (showEscalated)
         _StatCardData(
-          count:        '$escalatedTasks',
-          label:        'Escalated',
-          icon:         Icons.warning_amber_rounded,
-          iconBg:       AppColors.errorLight,
-          iconColor:    AppColors.error,
-          accentColor:  AppColors.error,
-          highlight:    escalatedTasks > 0,
-          // FIX 3: Tap opens sheet filtered to escalated tasks
+          count:       '$escalatedTasks',
+          label:       'Escalated',
+          icon:        Icons.warning_amber_rounded,
+          accentColor: AppColors.error,
+          highlight:   escalatedTasks > 0,
           filterStatus: 'escalated',
         ),
     ];
@@ -901,51 +1137,567 @@ class TasksPageState extends State<TasksPage> {
   }
 
   Widget _buildStatCard(_StatCardData d) {
+    final isTappable = d.filterStatus != null && !_isManagementOnly(_userRoleId);
     final card = Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
       decoration: BoxDecoration(
-        color: d.highlight ? AppColors.errorLight : Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: d.highlight
-            ? Border.all(color: AppColors.error.withOpacity(0.3))
-            : null,
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border(
+          left: BorderSide(
+            color: d.highlight ? d.accentColor : d.accentColor.withValues(alpha: 0.5),
+            width: 3,
+          ),
+        ),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 10, offset: const Offset(0, 4)),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
         ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(color: d.iconBg, shape: BoxShape.circle),
-            child: Icon(d.icon, size: 18, color: d.iconColor),
+          Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: d.accentColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(d.icon, size: 16, color: d.accentColor),
+              ),
+              if (isTappable) ...[
+                const Spacer(),
+                Icon(Icons.chevron_right_rounded,
+                    size: 14,
+                    color: d.accentColor.withValues(alpha: 0.5)),
+              ],
+            ],
           ),
-          const SizedBox(height: 6),
-          Text(d.count,
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold,
-                  color: d.accentColor)),
+          const SizedBox(height: 8),
+          Text(
+            d.count,
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: d.accentColor,
+              height: 1.0,
+            ),
+          ),
           const SizedBox(height: 2),
-          Text(d.label,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
-              maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(
+            d.label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary.withValues(alpha: 0.9),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
 
-    // FIX 3: Only make tappable when filterStatus is set and there are tasks
-    // loaded. Management-only roles see aggregated data, not drill-down tasks,
-    // so don't attach a tap handler for them.
-    if (d.filterStatus == null || _isManagementOnly(_userRoleId)) {
-      return card;
-    }
+    if (!isTappable) return card;
 
     return InkWell(
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(16),
       onTap: () => _showFilteredTasksSheet(d.filterStatus!, d.label),
       child: card,
+    );
+  }
+
+  // ── Executive Efficiency Metrics Strip (Supervisor+) ─────────────────────
+
+  Widget _buildEfficiencyMetricsStrip() {
+    final avgStr = _avgResolutionMinutes <= 0
+        ? '—'
+        : _avgResolutionMinutes < 60
+            ? '${_avgResolutionMinutes.toStringAsFixed(0)} min'
+            : '${(_avgResolutionMinutes / 60).toStringAsFixed(1)} hrs';
+
+    final escRateStr = '${_escalationRatePct.toStringAsFixed(1)}%';
+    final isGoodEsc = _escalationRatePct <= 5.0;
+    final isWarningEsc = _escalationRatePct > 5.0 && _escalationRatePct <= 15.0;
+    final escColor = isGoodEsc
+        ? AppColors.success
+        : (isWarningEsc ? AppColors.warning : AppColors.error);
+    final escLabel = isGoodEsc ? 'Optimal' : (isWarningEsc ? 'Elevated' : 'Critical');
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            children: [
+              // ── Avg Turnaround ──────────────────────────────────────────
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              AppColors.primary.withValues(alpha: 0.15),
+                              AppColors.primary.withValues(alpha: 0.05),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.timer_outlined,
+                            size: 20, color: AppColors.primary),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Avg Resolution',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: AppColors.textSecondary.withValues(alpha: 0.8),
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              avgStr,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // ── Divider ─────────────────────────────────────────────────
+              VerticalDivider(
+                width: 1,
+                color: AppColors.borderLight,
+                indent: 12,
+                endIndent: 12,
+              ),
+              // ── Escalation Rate ──────────────────────────────────────────
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              escColor.withValues(alpha: 0.18),
+                              escColor.withValues(alpha: 0.06),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          isGoodEsc
+                              ? Icons.trending_down_rounded
+                              : Icons.trending_up_rounded,
+                          size: 20,
+                          color: escColor,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Escalation Rate',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: AppColors.textSecondary.withValues(alpha: 0.8),
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Text(
+                                  escRateStr,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                    color: escColor,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: escColor.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: Text(
+                                    escLabel,
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: escColor,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Staff Personal Summary (shown instead of efficiency strip for Staff) ──
+
+  Widget _buildStaffPersonalSummary() {
+    if (totalTasks == 0) return const SizedBox.shrink();
+    final pct = totalTasks > 0
+        ? (completedTasks / totalTasks * 100).clamp(0.0, 100.0)
+        : 0.0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Completion Progress',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textSecondary.withValues(alpha: 0.8),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: pct / 100,
+                      minHeight: 6,
+                      backgroundColor: AppColors.borderLight,
+                      valueColor: const AlwaysStoppedAnimation<Color>(AppColors.success),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$completedTasks of $totalTasks completed',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textSecondary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 16),
+            Text(
+              '${pct.toStringAsFixed(0)}%',
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.w800,
+                color: AppColors.success,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Department Performance Benchmark Section ──────────────────────────────
+
+  Widget _buildDepartmentPerformanceSection() {
+    if (_deptPerformance.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 0, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Department Benchmark',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_selectedDept != null)
+                  GestureDetector(
+                    onTap: () => _onDeptSelected(null),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Show All',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 120,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(right: 16),
+              itemCount: _deptPerformance.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final deptName = _deptPerformance.keys.elementAt(index);
+                final d = _deptPerformance[deptName]!;
+                final isSelected = _selectedDept == deptName;
+
+                final total  = (d['total_assigned']  as int?)    ?? 0;
+                final closed = (d['total_closed']    as int?)    ?? 0;
+                final esc    = (d['total_escalated'] as int?)    ?? 0;
+                final avgM   = (d['avg_resolution_minutes'] as double?) ?? 0.0;
+                final escR   = (d['escalation_rate_pct']   as double?) ?? 0.0;
+                final closurePct = total > 0 ? (closed / total).clamp(0.0, 1.0) : 0.0;
+
+                final avgMStr = avgM <= 0
+                    ? '—'
+                    : avgM < 60
+                        ? '${avgM.toStringAsFixed(0)}m'
+                        : '${(avgM / 60).toStringAsFixed(1)}h';
+                final isGoodEsc = escR <= 5.0;
+                final escColor = isGoodEsc
+                    ? AppColors.success
+                    : (escR <= 15.0 ? AppColors.warning : AppColors.error);
+
+                return GestureDetector(
+                  onTap: () => _onDeptSelected(isSelected ? null : deptName),
+                  child: Container(
+                    width: 180,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? AppColors.primary.withValues(alpha: 0.06)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: isSelected
+                            ? AppColors.primary
+                            : AppColors.borderLight,
+                        width: isSelected ? 1.5 : 1.0,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Dept name + esc badge
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                deptName,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: isSelected
+                                      ? AppColors.primary
+                                      : AppColors.textPrimary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (esc > 0) ...[
+                              const SizedBox(width: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: escColor.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: Text(
+                                  '${escR.toStringAsFixed(0)}%',
+                                  style: TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: escColor,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        // Closure progress bar
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: closurePct,
+                            minHeight: 4,
+                            backgroundColor: AppColors.borderLight,
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                                AppColors.success),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        // Stats row
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '$closed / $total',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                                Text(
+                                  'Closed / Total',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: AppColors.textSecondary
+                                        .withValues(alpha: 0.8),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  avgMStr,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: isSelected
+                                        ? AppColors.primary
+                                        : AppColors.textPrimary,
+                                  ),
+                                ),
+                                Text(
+                                  'Avg Time',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: AppColors.textSecondary
+                                        .withValues(alpha: 0.8),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -963,30 +1715,57 @@ class TasksPageState extends State<TasksPage> {
     final title = _selectedDept ?? baseTitle;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(title,
-              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          Row(children: [
-            if (!_teamLoading && _teamRows.isNotEmpty)
+          Row(
+            children: [
               Container(
-                margin: const EdgeInsets.only(right: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                width: 4,
+                height: 18,
                 decoration: BoxDecoration(
-                  color:        AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(20),
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                child: Text('${_teamRows.length} staff',
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                        color: AppColors.primary)),
               ),
-            if (_teamLoading)
-              const SizedBox(width: 16, height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2)),
-          ]),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          if (_teamLoading)
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else if (_teamRows.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.2),
+                ),
+              ),
+              child: Text(
+                '${_teamRows.length} members',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.primary,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1022,53 +1801,17 @@ class TasksPageState extends State<TasksPage> {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        decoration: BoxDecoration(
-          color:        Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 10, offset: const Offset(0, 4))],
-        ),
-        child: Column(children: [
-          _buildTeamTableHeader(),
-          const Divider(height: 1, color: AppColors.borderLight),
-          ...(_teamRows.asMap().entries.map((e) {
-            final isLast = e.key == _teamRows.length - 1;
-            return Column(children: [
-              _buildTeamRow(e.value),
-              if (!isLast)
-                const Divider(height: 1, color: AppColors.borderLight,
-                    indent: 16, endIndent: 16),
-            ]);
-          })),
-        ]),
+      child: Column(
+        children: _teamRows.asMap().entries.map((e) {
+          return Padding(
+            padding: EdgeInsets.only(bottom: e.key < _teamRows.length - 1 ? 8 : 0),
+            child: _buildTeamRow(e.value),
+          );
+        }).toList(),
       ),
     );
   }
 
-  Widget _buildTeamTableHeader() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(children: [
-        const Expanded(flex: 3,
-            child: Text('Staff',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                    color: AppColors.textSecondary))),
-        _hCell('Assigned'),
-        _hCell('Done'),
-        _hCell('Esc'),
-        _hCell('Rate'),
-      ]),
-    );
-  }
-
-  Widget _hCell(String label) => SizedBox(
-        width: 46,
-        child: Text(label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
-                color: AppColors.textSecondary)),
-      );
 
   Widget _buildTeamRow(Map<String, dynamic> row) {
     final name      = (row['full_name']          ?? '—').toString();
@@ -1077,19 +1820,33 @@ class TasksPageState extends State<TasksPage> {
     final assigned  = (row['total_assigned']     as int?) ?? 0;
     final closed    = (row['total_closed']       as int?) ?? 0;
     final escalated = (row['total_escalated']    as int?) ?? 0;
-    final rate      = row['escalation_rate_pct'] ?? 0.0;
-    final rateStr   = rate == 0.0
-        ? '0%'
-        : '${(rate is double ? rate : (rate as num).toDouble()).toStringAsFixed(1)}%';
+    final avgMins   = (row['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+    final avgStr    = avgMins <= 0
+        ? '—'
+        : avgMins < 60
+            ? '${avgMins.toStringAsFixed(0)}m'
+            : '${(avgMins / 60).toStringAsFixed(1)}h';
+    final rate      = (row['escalation_rate_pct'] as num?)?.toDouble() ??
+        (assigned > 0 ? (escalated / assigned * 100) : 0.0);
+    final rateStr   = rate == 0.0 ? '0%' : '${rate.toStringAsFixed(1)}%';
     final userId    = (row['user_id'] as int?) ?? 0;
+    final closurePct = assigned > 0 ? (closed / assigned).clamp(0.0, 1.0) : 0.0;
 
-    final escColor = escalated > 0 ? AppColors.error : AppColors.success;
+    final hasEsc    = escalated > 0;
+    final escColor  = hasEsc ? AppColors.error : AppColors.success;
 
-    final subtitle = _isManagementOnly(_userRoleId)
+    final subtitle  = _isManagementOnly(_userRoleId)
         ? (dept.isNotEmpty ? dept : roleName)
-        : roleName;
+        : (dept.isNotEmpty && roleName.isNotEmpty ? '$roleName · $dept' : roleName);
+
+    final initials = name.trim().split(' ')
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s[0].toUpperCase())
+        .join();
 
     return InkWell(
+      borderRadius: BorderRadius.circular(14),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
@@ -1103,56 +1860,187 @@ class TasksPageState extends State<TasksPage> {
           ),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(children: [
-          Expanded(
-            flex: 3,
-            child: Row(children: [
-              CircleAvatar(
-                radius: 16,
-                backgroundColor: AppColors.primary.withOpacity(0.1),
-                child: Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : '?',
-                  style: const TextStyle(color: AppColors.primary,
-                      fontWeight: FontWeight.bold, fontSize: 12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: hasEsc
+              ? Border.all(
+                  color: AppColors.error.withValues(alpha: 0.25),
+                  width: 1.0,
+                )
+              : Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Top row: avatar + name + chevron ──────────────────────────
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: hasEsc
+                        ? AppColors.error.withValues(alpha: 0.1)
+                        : AppColors.primary.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    initials.isNotEmpty ? initials : '?',
+                    style: TextStyle(
+                      color: hasEsc ? AppColors.error : AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  Text(name,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary),
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                  if (subtitle.isNotEmpty)
-                    Text(subtitle,
-                        style: const TextStyle(fontSize: 10,
-                            color: AppColors.textSecondary),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
-                ]),
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (subtitle.isNotEmpty)
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary
+                                .withValues(alpha: 0.8),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
+                ),
+                if (hasEsc)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.error.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '$escalated SLA',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.error,
+                      ),
+                    ),
+                  )
+                else
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    size: 18,
+                    color: AppColors.textDisabled,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // ── Closure progress bar ───────────────────────────────────────
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: closurePct,
+                minHeight: 4,
+                backgroundColor: AppColors.borderLight,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  closurePct >= 0.8 ? AppColors.success : AppColors.orange,
+                ),
               ),
-            ]),
-          ),
-          _mCell('$assigned', AppColors.textSecondary),
-          _mCell('$closed',   AppColors.success),
-          _mCell('$escalated', escColor),
-          _mCell(rateStr,
-              escalated > 0 ? AppColors.error : AppColors.textSecondary),
-        ]),
+            ),
+            const SizedBox(height: 8),
+            // ── Metric chips row ───────────────────────────────────────────
+            Row(
+              children: [
+                _metricChip(
+                  label: 'Assigned',
+                  value: '$assigned',
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 6),
+                _metricChip(
+                  label: 'Done',
+                  value: '$closed',
+                  color: AppColors.success,
+                ),
+                const SizedBox(width: 6),
+                _metricChip(
+                  label: 'Avg',
+                  value: avgStr,
+                  color: AppColors.info,
+                ),
+                const Spacer(),
+                if (hasEsc)
+                  _metricChip(
+                    label: 'Rate',
+                    value: rateStr,
+                    color: escColor,
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _mCell(String value, Color color) => SizedBox(
-        width: 46,
-        child: Text(value,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-                color: color)),
-      );
+  Widget _metricChip({
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 8.5,
+              color: color.withValues(alpha: 0.8),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   // ── Recent Activity ───────────────────────────────────────────────────────
 
@@ -1162,20 +2050,68 @@ class TasksPageState extends State<TasksPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Recent Activity',
-              style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 4,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Recent Activity',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              if (_recentTasks.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '${_allTasks.length}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
           if (_recentTasks.isEmpty)
             Container(
               width:   double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(color: Colors.white,
-                  borderRadius: BorderRadius.circular(18)),
-              child: const Column(children: [
-                Icon(Icons.task_alt, size: 40, color: AppColors.textSecondary),
-                SizedBox(height: 8),
-                Text('No recent tasks found',
+              padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: AppColors.borderLight),
+              ),
+              child: Column(children: [
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.task_alt, size: 28, color: AppColors.primary),
+                ),
+                const SizedBox(height: 12),
+                const Text('No recent tasks found',
                     style: AppTypography.bodySecondary),
               ]),
             )
@@ -1184,7 +2120,7 @@ class TasksPageState extends State<TasksPage> {
               decoration: BoxDecoration(
                 color:        Colors.white,
                 borderRadius: BorderRadius.circular(18),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04),
                     blurRadius: 10, offset: const Offset(0, 4))],
               ),
               child: Column(
@@ -1237,13 +2173,21 @@ class TasksPageState extends State<TasksPage> {
   // and all bottom sheets. Uses _resolveTitle() so question is shown
   // when task_name is empty.
   Widget _buildActivityRow(Map<String, dynamic> task) {
-    final isEsc  = (task['is_escalated'] ?? 0) == 1 ||
-        task['task_flag'] == 'Escalated';
+    final isEsc = (task['is_escalated'] == 1 ||
+        task['is_escalated'] == true ||
+        task['task_flag'] == 'Escalated' ||
+        task['escalation_instance_id'] != null ||
+        task['escalation_status'] != null);
     final status = (task['status'] ??
             task['task_flag'] ??
             'Open')
         .toString();
-    final displayStatus = isEsc ? 'Escalated' : status;
+    final stageName = (task['current_stage_name'] ?? task['stage_name'] ?? '').toString();
+    final escLevel = task['escalation_level_reached'] ?? task['escalation_level'];
+
+    final displayStatus = isEsc
+        ? (stageName.isNotEmpty ? stageName : (escLevel != null ? 'Level $escLevel' : 'Escalated'))
+        : status;
 
     Color statusColor;
     Color statusBg;
@@ -1261,61 +2205,161 @@ class TasksPageState extends State<TasksPage> {
       statusBg    = AppColors.primaryLight;
     }
 
-    final room = (task['room_number'] ??
+    final rawRoom = (task['room_number'] ??
             task['room_id'] ??
             task['room'] ??
             '—')
         .toString();
+    final room = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom.isEmpty) ? 'General' : rawRoom;
 
-    // FIX 1: Use _resolveTitle() instead of bare ?? chain.
-    final title  = _resolveTitle(task);
+    // FIX 1: Use _resolveTitle() and strip #SRV prefix
+    final rawTitle = _resolveTitle(task);
+    final title = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
     final timeAgo = _timeAgo(
         (task['created_at'] ?? task['time'] ?? '').toString());
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 44, height: 44,
-            decoration: BoxDecoration(
-              color:        AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            alignment: Alignment.center,
-            child: Text(room,
-                style: const TextStyle(color: AppColors.primary,
-                    fontWeight: FontWeight.bold, fontSize: 13)),
+    final canTap = _isSupervisorOrAboveByName(_userRole);
+
+    final rowContent = Container(
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(
+            color: isEsc
+                ? AppColors.error
+                : (status == 'Closed'
+                    ? AppColors.success
+                    : (status == 'In Progress'
+                        ? AppColors.orange
+                        : AppColors.primary)),
+            width: 3,
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(fontSize: 14,
-                        fontWeight: FontWeight.w600),
-                    maxLines: 2, overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 4),
-                Text(timeAgo,
-                    style: const TextStyle(fontSize: 12,
-                        color: Colors.grey)),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(color: statusBg,
-                borderRadius: BorderRadius.circular(20)),
-            child: Text(displayStatus,
-                style: TextStyle(color: statusColor,
-                    fontWeight: FontWeight.w600, fontSize: 12)),
-          ),
-        ],
+        ),
       ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Room badge
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: isEsc
+                    ? AppColors.error.withValues(alpha: 0.1)
+                    : AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                room,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: isEsc ? AppColors.error : AppColors.primary,
+                  fontWeight: FontWeight.w800,
+                  fontSize: room.length > 4 ? 9.5 : 11,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // Title + meta
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      if (timeAgo.isNotEmpty)
+                        Text(
+                          timeAgo,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary
+                                .withValues(alpha: 0.7),
+                          ),
+                        ),
+                      if (isEsc) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: AppColors.error.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'SLA Breach',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.error,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Status pill
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: statusBg,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                displayStatus,
+                style: TextStyle(
+                  color: statusColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+            if (canTap) ...[
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 15,
+                color: AppColors.textDisabled,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+
+    if (!canTap) return rowContent;
+
+    return InkWell(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => TicketDetailPage(
+              task: task,
+              userRole: _userRole,
+              onClose: () => _onRefresh(),
+              onReassign: (_) => _onRefresh(),
+            ),
+          ),
+        );
+      },
+      child: rowContent,
     );
   }
 
@@ -1323,8 +2367,9 @@ class TasksPageState extends State<TasksPage> {
     if (ts.isEmpty) return '';
     try {
       String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T'))
+      if (s.contains(' ') && !s.contains('T')) {
         s = s.replaceFirst(' ', 'T');
+      }
       final diff = DateTime.now().difference(DateTime.parse(s).toLocal());
       if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
       if (diff.inHours   < 24) return '${diff.inHours}h ago';
@@ -1337,39 +2382,95 @@ class TasksPageState extends State<TasksPage> {
   // ── Motivation Banner ─────────────────────────────────────────────────────
 
   Widget _buildMotivationBanner() {
+    // Data-driven banner: content adapts to actual performance state
+    final isCritical = _escalationRatePct > 15.0 && _isSupervisorOrAbove(_userRoleId);
+    final isWarning  = _escalationRatePct > 5.0 && _escalationRatePct <= 15.0 && _isSupervisorOrAbove(_userRoleId);
+    final isOptimal  = escalatedTasks == 0 && completedTasks > 0;
+
+    final Color bannerColor;
+    final Color bannerBg;
+    final Color bannerBorder;
+    final IconData bannerIcon;
+    final String bannerTitle;
+    final String bannerBody;
+
+    if (isCritical) {
+      bannerColor  = AppColors.error;
+      bannerBg     = AppColors.errorLight;
+      bannerBorder = AppColors.error.withValues(alpha: 0.25);
+      bannerIcon   = Icons.warning_amber_rounded;
+      bannerTitle  = 'Attention Required';
+      bannerBody   = 'Escalation rate is ${_escalationRatePct.toStringAsFixed(1)}% — review SLA breaches with your team.';
+    } else if (isWarning) {
+      bannerColor  = AppColors.warning;
+      bannerBg     = AppColors.warningLight;
+      bannerBorder = AppColors.warning.withValues(alpha: 0.25);
+      bannerIcon   = Icons.info_outline_rounded;
+      bannerTitle  = 'SLA Watch';
+      bannerBody   = 'Escalation rate at ${_escalationRatePct.toStringAsFixed(1)}% — monitor closely to stay in range.';
+    } else if (isOptimal) {
+      bannerColor  = AppColors.success;
+      bannerBg     = AppColors.successLight;
+      bannerBorder = AppColors.success.withValues(alpha: 0.25);
+      bannerIcon   = Icons.verified_outlined;
+      bannerTitle  = 'Excellent Performance';
+      bannerBody   = 'Zero SLA escalations this period. Outstanding work!';
+    } else {
+      bannerColor  = AppColors.primary;
+      bannerBg     = AppColors.primary.withValues(alpha: 0.06);
+      bannerBorder = AppColors.primary.withValues(alpha: 0.18);
+      bannerIcon   = Icons.star_outline_rounded;
+      bannerTitle  = 'Keep it up!';
+      bannerBody   = 'Complete more tasks and maintain your SLA performance.';
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Container(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color:        AppColors.primary.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+          color:        bannerBg,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: bannerBorder),
         ),
-        child: Row(children: [
-          Container(
-            width: 48, height: 48,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.15),
-              shape: BoxShape.circle,
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: bannerColor.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(bannerIcon, color: bannerColor, size: 24),
             ),
-            child: const Icon(Icons.star_outline, color: AppColors.primary, size: 26),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Great work!',
-                  style: TextStyle(color: AppColors.primary,
-                      fontWeight: FontWeight.bold, fontSize: 15)),
-              const SizedBox(height: 2),
-              Text('Keep up the good work and complete more tasks.',
-                  style: AppTypography.bodySecondary.copyWith(fontSize: 13)),
-            ]),
-          ),
-          const SizedBox(width: 8),
-          Icon(Icons.checklist_rtl_outlined,
-              color: AppColors.primary.withOpacity(0.4), size: 40),
-        ]),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    bannerTitle,
+                    style: TextStyle(
+                      color: bannerColor,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    bannerBody,
+                    style: TextStyle(
+                      color: bannerColor.withValues(alpha: 0.8),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1656,11 +2757,9 @@ class _StatCardData {
   final String   count;
   final String   label;
   final IconData icon;
-  final Color    iconBg;
-  final Color    iconColor;
   final Color    accentColor;
   final bool     highlight;
-  // FIX 3: Which status filter to apply when this card is tapped.
+  // Which status filter to apply when this card is tapped.
   // null = not tappable (Total Tasks card for management).
   final String?  filterStatus;
 
@@ -1668,8 +2767,6 @@ class _StatCardData {
     required this.count,
     required this.label,
     required this.icon,
-    required this.iconBg,
-    required this.iconColor,
     required this.accentColor,
     this.highlight    = false,
     this.filterStatus,
@@ -1768,8 +2865,9 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     if (ts == null || ts.isEmpty) return '—';
     try {
       String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T'))
+      if (s.contains(' ') && !s.contains('T')) {
         s = s.replaceFirst(' ', 'T');
+      }
       final d = DateTime.parse(s).toLocal();
       return '${d.day.toString().padLeft(2, '0')}/'
           '${d.month.toString().padLeft(2, '0')}/${d.year}';
@@ -1819,19 +2917,22 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     final total   = (_summaryRow['total_assigned']        as int?) ?? 0;
     final closed  = (_summaryRow['total_closed']          as int?) ?? 0;
     final esc     = (_summaryRow['total_escalated']       as int?) ?? 0;
-    final avgMins = _summaryRow['avg_resolution_minutes'] ?? 0;
-    final avgStr  = avgMins == 0
+    final avgMins = (_summaryRow['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+    final avgStr  = avgMins <= 0
         ? '—'
-        : avgMins is double
+        : avgMins < 60
             ? '${avgMins.toStringAsFixed(0)} min'
-            : '$avgMins min';
+            : '${(avgMins / 60).toStringAsFixed(1)} hrs';
+
+    final escRate = total > 0 ? (esc / total * 100) : 0.0;
+    final escSubtext = total > 0 ? '${escRate.toStringAsFixed(1)}% rate' : '0%';
 
     final cards = [
       _DrillCard(value: '$total',  label: 'Assigned',
           color: AppColors.primary, icon: Icons.assignment_outlined),
       _DrillCard(value: '$closed', label: 'Closed',
           color: AppColors.success, icon: Icons.check_circle_outline),
-      _DrillCard(value: '$esc',    label: 'Escalated',
+      _DrillCard(value: '$esc',    label: 'Escalated\n($escSubtext)',
           color:     esc > 0 ? AppColors.error : AppColors.textDisabled,
           icon:      Icons.warning_amber_outlined,
           highlight: esc > 0),
@@ -1850,9 +2951,9 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
                 color: e.value.highlight ? AppColors.errorLight : Colors.white,
                 borderRadius: BorderRadius.circular(16),
                 border: e.value.highlight
-                    ? Border.all(color: AppColors.error.withOpacity(0.3))
+                    ? Border.all(color: AppColors.error.withValues(alpha: 0.3))
                     : null,
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04),
                     blurRadius: 8, offset: const Offset(0, 3))],
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1901,20 +3002,26 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   }
 
   Widget _buildTaskRow(Map<String, dynamic> task) {
-    final isEsc    = (task['is_escalated'] ?? 0) == 1 ||
-        task['task_flag'] == 'Escalated';
-    final status   =
+    final isEsc = (task['is_escalated'] == 1 ||
+        task['is_escalated'] == true ||
+        task['task_flag'] == 'Escalated' ||
+        task['escalation_instance_id'] != null ||
+        task['escalation_status'] != null);
+    final status =
         (task['task_flag'] ?? task['status'] ?? 'Open').toString();
-    final room     = (task['room_number'] ??
+    final rawRoom = (task['room_number'] ??
             task['room_id'] ??
             task['room'] ??
             '—')
         .toString();
+    final room = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom.isEmpty) ? 'General' : rawRoom;
 
-    // FIX 1: Use _resolveTitle() in drill-down rows too.
-    final title    = _resolveTitle(task);
-    final created  = _fmtDate((task['created_at'] ?? '').toString());
-    final escLevel = task['escalation_level_reached'];
+    // FIX 1: Use _resolveTitle() in drill-down rows too and strip order prefix
+    final rawTitle = _resolveTitle(task);
+    final title = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
+    final created = _fmtDate((task['created_at'] ?? '').toString());
+    final stageName = (task['current_stage_name'] ?? task['stage_name'] ?? '').toString();
+    final escLevel = task['escalation_level_reached'] ?? task['escalation_level'];
 
     final statusColor =
         isEsc ? AppColors.error : AppColors.statusColor(status);
@@ -1928,9 +3035,9 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
         color:        Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: isEsc
-            ? Border.all(color: AppColors.error.withOpacity(0.35), width: 1.3)
+            ? Border.all(color: AppColors.error.withValues(alpha: 0.35), width: 1.3)
             : null,
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 7, offset: const Offset(0, 2))],
       ),
       child: Row(children: [
@@ -1955,7 +3062,17 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
             Row(children: [
               Text(created,
                   style: const TextStyle(fontSize: 11, color: AppColors.textDisabled)),
-              if (escLevel != null) ...[
+              if (stageName.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: AppColors.errorLight,
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Text(stageName,
+                      style: const TextStyle(color: AppColors.error, fontSize: 10,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ] else if (escLevel != null) ...[
                 const SizedBox(width: 6),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1972,7 +3089,7 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(color: statusColor.withOpacity(0.1),
+          decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8)),
           child: Text(isEsc ? 'Escalated' : status,
               style: TextStyle(color: statusColor, fontWeight: FontWeight.w700,
@@ -2232,11 +3349,17 @@ class _ExportReportBottomSheetState extends State<_ExportReportBottomSheet> {
           await launchUrl(Uri.parse(presignedUrl), mode: LaunchMode.externalApplication);
         } catch (_) {}
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('⚠️ Lambda Error: ${result['message'] ?? 'Failed'}'),
-            backgroundColor: const Color(0xFFD32F2F),
-          ),
+        // Fallback directly to client-side compiled PDF report
+        await ReportPdfHelper.exportReport(
+          context: context,
+          tasks: _fetchedTasks!,
+          userRole: widget.userRole,
+          userName: widget.userName,
+          monthYear: "${_formatDateShort(_startDate)} – ${_formatDateShort(_endDate)}",
+          departmentName: widget.departmentName,
+          userTierLevel: widget.userTierLevel,
+          enterpriseId: widget.enterpriseId,
+          periodLabel: _selectedPeriod,
         );
       }
     } else {

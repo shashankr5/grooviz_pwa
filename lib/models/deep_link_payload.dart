@@ -45,14 +45,22 @@ class DeepLinkPayload {
         rawType == 'SERVICE_TASK_ACCEPTED' ||
         rawType == 'ACCEPTED' ||
         rawType == 'SERVICE_TASK' ||
-        rawType == 'TASK') {
+        rawType == 'TASK' ||
+        rawType == 'ESCALATION_STARTED' ||
+        rawType == 'PENDING_ACCEPTANCE' ||
+        rawType == 'ESCALATION_STAGE_1' ||
+        rawType == 'SERVICE_STATUS_UPDATE' ||
+        rawType == 'NEW_SERVICE_REQUEST' ||
+        rawType == 'TASK_REASSIGNED' ||
+        rawType == 'ESCALATION_PULSE') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.serviceTask;
-      entityId = (data['task_id'] ?? data['service_request_id'])?.toString();
-    } else if (rawType == 'ESCALATION_ALERT') {
+      entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'] ?? data['instance_id'])?.toString();
+    }
+ else if (rawType == 'ESCALATION_ALERT') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.escalation;
-      entityId = (data['service_request_id'] ?? data['task_id'])?.toString();
+      entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'])?.toString();
     } else if (rawType == 'NEW_DELIVERY_TASK' ||
         rawType == 'ORDER_READY' ||
         rawType == 'FOOD_ORDER_READY' ||

@@ -224,10 +224,11 @@ class WebSocketService {
         return;
       }
 
-      if (type == 'SERVICE_TASK_ACCEPTED') {
+      if (type == 'SERVICE_TASK_ACCEPTED' || type == 'SERVICE_STATUS_CHANGED' || type == 'SERVICE_STATUS_UPDATE') {
         TaskAlertService.notifyNewTask();
         return;
       }
+
 
       // ── Delivery alerts ────────────────────────────────────────────────
 

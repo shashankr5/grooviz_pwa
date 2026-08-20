@@ -39,6 +39,7 @@ import 'delivery_page.dart';
 import 'guest_checkout_page.dart';
 import 'ticket_details_page.dart';
 import 'profile_page.dart';
+import '../services/profile_service.dart';
 import '../services/notification_handler.dart';
 import '../services/notification_constants.dart';
 
@@ -70,10 +71,6 @@ class HomePage extends StatefulWidget {
 class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void refreshData() {
     _loadTasks();
-    _loadEscalationBadge();
-    if (_isSupervisorOrAbove(userRole)) {
-      _loadEscalatedTasks();
-    }
     _loadDeliveryCounts();
   }
 
@@ -177,7 +174,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _loadUserRole();
     _loadTasks();
     _loadUserDepartments();
-    _loadEscalationBadge();
     _subscribeToAlerts();
 
     _scrollController.addListener(_onScroll);
@@ -242,7 +238,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _newTaskSub = TaskAlertService.onNewTask.listen((_) {
       if (mounted) {
         _loadTasks();
-        _loadEscalationBadge();
       }
     });
 
@@ -251,9 +246,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
 
     // Badge count stream — from EscalationService, not TaskAlertService.
-    _escalationSub = EscalationService.instance.onBadgeUpdate.listen((count) {
+    _escalationSub = EscalationService.instance.onBadgeUpdate.listen((_) {
       if (mounted) {
-        setState(() => _escalationBadgeCount = count);
+        _loadTasks();
       }
     });
 
@@ -261,7 +256,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // Previously this only ran when selectedFilter == "Escalated",
     // leaving the list stale when the user was on another filter tab.
     _escalationListSub = EscalationService.instance.onListRefresh.listen((_) {
-      if (mounted) _loadEscalatedTasks();
+      if (mounted) _loadTasks();
     });
 
     _roleChangeSub = SessionChangeService.instance.onRoleChange.listen((_) {
@@ -301,15 +296,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
     if (state == AppLifecycleState.resumed && mounted) {
-      // Only reload when the app genuinely returned from background (paused
-      // was observed). Notification-shade pulls fire inactive→resumed
-      // without ever hitting paused — ignore those.
       if (!_didPause) return;
       _didPause = false;
       _loadTasks();
       if (isRoomServiceUser) _loadDeliveryCounts();
-      _loadEscalationBadge();
-      if (selectedFilter == "Escalated") _loadEscalatedTasks();
     }
   }
 
@@ -344,7 +334,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _roleLoaded = true;
     });
     if (_isManagerRole(userRole)) {
-      _loadEscalatedTasks();
       // Start 60s periodic check ONLY for Manager / GM / Admin.
       _escalationTimer?.cancel();
       _escalationTimer = Timer.periodic(
@@ -380,11 +369,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadEscalationBadge() async {
-    final count = await EscalationService.instance.getBadgeCount();
-    if (!mounted) return;
-    setState(() => _escalationBadgeCount = count.clamp(0, 9999));
-  }
+
 
   /// Calls sp_resolve_escalation_mobile to stop the pulse engine and escalation
   /// climb for a task after accept / close / reassign.
@@ -411,21 +396,22 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadEscalatedTasks() async {
-    final result = await HomeService().getEscalatedTasks();
-    if (!mounted) return;
-    if (result["success"] == true) {
-      setState(() {
-        escalatedTasks = List<Map<String, dynamic>>.from(result["tasks"]);
-      });
-    }
-  }
-
   Future<void> _loadTasks() async {
+    final bool isRecoveringFromError = _errorMessage != null;
+
     setState(() {
       _isLoading    = true;
       _errorMessage = null;
     });
+
+    if (isRecoveringFromError) {
+      try {
+        await ProfileService().getProfile();
+        await _loadUserName();
+        await _loadUserRole();
+        await _loadUserDepartments();
+      } catch (_) {}
+    }
 
     final result = await HomeService().getTasks();
     if (!mounted) return;
@@ -470,8 +456,17 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ...t,
         "isAccepted":  t["status"] == "In Progress",
         "statusColor": getStatusColor(t["status"]),
-        "assignedTo":  t["raw"]?["assigned_to_name"] ?? "-",
+        "assignedTo":  t["raw"]?["accepted_by_user_name"] ?? t["raw"]?["assigned_to_name"] ?? "-",
       }).toList();
+
+      // Calculate escalatedTasks locally from the main feed list
+      escalatedTasks = tasks.where((t) {
+        final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
+        final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
+        return isEsc;
+      }).toList();
+      _escalationBadgeCount = escalatedTasks.length;
+
       _isLoading = false;
     });
 
@@ -576,15 +571,18 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final taskId       = task["raw"]?["service_request_id"] ?? task["task_id"] ?? task["id"];
     final departmentId = task["raw"]?["department_id"] ?? task["department_id"];
     final enterpriseId = task["raw"]?["enterprise_id"] ?? task["enterprise_id"];
+    final orderId      = task["raw"]?["order_id"] ?? task["order_id"];
     if (taskId == null) return;
 
     final intId = int.tryParse(taskId.toString()) ?? 0;
+    final parsedOrderId = orderId != null ? int.tryParse(orderId.toString()) : null;
     setState(() => _acceptingTaskId = intId);
 
     final result = await HomeService().acceptTask(
       taskId:       intId,
       departmentId: departmentId ?? 0,
       enterpriseId: enterpriseId ?? 0,
+      orderId:      parsedOrderId,
     );
     if (!mounted) return;
     setState(() => _acceptingTaskId = null);
@@ -603,7 +601,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     await TaskAlertService.stopOneServiceAlert();
     await _loadTasks();
-    _loadEscalationBadge(); // drop badge immediately
     _resolveEscalationForTask(task, resolutionType: 'accept');
     AppSnackBar.show(context, "Task Accepted 🎉");
   }
@@ -1041,25 +1038,22 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             ),
             const SizedBox(height: 24),
-            SizedBox(
-              width: 160,
-              height: 44,
-              child: ElevatedButton(
-                onPressed: _loadTasks,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+            ElevatedButton(
+              onPressed: _loadTasks,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text(
-                  isDeptError ? "Refresh Status" : "Retry",
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
+              ),
+              child: Text(
+                isDeptError ? "Refresh Status" : "Retry",
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
@@ -1105,8 +1099,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
               closedCount: closedCount,
               activeFilter: selectedFilter,
               onFilterSelected: (filter) {
-                setState(() => selectedFilter = filter);
-                if (filter == "Escalated") _loadEscalatedTasks();
+                 setState(() => selectedFilter = filter);
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   _scrollToTasksList();
                 });
@@ -1337,8 +1330,15 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                               // Refresh escalated list so the closed task
                               // disappears from the Escalated tab immediately.
-                              _loadEscalatedTasks();
-                              _loadEscalationBadge(); // drop badge immediately
+                              // Recalculate badge and feed locally
+                              setState(() {
+                                escalatedTasks = tasks.where((t) {
+                                  final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
+                                  final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
+                                  return isEsc;
+                                }).toList();
+                                _escalationBadgeCount = escalatedTasks.length;
+                              });
                               _resolveEscalationForTask(task);
                             },
                             onReassign: (updatedTask) {
@@ -1348,7 +1348,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     updatedTask["service_request_id"]);
                                 if (idx != -1) {
                                   tasks[idx]["assignedTo"] =
-                                      updatedTask["assigned_to_name"] ?? "-";
+                                      updatedTask["accepted_by_user_name"] ?? updatedTask["assigned_to_name"] ?? "-";
                                   tasks[idx]["status"] =
                                       updatedTask["status"] ?? tasks[idx]["status"];
                                   tasks[idx]["statusColor"] =
@@ -1360,12 +1360,23 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     final raw = tasks[idx]["raw"] as Map;
                                     raw["is_escalated"] = 0;
                                     raw["alert_pending"] = 0;
+                                    raw["accepted_by_user_id"] = updatedTask["accepted_by_user_id"];
+                                    raw["accepted_by_user_name"] = updatedTask["accepted_by_user_name"];
+                                    raw["assigned_to"] = updatedTask["assigned_to"];
+                                    raw["assigned_to_name"] = updatedTask["assigned_to_name"];
                                   }
                                 }
                               });
                               // Refresh escalated list + stop pulse engine.
-                              _loadEscalatedTasks();
-                              _loadEscalationBadge(); // drop badge immediately
+                              // Recalculate badge and feed locally
+                              setState(() {
+                                escalatedTasks = tasks.where((t) {
+                                  final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
+                                  final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
+                                  return isEsc;
+                                }).toList();
+                                _escalationBadgeCount = escalatedTasks.length;
+                              });
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
                             },
                           ),
@@ -1434,7 +1445,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 builder: (_) => TicketDetailPage(
                   task:     task,
                   userRole: userRole,
-                  onClose:  () => _loadEscalatedTasks(),
+                  onClose:  () => _loadTasks(),
                   onNoteAdded: (note) {
                     setState(() {
                       final idx = escalatedTasks.indexWhere((t) =>
@@ -1445,7 +1456,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   },
                 ),
               ),
-            ).then((_) => _loadEscalatedTasks()),
+            ).then((_) => _loadTasks()),
             child: _buildEscalatedCard(task),
           ),
         );
@@ -1456,28 +1467,32 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ── Escalated task card ───────────────────────────────────────────────────
 
   Widget _buildEscalatedCard(Map<String, dynamic> task) {
-    final room             = (task["room_number"] ?? task["room"] ?? task["requested_room"] ?? "-").toString();
+    final rawRoom          = (task["room_number"] ?? task["room"] ?? task["requested_room"] ?? "-").toString();
+    final roomDisplay      = (rawRoom == "0" || rawRoom == "000" || rawRoom == "-" || rawRoom == "null" || rawRoom.isEmpty) ? "General" : "Room $rawRoom";
     final requestId        = (task["service_request_id"] ?? task["task_id"] ?? task["id"] ?? "").toString();
     final guestName        = (task["guest_name"] ?? task["guest"] ?? task["full_name"] ?? "").toString();
-    final title            = (task["name"] ?? task["title"] ?? task["service_name"] ?? "Service Request").toString();
-    final originalAssignee = (task["original_assignee_name"] ?? task["original_assignee"] ?? task["assigned_to_name"] ?? "-").toString();
+    final rawTitle         = (task["name"] ?? task["title"] ?? task["service_name"] ?? "Service Request").toString();
+    final cleanTitle       = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
     final escalatedTo      = (task["escalated_to_name"] ?? task["escalated_to"] ?? task["notified_user_name"] ?? "-").toString();
     final overdueMins      = (task["overdue_minutes"] ?? task["overdueMinutes"] ?? task["age_minutes"] ?? 0) as int;
     final deptName         = (task["department_name"] ?? task["department"] ?? "").toString();
+    final stageName        = (task["current_stage_name"] ?? task["stage_name"] ?? "").toString();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.error.withOpacity(0.4), width: 1.5),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.35), width: 1.5),
         boxShadow: [
-          BoxShadow(color: AppColors.error.withOpacity(0.08),
-              blurRadius: 12, offset: const Offset(0, 3)),
+          BoxShadow(
+              color: AppColors.error.withValues(alpha: 0.06),
+              blurRadius: 10,
+              offset: const Offset(0, 3)),
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.all(13),
+        padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1494,8 +1509,8 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     child: const Icon(Icons.warning_amber_rounded,
                         size: 16, color: AppColors.error),
                   ),
-                  const SizedBox(width: 7),
-                  _pill("Room $room", AppColors.warningLight, textColor: AppColors.warning),
+                  const SizedBox(width: 8),
+                  _pill(roomDisplay, AppColors.primaryLight, textColor: AppColors.primary),
                   if (requestId.isNotEmpty && requestId != "0") ...[
                     const SizedBox(width: 6),
                     _pill("#$requestId", AppColors.bg, textColor: AppColors.textSecondary),
@@ -1504,48 +1519,87 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 _escalatedPill(),
               ],
             ),
-            const SizedBox(height: 8),
-            Text(title,
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 10),
+            Text(
+              cleanTitle,
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
 
-            if (guestName.isNotEmpty)
+            if (guestName.isNotEmpty && guestName != "Unknown Guest")
               Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text("👤 $guestName",
-                    style: const TextStyle(color: AppColors.textSecondary,
-                        fontSize: 12, fontWeight: FontWeight.w500)),
+                padding: const EdgeInsets.only(top: 4),
+                child: Text("👤 Guest: $guestName",
+                    style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500)),
               ),
             if (deptName.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Text("🏢 $deptName",
-                    style: const TextStyle(color: AppColors.textSecondary,
-                        fontSize: 12, fontWeight: FontWeight.w500)),
+                child: Text("🏢 Dept: $deptName",
+                    style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500)),
               ),
 
-            const SizedBox(height: 8),
+            if (stageName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.errorLight,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    "Stage: $stageName",
+                    style: const TextStyle(
+                        color: AppColors.error,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+
+            const SizedBox(height: 10),
             Row(children: [
-              const Icon(Icons.timer_off_rounded, size: 13, color: AppColors.error),
-              const SizedBox(width: 4),
-              Text("$overdueMins min overdue",
-                  style: const TextStyle(color: AppColors.error,
-                      fontSize: 12, fontWeight: FontWeight.w700)),
+              if (overdueMins > 0) ...[
+                const Icon(Icons.timer_off_rounded, size: 14, color: AppColors.error),
+                const SizedBox(width: 4),
+                Text("$overdueMins min overdue",
+                    style: const TextStyle(
+                        color: AppColors.error,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(width: 12),
+              ],
+              if (escalatedTo != "-" && escalatedTo != "Unknown") ...[
+                const Icon(Icons.person_rounded, size: 14, color: AppColors.primary),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text("Escalated to: $escalatedTo",
+                      style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ],
             ]),
-            const SizedBox(height: 4),
-            Text("Originally: $originalAssignee",
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            if (escalatedTo != "-")
-              Text("Escalated to: $escalatedTo",
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            const SizedBox(height: 8),
-            const Icon(Icons.chevron_right_rounded, color: AppColors.textDisabled),
           ],
         ),
       ),
     );
   }
+
 
   Widget _escalatedPill() {
     return Container(
@@ -1647,21 +1701,21 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     style: const TextStyle(color: AppColors.textSecondary,
                         fontSize: 12, fontWeight: FontWeight.w500)),
               ),
-            if (task["isAccepted"] == true)
-                Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.person_rounded, 
-                          size: 14, color: AppColors.success),
-                      const SizedBox(width: 4),
-                      Text(task["assignedTo"] ?? "-",
-                          style: const TextStyle(color: AppColors.success,
-                              fontSize: 12, fontWeight: FontWeight.w500)),
-                    ],
-                  ),
+            if (task["assignedTo"] != null && task["assignedTo"] != "-" && task["assignedTo"].toString().trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.badge_outlined, 
+                        size: 14, color: AppColors.textSecondary),
+                    const SizedBox(width: 4),
+                    Text("Assigned: ${task["assignedTo"]}",
+                        style: const TextStyle(color: AppColors.textSecondary,
+                            fontSize: 12, fontWeight: FontWeight.w500)),
+                  ],
                 ),
+              ),
             const SizedBox(height: 8),
             Row(children: [
               const Icon(Icons.calendar_today_rounded, size: 12,

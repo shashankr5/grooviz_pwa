@@ -86,20 +86,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   bool _isLoading        = false;
   bool _isLoadingStaff   = false;
-  bool _isLoadingEscHist = false;
   bool _phoneLoading     = false;
   bool _showScrollTop    = false;
 
-  // True while the background fresh-data fetch on open is in flight.
-  // Kept separate from _isLoading so we don't block the full-screen spinner
-  // — the page is usable while this quietly refreshes in the background.
   bool _isRefreshing = false;
 
   List<Map<String, dynamic>> _staffList         = [];
   List<Map<String, dynamic>> _escalationHistory = [];
+  bool _isLoadingEscHist = false;
 
   int?   _loggedInUserId;
-  bool   _historyLoaded = false;
 
   String _assignedPhone = '';
 
@@ -113,9 +109,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     // Silently fetch fresh ticket data so stale notes / status from the
     // parent list are replaced with the current server state.
-    // The passed-in widget.task is shown instantly as a placeholder — the
-    // page is fully usable while this runs in the background.
     _refreshFromServer();
+    _loadEscalationHistory();
 
     _scrollController.addListener(() {
       final show = _scrollController.offset > 300;
@@ -127,11 +122,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     if (_assignedPhone.isEmpty && _isSupervisorOrAbove(widget.userRole)) {
       _fetchAssignedPhone();
-    }
-
-    if (_isManagerRole(widget.userRole) ||
-        _isSupervisorOrAbove(widget.userRole)) {
-      _loadEscalationHistory();
     }
   }
 
@@ -202,31 +192,32 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         }
       }
 
-      // Not found in the main list — try the escalated tasks list as a fallback
-      // (escalated tasks may be returned by a different SP/endpoint).
-      if (_serviceRequestId > 0) {
-        final escResult = await _homeService.getEscalatedTasks();
-        if (!mounted) return;
-        if (escResult['success'] == true) {
-          final escalated = List<Map<String, dynamic>>.from(
-              escResult['tasks'] as List? ?? []);
-          final fresh = escalated.firstWhere(
-            (t) =>
-                (t['service_request_id'] ?? t['raw']?['service_request_id'])
-                    ?.toString() ==
-                _serviceRequestId.toString(),
-            orElse: () => {},
-          );
-          if (fresh.isNotEmpty && mounted) {
-            setState(() => _task = Map<String, dynamic>.from(fresh));
-          }
-        }
-      }
+
     } catch (_) {
       // Network / parse failure — silently fall back to the placeholder data.
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
     }
+  }
+
+  // ── Fetch escalation audit trail for task ────────────────────────────────
+
+  Future<void> _loadEscalationHistory() async {
+    if (_serviceRequestId == 0) return;
+    setState(() => _isLoadingEscHist = true);
+    try {
+      final res =
+          await _homeService.getEscalationHistoryForTask(_serviceRequestId);
+      if (!mounted) return;
+      if (res['success'] == true) {
+        setState(() {
+          _escalationHistory =
+              (res['history'] as List? ?? []).cast<Map<String, dynamic>>();
+        });
+
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _isLoadingEscHist = false);
   }
 
   // ── Resolve assignee phone ────────────────────────────────────────────────
@@ -301,25 +292,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       (_task['status'] ?? '').toString().toLowerCase() == 'closed' ||
       ((_task['raw'] as Map?)?['closed'] ?? 0) == 1;
 
-  bool get _isServiceRequest =>
-      widget.task['is_service_request'] == true ||
-      (_task['raw'] as Map?)?['is_service_request'] == true ||
-      widget.task['service_request_id'] != null ||
-      (_task['raw'] as Map?)?['service_request_id'] != null;
-
   int get _serviceRequestId =>
       ((_task['service_request_id'] ??
               (_task['raw'] as Map?)?['service_request_id']) ??
-          0) as int;
-
-  int get _departmentId =>
-      ((_task['department_id'] ??
-              (_task['raw'] as Map?)?['department_id']) ??
-          0) as int;
-
-  int get _enterpriseId =>
-      ((_task['enterprise_id'] ??
-              (_task['raw'] as Map?)?['enterprise_id']) ??
           0) as int;
 
   // ── Timestamp formatter ───────────────────────────────────────────────────
@@ -340,37 +315,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
   }
 
-  // ── Escalation history ────────────────────────────────────────────────────
-  //
-  // CHANGE: Replaced old implementation that called getEscalatedTasks() and
-  // filtered client-side. Now calls the dedicated getEscalationHistoryForTask()
-  // which hits ScreenSync_get_escalation_history_for_task_mobile SP.
-  //
-  // Benefits:
-  //   • Returns ALL rows including resolved — full audit trail visible.
-  //   • No client-side filtering — only this task's rows are returned.
-  //   • Ordered correctly by escalation_level ASC, escalated_at ASC.
-
-  Future<void> _loadEscalationHistory() async {
-    if (_historyLoaded) return;
-    if (!mounted) return;
-    setState(() => _isLoadingEscHist = true);
-    try {
-      final result = await _homeService.getEscalationHistoryForTask(
-        serviceRequestId: _serviceRequestId,
-      );
-      if (!mounted) return;
-      if (result['success'] == true) {
-        setState(() {
-          _escalationHistory = List<Map<String, dynamic>>.from(
-            result['history'] as List? ?? [],
-          );
-          _historyLoaded = true;
-        });
-      }
-    } catch (_) {}
-    if (mounted) setState(() => _isLoadingEscHist = false);
-  }
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -387,16 +331,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
     if (confirm != true) return;
 
-    setState(() => _isLoading = true);
-    final result = _isServiceRequest
-        ? await TaskService().reassignService(
-            taskId: _serviceRequestId,
-            reassignTo: userId,
-          )
-        : await _homeService.reassignTicket(
-            ticketId: _serviceRequestId,
-            assignedUserId: userId,
-          );
+    final deptIdVal = _task['department_id'] ?? (_task['raw'] as Map?)?['department_id'];
+    final deptId = deptIdVal is int ? deptIdVal : int.tryParse(deptIdVal?.toString() ?? '');
+
+    // Always use TaskService → ScreenSync_reassign_service_mobile
+    final result = await TaskService().reassignService(
+        taskId:       _serviceRequestId,
+        reassignTo:   userId,
+        departmentId: deptId,
+    );
+
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -423,78 +367,121 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     widget.onReassign?.call(updated);
 
-    // CHANGE: Notify new assignee via FCM (fire-and-forget).
-    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
-    _homeService.notifyReassign(
-      taskId:       _serviceRequestId,
-      assignedTo:   userId,
-      enterpriseId: _enterpriseId,
-      departmentId: _departmentId,
-      taskName:     (_task['title'] ?? raw['question'] ?? '').toString(),
-      roomId:       (_task['room'] ?? raw['room_number'] ?? '').toString(),
-    );
-
     AppSnackBar.show(context, 'Task taken over ✅');
   }
 
-  // CHANGE: closeServiceRequest now receives department_id and enterprise_id
-  // so the Lambda can broadcast TASK_CLOSED via WebSocket to all dept devices.
+  // ── Unified status transition (Accept / Close) ───────────────────────────
+  //
+  // This is the single entry point for all service_request status changes.
+  //   newStatus = "IN_PROGRESS" → Accept (staff marks task as taken)
+  //   newStatus = "CLOSED"      → Close  (mark request as resolved)
+  //
+  // SP: ScreenSync_update_service_request_status_mobile
+  // The SP resolves escalation_log, stops task_alert_state pulsing, and
+  // returns guest_device_token for Lambda FCM — all within one DB transaction.
+  // DO NOT call EscalationService.resolveEscalation() after this.
 
-  Future<void> _closeTask() async {
-    final confirm = await _showConfirmSheet(
-      title:   'Close Service Request',
-      body:    'Mark this request as resolved? This cannot be undone.',
-      confirm: 'Close',
-      color:   AppColors.success,
-      icon:    Icons.check_circle_rounded,
-    );
-    if (confirm != true) return;
+  Future<void> _updateStatus(String newStatus) async {
+    final isClose  = newStatus == 'CLOSED';
+    final isAccept = newStatus == 'IN_PROGRESS';
+
+    if (isClose) {
+      final confirm = await _showConfirmSheet(
+        title:   'Close Service Request',
+        body:    'Mark this request as resolved? This cannot be undone.',
+        confirm: 'Close',
+        color:   AppColors.success,
+        icon:    Icons.check_circle_rounded,
+      );
+      if (confirm != true) return;
+    } else if (isAccept) {
+      final confirm = await _showConfirmSheet(
+        title:   'Accept Task',
+        body:    'Mark this task as In Progress?',
+        confirm: 'Accept',
+        color:   const Color(0xFFEF8C00),
+        icon:    Icons.assignment_turned_in_rounded,
+      );
+      if (confirm != true) return;
+    }
 
     setState(() => _isLoading = true);
-    final result = _isServiceRequest
-        ? await TaskService().closeService(
-            serviceRequestId: _serviceRequestId,
-          )
-        : await _homeService.closeServiceRequest(
-            serviceRequestId: _serviceRequestId,
-            departmentId:     _departmentId,
-            enterpriseId:     _enterpriseId,
-          );
+
+    final result = await TaskService().updateServiceRequestStatus(
+      serviceRequestId: _serviceRequestId,
+      status:           newStatus,
+    );
+
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (result['success'] != true) {
-      AppSnackBar.show(context, result['message'] ?? 'Failed to close',
-          isError: true);
+      AppSnackBar.show(
+        context,
+        result['message'] ?? 'Failed to update status',
+        isError: true,
+      );
       return;
     }
 
+    // ── Optimistic UI update from SP STATUS[0] response ─────────────────
+    final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
+    final escStatus        = result['escalation_status'] as String?;
+    final nextEscalationAt = result['next_escalation_at'] as String?;
+
     setState(() {
-      _task['status'] = 'Closed';
+      _task['status'] = currentStatus;
       if (_task['raw'] is Map) {
         final raw = _task['raw'] as Map;
-        raw['closed'] = 1;
-        raw['status'] = 'Closed';
+        if (isClose) {
+          raw['closed']              = 1;
+          raw['status']              = 'CLOSED';
+          // Clear escalation — SP resolves it atomically
+          raw['escalation_instance_id'] = null;
+          raw['escalation_status']      = null;
+          raw['next_escalation_at']     = null;
+        } else {
+          raw['status']                 = 'IN_PROGRESS';
+          raw['accepted_by_user_name']  = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          raw['escalation_status']      = escStatus;
+          raw['next_escalation_at']     = nextEscalationAt;
+        }
+      }
+      // Clear local escalation flags if closed or accepted
+      if (isClose || isAccept) {
+        _task['is_escalated']    = 0;
+        _task['alert_pending']   = 0;
+      }
+      if (isClose) {
+        _task['escalation_instance_id'] = null;
+        _task['escalation_status']      = null;
+        _task['next_escalation_at']     = null;
       }
     });
-    widget.onClose?.call();
-    AppSnackBar.show(context, 'Request closed ✅');
+
+    if (isClose) {
+      widget.onClose?.call();
+      AppSnackBar.show(context, 'Request closed ✅');
+    } else {
+      AppSnackBar.show(context, 'Task accepted — In Progress ✅');
+    }
   }
+
+  // Legacy alias kept so any callers that still reference _closeTask() compile.
+  // Routes through the unified _updateStatus() method.
+  Future<void> _closeTask() => _updateStatus('CLOSED');
+
 
   Future<void> _addNote() async {
     final text = _noteController.text.trim();
     if (text.isEmpty) return;
 
     setState(() => _isLoading = true);
-    final result = _isServiceRequest
-        ? await TaskService().addServiceNote(
-            serviceRequestId: _serviceRequestId,
-            noteText:         text,
-          )
-        : await _homeService.addNote(
-            serviceRequestId: _serviceRequestId,
-            noteText:         text,
-          );
+    // Always use TaskService → ScreenSync_add_service_note_mobile
+    final result = await TaskService().addServiceNote(
+        serviceRequestId: _serviceRequestId,
+        noteText:         text,
+    );
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -505,8 +492,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     _noteController.clear();
-    setState(() => _task['note'] = text);
-    widget.onNoteAdded?.call(text);
+    // Use returned note_text from RESULT if available, else the local input
+    final savedNote = (result['note'] as Map?)?['note_text']?.toString() ?? text;
+    setState(() => _task['note'] = savedNote);
+    widget.onNoteAdded?.call(savedNote);
     AppSnackBar.show(context, 'Note added');
   }
 
@@ -522,9 +511,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       }
       final raw =
           (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
+      final taskDept = (_task['department_name'] ?? _task['department'] ?? (_task['raw'] as Map?)?['department_name'] ?? '').toString().toLowerCase();
       raw.sort((a, b) {
         final dA = (a['department'] ?? '').toString().toLowerCase();
         final dB = (b['department'] ?? '').toString().toLowerCase();
+        final matchA = taskDept.isNotEmpty && dA == taskDept;
+        final matchB = taskDept.isNotEmpty && dB == taskDept;
+        if (matchA && !matchB) return -1;
+        if (!matchA && matchB) return 1;
         final c  = dA.compareTo(dB);
         if (c != 0) return c;
         return (a['name'] ?? '')
@@ -533,6 +527,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             .compareTo(
                 (b['name'] ?? '').toString().toLowerCase());
       });
+
       setState(() {
         _staffList      = raw;
         _isLoadingStaff = false;
@@ -752,15 +747,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                         onTap: () async {
                                         Navigator.pop(ctx);
                                         setState(() => _isLoading = true);
-                                        final res = _isServiceRequest
-                                             ? await TaskService().reassignService(
-                                                 taskId: _serviceRequestId,
-                                                 reassignTo: staff['userId'] as int,
-                                               )
-                                             : await _homeService.reassignTicket(
-                                                 ticketId:       _serviceRequestId,
-                                                 assignedUserId: staff['userId'] as int,
-                                               );
+                                        // Always use TaskService → ScreenSync_reassign_service_mobile
+                                        final res = await TaskService().reassignService(
+                                             taskId:     _serviceRequestId,
+                                             reassignTo: staff['userId'] as int,
+                                           );
                                         if (!mounted) return;
                                         setState(() => _isLoading = false);
                                         if (res['success'] != true) {
@@ -804,25 +795,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                         });
 
                                         widget.onReassign?.call(upd);
-
-                                        // CHANGE: Notify the new assignee
-                                        // via FCM (fire-and-forget).
-                                        final taskRaw = _task['raw']
-                                            as Map<String, dynamic>? ?? {};
-                                        _homeService.notifyReassign(
-                                          taskId:       _serviceRequestId,
-                                          assignedTo:   staff['userId'] as int,
-                                          enterpriseId: _enterpriseId,
-                                          departmentId: _departmentId,
-                                          taskName:     (_task['title'] ??
-                                                  taskRaw['question'] ??
-                                                  '')
-                                              .toString(),
-                                          roomId: (_task['room'] ??
-                                                  taskRaw['room_number'] ??
-                                                  '')
-                                              .toString(),
-                                        );
 
                                         AppSnackBar.show(context,
                                             'Reassigned to ${staff['name']}');
@@ -984,12 +956,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (_isEscalated) ...[
-                    _buildEscalatedBanner(),
-                    const SizedBox(height: 12),
-                  ],
-
                   _buildResolutionSlaBanner(),
+
+
                   if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
                     const SizedBox(height: 12),
 
@@ -997,6 +966,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
                   const SizedBox(height: 12),
 
+                  _buildEscalationHistoryCard(),
+
+                  const SizedBox(height: 12),
 
                   _buildNoteCard(),
 
@@ -1007,11 +979,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
                   const SizedBox(height: 12),
 
-                  if (_isManagerRole(widget.userRole) ||
-                      _isSupervisorOrAbove(widget.userRole))
-                    _buildEscalationHistory(),
 
-                  const SizedBox(height: 12),
 
                   if (!_isClosed) _buildActions(),
                 ],
@@ -1247,13 +1215,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  // ── Info Card ─────────────────────────────────────────────────────────────
-
   Widget _buildInfoCard() {
     final raw        = _task['raw'] as Map<String, dynamic>? ?? {};
-    final room       = (_task['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
+
+    final rawRoom    = (_task['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
+    final room       = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom == '—' || rawRoom.isEmpty) ? 'General' : rawRoom;
     final guest      = (_task['guest'] ?? raw['guest_name'] ?? '—').toString();
-    final title      = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
+    final rawTitle   = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
+    final title      = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
+
     final assignedTo = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
     final createdAt  = (raw['created_at'] ?? '').toString();
     final acceptedAt = (raw['accepted_at'] ?? _task['accepted_at'] ?? '').toString();
@@ -1468,6 +1438,246 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     ]);
   }
 
+  // ── Escalation History Timeline Card ──────────────────────────────────────
+
+  Widget _buildEscalationHistoryCard() {
+    if (!_isSupervisorOrAbove(widget.userRole)) return const SizedBox.shrink();
+    if (_escalationHistory.isEmpty && !_isLoadingEscHist) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color:        Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+            color: AppColors.primary.withValues(alpha: 0.15), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+              color:      Colors.black.withValues(alpha: 0.04),
+              blurRadius: 10,
+              offset:     const Offset(0, 3)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryLight,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.history_rounded,
+                    size: 16, color: AppColors.primary),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'Escalation Audit History',
+                style: TextStyle(
+                  fontSize:   15,
+                  fontWeight: FontWeight.bold,
+                  color:      AppColors.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              if (_isLoadingEscHist)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                  decoration: BoxDecoration(
+                    color:        AppColors.primaryLight,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${_escalationHistory.length} events',
+                    style: const TextStyle(
+                      fontSize:   11,
+                      fontWeight: FontWeight.w600,
+                      color:      AppColors.primary,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Divider(height: 1, color: Colors.grey.shade200),
+          const SizedBox(height: 12),
+          if (_escalationHistory.isEmpty && !_isLoadingEscHist)
+            const Text(
+              'No escalation log entries recorded for this request.',
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            )
+          else
+            ..._escalationHistory.map((item) {
+              final levelNum = item['escalation_level'] ?? 1;
+              final roleName = item['escalated_to_role'] ?? item['stage_name'] ?? item['escalation_stage_name'];
+              final stageName = roleName != null && roleName.toString().isNotEmpty
+                  ? 'Level $levelNum ($roleName)'
+                  : 'Level $levelNum';
+
+              var notifiedName = (item['escalated_to_name'] ??
+                      item['notified_user_name'] ??
+                      item['user_name'] ??
+                      '').toString().trim();
+              if (notifiedName.isEmpty || notifiedName == '—') {
+                notifiedName = (_task['assignedTo'] ?? (_task['raw'] as Map?)?['assigned_to_name'] ?? '').toString().trim();
+              }
+
+              final userRole = (item['escalated_to_role'] ?? item['user_role'] ?? item['role_name'] ?? '').toString().trim();
+              final userDept = (item['department_name'] ?? item['dept_name'] ?? item['department'] ?? (_task['department_name'] ?? (_task['raw'] as Map?)?['department_name'] ?? '')).toString().trim();
+
+              final userDetailsList = <String>[
+                if (notifiedName.isNotEmpty && notifiedName != '—') notifiedName,
+                if (userRole.isNotEmpty && userRole != '—') userRole,
+                if (userDept.isNotEmpty && userDept != '—') userDept,
+              ];
+              final userDetailsStr = userDetailsList.join(' • ');
+
+              final origName = (item['original_assignee_name'] ?? '').toString();
+
+              final statusStr = (item['escalation_status'] ??
+
+                      item['response_status'] ??
+                      item['status'] ??
+                      'Pending')
+                  .toString();
+
+              final timestampStr = (item['escalated_at'] ??
+                      item['notified_at'] ??
+                      item['created_at'] ??
+                      item['timestamp'] ??
+                      '')
+                  .toString();
+
+              final resolvedByName = (item['resolved_by_name'] ?? '').toString();
+
+              Color statusColor;
+              switch (statusStr.toLowerCase()) {
+                case 'resolved':
+                case 'accepted':
+                case 'completed':
+                  statusColor = AppColors.success;
+                  break;
+                case 'open':
+                case 'timedout':
+                case 'cancelled':
+                  statusColor = AppColors.error;
+                  break;
+                case 'viewed':
+                case 'notified':
+                  statusColor = AppColors.primary;
+                  break;
+                default:
+                  statusColor = Colors.orange;
+              }
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: statusColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                stageName,
+                                style: const TextStyle(
+                                  fontSize:   13,
+                                  fontWeight: FontWeight.w600,
+                                  color:      AppColors.textPrimary,
+                                ),
+                              ),
+                              const Spacer(),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: statusColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  statusStr,
+                                  style: TextStyle(
+                                    fontSize:   10,
+                                    fontWeight: FontWeight.w700,
+                                    color:      statusColor,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'Escalated To: ${userDetailsStr.isNotEmpty ? userDetailsStr : "Staff User"}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+
+                          if (origName.isNotEmpty && origName != '—')
+                            Text(
+                              'Originally: $origName',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          if (resolvedByName.isNotEmpty)
+                            Text(
+                              'Resolved By: $resolvedByName',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppColors.success,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          if (timestampStr.isNotEmpty)
+                            Text(
+                              _formatTs(timestampStr),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: AppColors.textSecondary
+                                    .withValues(alpha: 0.7),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+
+        ],
+      ),
+    );
+  }
+
   // ── Note display card ─────────────────────────────────────────────────────
 
   Widget _buildNoteCard() {
@@ -1583,189 +1793,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   // ── Escalation History ────────────────────────────────────────────────────
 
-  Widget _buildEscalationHistory() {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Row(children: [
-          const Icon(Icons.history_rounded,
-              size: 16, color: AppColors.error),
-          const SizedBox(width: 6),
-          const Text('Escalation History',
-              style: TextStyle(
-                  fontSize:   14,
-                  fontWeight: FontWeight.bold,
-                  color:      AppColors.textPrimary)),
-          const Spacer(),
-          if (_isLoadingEscHist)
-            const SizedBox(
-              width: 16, height: 16,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: AppColors.error),
-            ),
-        ]),
-      ),
 
-      if (!_isLoadingEscHist && _escalationHistory.isEmpty)
-        Container(
-          width:   double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color:        Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                  color:      Colors.black.withValues(alpha: 0.03),
-                  blurRadius: 6,
-                  offset:     const Offset(0, 2)),
-            ],
-          ),
-          child: const Row(children: [
-            Icon(Icons.check_circle_outline_rounded,
-                size: 16, color: AppColors.success),
-            SizedBox(width: 8),
-            Text('No escalation records for this task',
-                style: TextStyle(
-                    color: AppColors.textSecondary, fontSize: 13)),
-          ]),
-        )
-      else
-        ...(_escalationHistory
-            .map((esc) => _buildEscHistoryRow(esc))),
-    ]);
-  }
-
-  Widget _buildEscHistoryRow(Map<String, dynamic> esc) {
-    final level      = esc['escalation_level'] ?? esc['level'] ?? 1;
-    final escalTo    = (esc['escalated_to'] ?? esc['escalated_to_name'] ?? '—').toString();
-    final originalBy = (esc['original_assignee'] ?? esc['original_assignee_name'] ?? '—').toString();
-    final escalAt    = _formatTs((esc['escalated_at'] ?? '').toString());
-    final resolvedAt = (esc['resolved_at'] ?? '').toString();
-    final resolvedBy = (esc['resolved_by_name'] ?? '').toString();
-    final isResolved = resolvedAt.isNotEmpty;
-    final overdue    = (esc['overdue_minutes'] ?? 0) as int;
-
-    const levelLabels = {
-      1: 'Supervisor',
-      2: 'Dept Head',
-      3: 'Manager',
-      4: 'GM',
-      5: 'Admin',
-    };
-    final levelLabel = levelLabels[level] ?? 'Level $level';
-
-    return Container(
-      margin:  const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color:        Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: isResolved
-              ? AppColors.success.withValues(alpha: 0.3)
-              : AppColors.error.withValues(alpha: 0.2),
-        ),
-        boxShadow: [
-          BoxShadow(
-              color:      Colors.black.withValues(alpha: 0.03),
-              blurRadius: 6,
-              offset:     const Offset(0, 2)),
-        ],
-      ),
-      child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-        Container(
-          width: 32, height: 32,
-          decoration: BoxDecoration(
-            color: isResolved
-                ? AppColors.successLight
-                : AppColors.errorLight,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text('$level',
-                style: TextStyle(
-                    fontSize:   12,
-                    fontWeight: FontWeight.w800,
-                    color:      isResolved
-                        ? AppColors.success
-                        : AppColors.error)),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-            Text(levelLabel,
-                style: const TextStyle(
-                    fontSize:   13,
-                    fontWeight: FontWeight.w700,
-                    color:      AppColors.textPrimary)),
-            const SizedBox(height: 2),
-            Text('$originalBy → $escalTo',
-                style: const TextStyle(
-                    fontSize: 12,
-                    color:    AppColors.textSecondary)),
-            const SizedBox(height: 3),
-            Row(children: [
-              Text(escalAt,
-                  style: const TextStyle(
-                      fontSize: 11,
-                      color:    AppColors.textDisabled)),
-              if (overdue > 0) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(
-                    color:        AppColors.errorLight,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text('$overdue min overdue',
-                      style: const TextStyle(
-                          color:      AppColors.error,
-                          fontSize:   10,
-                          fontWeight: FontWeight.w700)),
-                ),
-              ],
-            ]),
-            // CHANGE: Show resolved-by name when entry is resolved.
-            // Previously this info was never shown because resolved
-            // entries weren't returned at all.
-            if (isResolved && resolvedBy.isNotEmpty) ...[
-              const SizedBox(height: 3),
-              Text('Resolved by: $resolvedBy',
-                  style: const TextStyle(
-                      fontSize:   11,
-                      color:      AppColors.success,
-                      fontWeight: FontWeight.w600)),
-            ],
-          ]),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: isResolved
-                ? AppColors.successLight
-                : AppColors.errorLight,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            isResolved ? 'Resolved' : 'Open',
-            style: TextStyle(
-                fontSize:   10,
-                fontWeight: FontWeight.w700,
-                color: isResolved
-                    ? AppColors.success
-                    : AppColors.error),
-          ),
-        ),
-      ]),
-    );
-  }
 
   // ── Action Buttons ────────────────────────────────────────────────────────
   //

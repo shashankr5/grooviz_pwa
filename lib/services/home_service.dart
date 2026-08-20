@@ -8,6 +8,7 @@ import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
 import '../constants/app_config.dart';
+import 'task_service.dart';
 
 class DateRange {
   final DateTime startDate;
@@ -40,6 +41,9 @@ class HomeService {
       ),
     );
   }
+
+
+  static const String _checkAndEscalateUrl = "${ApiConstants.baseUrl}/ScreenSync_sp_check_and_escalate_mobile";
 
   // ── GET TASKS ─────────────────────────────────────────────────────────────
 
@@ -193,6 +197,17 @@ class HomeService {
   static List<Map<String, dynamic>> _mapTasks(List raw) {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
+
+      // ── Escalation derivation ────────────────────────────────────────────
+      // escalation_instance_id non-null → task is currently escalated.
+      // is_escalated flag is also checked for legacy rows that set it directly.
+      final int? escalationInstanceId =
+          m["escalation_instance_id"] as int?;
+      final bool isEscalated =
+          (m["is_escalated"] == 1 ||
+           m["is_escalated"] == true ||
+           escalationInstanceId != null);
+
       return {
         "service_request_id": m["service_request_id"],
         // room_number is the human-facing string (e.g. "101") from the SP.
@@ -206,25 +221,39 @@ class HomeService {
         "description": m["answer"]   ?? "",
         "time":        _formatTime(m["timestamp"] ?? m["created_at"]),
         "guest":       _nonEmpty(m["guest_name"]) ?? "Unknown Guest",
+        "guest_phone":  m["guest_phone"] ?? m["customer_number"] ?? "",
         "guestNote":
             "Phone: ${m["guest_phone"] ?? m["customer_number"] ?? "-"}",
-        "assignedTo": (m["assigned_to_name"] ??
+        "assignedTo": (m["accepted_by_user_name"] ??
+                m["assigned_to_name"] ??
                 m["assigned_user_name"] ??
                 m["assigned_name"] ??
                 m["name"] ??
                 m["assigned_to"] ??
                 "-")
             .toString(),
+        "accepted_by_user_id": m["accepted_by_user_id"],
         "note":         m["note_text"],
-        "is_escalated": (m["is_escalated"] == 1 || m["is_escalated"] == true || m["escalation_instance_id"] != null) ? 1 : 0,
-        "alert_pending": m["alert_pending"] ?? 0,
+        // ── Escalation fields (from get_all_services_mobile RESULT) ─────
+        // These are read by EscalationBanner, SlaCountdownWidget, and the
+        // urgency border system without any extra API call.
+        "is_escalated":           isEscalated ? 1 : 0,
+        "alert_pending":          m["alert_pending"] ?? 0,
+        "escalation_instance_id": escalationInstanceId,
+        "escalation_status":      m["escalation_status"],   // "Working" | null
+        "current_stage_id":       m["current_stage_id"],
+        "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 – Supervisor"
+        "next_escalation_at":     m["next_escalation_at"], // ISO-8601 — drives SLA countdown
         "escalation_time_minutes": m["escalation_time_minutes"],
-        "accepted_at":  m["accepted_at"],
-        "created_at":   m["created_at"],
-        "timestamp":    m["timestamp"],
+        // ── Timestamps ──────────────────────────────────────────────────
+        "accepted_at":   m["accepted_at"],
+        "created_at":    m["created_at"],
+        "timestamp":     m["timestamp"],
+        // ── Identifiers ─────────────────────────────────────────────────
         "department_id": m["department_id"],
         "enterprise_id": m["enterprise_id"],
-        "raw":          m,
+        // Full raw row — any field not listed above is accessible via raw[key]
+        "raw":           m,
       };
     }).toList();
   }
@@ -279,13 +308,79 @@ class HomeService {
 
       dev.log("📤 Triggering escalation check...");
       final response = await _dio.post(
-        ApiConstants.checkAndEscalate,
+        _checkAndEscalateUrl,
         data: payload,
       );
 
       dev.log("📥 Escalation check response: ${response.data}");
     } catch (e) {
       dev.log("triggerEscalationCheck error (non-fatal): $e");
+    }
+  }
+
+  // ── GET ESCALATION HISTORY FOR TASK ─────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getEscalationHistoryForTask(
+      int serviceRequestId) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null) {
+        return {
+          "success": false,
+          "message": "User not logged in",
+          "history": []
+        };
+      }
+
+      final payload = {
+        "user_id":            userId,
+        "service_request_id": serviceRequestId,
+        "stage":              AppConfig.stage,
+      };
+
+      dev.log("📤 Fetching escalation history for sr=$serviceRequestId...");
+      final response = await _dio.post(
+        ApiConstants.escalationHistoryForTask,
+        data: payload,
+      );
+
+      if (response.statusCode != 200) {
+        return {
+          "success": false,
+          "message": "Server error: ${response.statusCode}",
+          "history": [],
+        };
+      }
+
+      final statusList = response.data["STATUS"] as List?;
+      if (statusList == null || statusList.isEmpty) {
+        return {
+          "success": false,
+          "message": "Invalid server response",
+          "history": [],
+        };
+      }
+
+      final statusFlag    = statusList[0]["status"] ?? "F";
+      final statusMessage = statusList[0]["message"] ?? "Unknown";
+
+      if (statusFlag != "S") {
+        return {"success": false, "message": statusMessage, "history": []};
+      }
+
+      final resultList = response.data["RESULT"] as List? ?? [];
+      return {
+        "success": true,
+        "message": statusMessage,
+        "history": resultList.cast<Map<String, dynamic>>(),
+      };
+    } catch (e) {
+      dev.log("ERROR (getEscalationHistoryForTask): $e");
+      return {
+        "success": false,
+        "message": ErrorHandler.friendlyMessage(e),
+        "history": [],
+      };
     }
   }
 
@@ -383,13 +478,13 @@ class HomeService {
       };
 
       final response =
-          await _dio.post(ApiConstants.reassignTicket, data: payload);
+          await _dio.post(ApiConstants.reassignService, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
       }
 
-      final statusList = response.data["STATUS"] as List?;
+      final statusList = (response.data["RESULT"] ?? response.data["STATUS"]) as List?;
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid response"};
       }
@@ -399,7 +494,7 @@ class HomeService {
 
       if (flag != "S") return {"success": false, "message": msg ?? "Failed"};
 
-      final updatedTask = response.data["RESULT"][0];
+      final updatedTask = (response.data["RESULT"] ?? response.data["STATUS"])[0];
       return {"success": true, "message": msg, "updatedTask": updatedTask};
     } catch (e) {
       dev.log("ERROR (reassignTicket): $e");
@@ -408,41 +503,10 @@ class HomeService {
     }
   }
 
-  Future<void> notifyReassign({
-    required int    taskId,
-    required int    assignedTo,
-    required int    enterpriseId,
-    required int    departmentId,
-    required String taskName,
-    required String roomId,
-  }) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) return;
 
-      final payload = {
-        "user_id":       userId,
-        "task_id":       taskId,
-        "assigned_to":   assignedTo,
-        "enterprise_id": enterpriseId,
-        "department_id": departmentId,
-        "task_name":     taskName,
-        "room_id":       roomId,
-        "stage":         AppConfig.stage,
-      };
 
-      dev.log("📤 Notifying reassign — task:$taskId → user:$assignedTo");
-      final response = await _dio.post(
-        ApiConstants.notifyReassign,
-        data: payload,
-      );
-      dev.log("📥 notifyReassign response: ${response.data}");
-    } catch (e) {
-      dev.log("notifyReassign error (non-fatal): $e");
-    }
-  }
 
-  // ── ADD NOTE ──────────────────────────────────────────────────────────────
+  // ── ADD NOTE (routes to new endpoint: ScreenSync_add_service_note_mobile) ──
 
   Future<Map<String, dynamic>> addNote({
     required int serviceRequestId,
@@ -465,7 +529,8 @@ class HomeService {
         "stage":              AppConfig.stage,
       };
 
-      final response = await _dio.post(ApiConstants.addNotes, data: payload);
+      // Uses new endpoint: ScreenSync_add_service_note_mobile
+      final response = await _dio.post(ApiConstants.addServiceNote, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error", "note": null};
@@ -487,15 +552,14 @@ class HomeService {
         return {"success": false, "message": msg ?? "Failed", "note": null};
       }
 
+      final resultList = response.data["RESULT"] as List?;
       return {
         "success": true,
         "message": msg,
-        "note": response.data["RESULT"][0],
+        "note": resultList?.isNotEmpty == true ? resultList![0] : null,
       };
     } catch (e) {
       dev.log("ERROR (addNote): $e");
-      // FIX-11 (Bug 11): was "Error: $e" — this is the exact bug you saw:
-      // raw DioException text shown in the add-note SnackBar when offline.
       return {
         "success": false,
         "message": ErrorHandler.friendlyMessage(e),
@@ -504,7 +568,7 @@ class HomeService {
     }
   }
 
-  // ── CLOSE SERVICE REQUEST ─────────────────────────────────────────────────
+  // ── CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile) ──
 
   Future<Map<String, dynamic>> closeServiceRequest({
     required int serviceRequestId,
@@ -521,6 +585,9 @@ class HomeService {
         };
       }
 
+      // Uses new endpoint: ScreenSync_close_service_mobile
+      // department_id and enterprise_id are forwarded so the SP can
+      // broadcast TASK_CLOSED via WebSocket to all department devices.
       final payload = {
         "user_id":            userId,
         "service_request_id": serviceRequestId,
@@ -530,13 +597,13 @@ class HomeService {
       };
 
       final response =
-          await _dio.post(ApiConstants.closeServiceRequest, data: payload);
+          await _dio.post(ApiConstants.closeService, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error", "data": null};
       }
 
-      final statusList = response.data["STATUS"] as List?;
+      final statusList = (response.data["STATUS"] ?? response.data["RESULT"]) as List?;
       if (statusList == null || statusList.isEmpty) {
         return {
           "success": false,
@@ -545,21 +612,22 @@ class HomeService {
         };
       }
 
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
+      final flag = statusList[0]["status"]?.toString();
+      final msg  = statusList[0]["message"]?.toString();
 
-      if (flag != "S") {
+      if (flag != "S" && flag != "200") {
         return {"success": false, "message": msg ?? "Failed", "data": null};
       }
 
+
+      final resultList = response.data["RESULT"] as List?;
       return {
         "success": true,
         "message": msg,
-        "data": response.data["RESULT"]?[0],
+        "data": resultList?.isNotEmpty == true ? resultList![0] : null,
       };
     } catch (e) {
       dev.log("ERROR (closeServiceRequest): $e");
-      // FIX-11/12 (Bugs 11-12): was "Error: $e"
       return {
         "success": false,
         "message": ErrorHandler.friendlyMessage(e),
@@ -574,274 +642,35 @@ class HomeService {
     required int taskId,
     required int departmentId,
     required int enterpriseId,
+    int? orderId,
   }) async {
     try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {
-          "success": false,
-          "message": "User not logged in",
-          "updatedTask": null,
-        };
-      }
-
-      final payload = {
-        "user_id":       userId,
-        "task_id":       taskId,
-        "department_id": departmentId,
-        "enterprise_id": enterpriseId,
-        "stage":         AppConfig.stage,
-      };
-
-      final response = await _dio.post(ApiConstants.acceptTask, data: payload);
-
-      if (response.statusCode != 200) {
-        return {
-          "success": false,
-          "message": "Server error",
-          "updatedTask": null,
-        };
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {
-          "success": false,
-          "message": "Invalid response",
-          "updatedTask": null,
-        };
-      }
-
-      final flag = statusList[0]["status"]?.toString().trim().toUpperCase();
-      final msg  = statusList[0]["message"]?.toString();
-
-      if (flag != "S" && flag != "SUCCESS" && flag != "1" && flag != "200" && flag != "TRUE") {
-        return {
-          "success": false,
-          "message": (msg != null && msg.isNotEmpty) ? msg : "Failed to accept task",
-          "updatedTask": null,
-        };
-      }
+      final res = await TaskService().updateServiceRequestStatus(
+        serviceRequestId: taskId,
+        status:           'IN_PROGRESS',
+      );
 
       return {
-        "success": true,
-        "message": msg,
-        "updatedTask": response.data["RESULT"]?[0],
+        "success":     res['success'] == true,
+        "message":     res['message'] ?? 'Task accepted',
+        "updatedTask": res['status_data'],
       };
     } catch (e) {
       dev.log("ERROR (acceptTask): $e");
-      // FIX-11/12 (Bugs 11-12): was "Error: $e"
       return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
+        "success":     false,
+        "message":     ErrorHandler.friendlyMessage(e),
         "updatedTask": null,
       };
     }
   }
 
+
   Future<Map<String, dynamic>> getTaskDetails(task) async {
     return {"success": true, "task": task};
   }
 
-  // ── GET ESCALATION BADGE COUNT ────────────────────────────────────────────
 
-  Future<int> getEscalationBadgeCount() async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) return 0;
-
-      final payload = {"user_id": userId, "stage": AppConfig.stage};
-
-      dev.log("📤 Fetching escalation badge count...");
-      final response = await _dio.post(
-        ApiConstants.escalationBadgeCount,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) return 0;
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null ||
-          statusList.isEmpty ||
-          statusList[0]["status"] != "S") {
-        return 0;
-      }
-
-      final resultList = response.data["RESULT"] as List?;
-      if (resultList == null || resultList.isEmpty) return 0;
-
-      return (resultList[0]["badge_count"] ?? 0) as int;
-    } catch (e) {
-      dev.log("ERROR (getEscalationBadgeCount): $e");
-      return 0;
-    }
-  }
-
-  // ── GET ESCALATED TASKS ───────────────────────────────────────────────────
-
-  Future<Map<String, dynamic>> getEscalatedTasks({int? departmentId}) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {"success": false, "message": "User not logged in", "tasks": []};
-      }
-
-      final payload = {
-        "user_id": userId,
-        if (departmentId != null) "department_id": departmentId,
-        "stage": AppConfig.stage,
-      };
-
-      dev.log("📤 Fetching escalated tasks...");
-      final response = await _dio.post(
-        ApiConstants.escalatedTasks,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error", "tasks": []};
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response", "tasks": []};
-      }
-
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
-
-      if (flag != "S") {
-        return {"success": false, "message": msg ?? "Failed", "tasks": []};
-      }
-
-      final resultList = response.data["RESULT"] as List? ?? [];
-      return {
-        "success": true,
-        "message": msg,
-        "tasks": _mapEscalatedTasks(resultList),
-      };
-    } catch (e) {
-      dev.log("ERROR (getEscalatedTasks): $e");
-      // FIX-10/11/12 (Bugs 10-12): friendly message instead of raw "Network error"
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-        "tasks": [],
-      };
-    }
-  }
-
-  static List<Map<String, dynamic>> _mapEscalatedTasks(List raw) {
-    return raw.map<Map<String, dynamic>>((t) {
-      final m = Map<String, dynamic>.from(t);
-      return {
-        "service_request_id":    m["service_request_id"],
-        "room":                  (m["room_number"] ?? "-").toString(),
-        "room_id":               m["room_id"],
-        "guest":                 m["guest_name"] ?? "Unknown Guest",
-        "guest_phone":           m["guest_phone"] ?? "-",
-        "department_id":         m["department_id"],
-        "department_name":       m["department_name"] ?? "-",
-        "enterprise_id":         m["enterprise_id"],
-        "title":                 m["name"] ?? m["question"] ?? "Service Request",
-        "question":              m["question"] ?? "",
-        "status":                m["status"] ?? "Open",
-        "closed":                m["closed"] ?? 0,
-        "is_escalated":          m["is_escalated"] ?? 1,
-        "alert_pending":         m["alert_pending"] ?? 0,
-        "escalation_id":         m["escalation_id"],
-        "escalation_level":      m["escalation_level"],
-        "escalated_at":          m["escalated_at"],
-        "original_assignee":     m["original_assignee_name"] ?? "-",
-        "escalated_to":          m["escalated_to_name"] ?? "-",
-        "overdue_minutes":       m["overdue_minutes"] ?? 0,
-        "escalation_deadline":   m["escalation_deadline"],
-        "assigned_to":           m["assigned_to"],
-        "assigned_to_name":      m["assigned_to_name"] ?? "-",
-        "assigned_to_phone":     m["assigned_to_phone"] ?? "-",
-        "assigned_by":           m["assigned_by"],
-        "assigned_by_name":      m["assigned_by_name"] ?? "-",
-        "escalation_time_minutes": m["escalation_time_minutes"],
-        "accepted_at":           m["accepted_at"],
-        "created_at":            m["created_at"],
-        "updated_at":            m["updated_at"],
-        "note":                  m["note_text"],
-        "task_flag":             "Escalated",
-        "raw":                   m,
-      };
-    }).toList();
-  }
-
-  // ── GET ESCALATION HISTORY FOR TASK ──────────────────────────────────────
-
-  Future<Map<String, dynamic>> getEscalationHistoryForTask({
-    required int serviceRequestId,
-  }) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {
-          "success": false,
-          "message": "User not logged in",
-          "history": [],
-        };
-      }
-
-      final payload = {
-        "user_id":            userId,
-        "service_request_id": serviceRequestId,
-        "stage":              AppConfig.stage,
-      };
-
-      dev.log("📤 Fetching escalation history — sr:$serviceRequestId");
-      final response = await _dio.post(
-        ApiConstants.escalationHistoryForTask,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error", "history": []};
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {
-          "success": false,
-          "message": "Invalid response",
-          "history": [],
-        };
-      }
-
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
-
-      if (flag != "S") {
-        return {
-          "success": false,
-          "message": msg ?? "Failed",
-          "history": [],
-        };
-      }
-
-      final resultList = response.data["RESULT"] as List? ?? [];
-      dev.log("📥 Escalation history rows: ${resultList.length}");
-
-      return {
-        "success": true,
-        "message": msg,
-        "history": resultList
-            .map((r) => Map<String, dynamic>.from(r))
-            .toList(),
-      };
-    } catch (e) {
-      dev.log("ERROR (getEscalationHistoryForTask): $e");
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-        "history": [],
-      };
-    }
-  }
 
   // ── GET TEAM PERFORMANCE ──────────────────────────────────────────────────
 
@@ -912,61 +741,7 @@ class HomeService {
     }
   }
 
-  // ── GET ESCALATION REPORT ─────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> getEscalationReport({
-    int? departmentId,
-    required DateTime fromDate,
-    required DateTime toDate,
-  }) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {"success": false, "message": "User not logged in"};
-      }
-
-      final payload = {
-        "user_id":   userId,
-        if (departmentId != null) "department_id": departmentId,
-        "from_date": "${fromDate.year}-${fromDate.month.toString().padLeft(2,'0')}-${fromDate.day.toString().padLeft(2,'0')}",
-        "to_date":   "${toDate.year}-${toDate.month.toString().padLeft(2,'0')}-${toDate.day.toString().padLeft(2,'0')}",
-        "stage":     AppConfig.stage,
-      };
-
-      dev.log("📤 Fetching escalation report...");
-      final response = await _dio.post(
-        ApiConstants.escalationReport,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error"};
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response"};
-      }
-
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
-
-      if (flag != "S") {
-        return {"success": false, "message": msg ?? "Failed"};
-      }
-
-      return {
-        "success":   true,
-        "message":   msg,
-        "summary":   response.data["RESULT"]  as List? ?? [],
-        "byDept":    response.data["RESULT2"] as List? ?? [],
-        "tasks":     response.data["RESULT3"] as List? ?? [],
-      };
-    } catch (e) {
-      dev.log("ERROR (getEscalationReport): $e");
-      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
-    }
-  }
 
   // ── GET READY ORDERS ──────────────────────────────────────────────────────
 

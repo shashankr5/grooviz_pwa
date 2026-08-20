@@ -96,8 +96,10 @@ class EntityResolver {
       for (final t in tasks) {
         final raw  = t['raw'] as Map? ?? {};
         final srId = t['service_request_id'] ?? raw['service_request_id'] ?? raw['task_id'];
+        final escId = t['escalation_instance_id'] ?? raw['escalation_instance_id'];
 
-        if (srId != null && int.tryParse(srId.toString()) == taskId) {
+        if ((srId != null && int.tryParse(srId.toString()) == taskId) ||
+            (escId != null && int.tryParse(escId.toString()) == taskId)) {
           return Map<String, dynamic>.from(t);
         }
       }

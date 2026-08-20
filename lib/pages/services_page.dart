@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/service_request.dart';
 import '../services/task_service.dart';
+import '../services/profile_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import '../theme/app_spacing.dart';
@@ -83,11 +84,19 @@ class ServicesPageState extends State<ServicesPage> {
   }
 
   Future<void> _loadServices() async {
+    final bool isRecoveringFromError = _errorMessage != null;
+
     if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
+
+    if (isRecoveringFromError) {
+      try {
+        await ProfileService().getProfile();
+      } catch (_) {}
+    }
 
     final result = await _service.getAllServices();
 

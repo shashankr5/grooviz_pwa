@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'dart:convert';
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 
@@ -44,7 +45,7 @@ class ProfileService {
 
       final payload = {
         "user_id": userId,
-        "stage": "dev",
+        "stage": AppConfig.stage,
       };
 
       dev.log("📤 Calling profile API: ${ApiConstants.profile}");

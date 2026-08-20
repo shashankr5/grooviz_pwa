@@ -208,6 +208,7 @@ Future<void> _showNotification(RemoteMessage message) async {
       TaskAlertService.notifyNewDelivery();
       break;
 
+    case 'NEW_SERVICE_REQUEST':
     case 'NEW_SERVICE_TASK':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
@@ -218,6 +219,15 @@ Future<void> _showNotification(RemoteMessage message) async {
       break;
 
     case 'SERVICE_STATUS_UPDATE':
+      final action = (data['action'] ?? '').toString();
+      if (action == 'Reject' || action == 'Cancel') {
+        await TaskAlertService.stopAll();
+        await OrderAlertService.stop();
+      } else {
+        TaskAlertService.notifyNewTask();
+      }
+      break;
+
     case 'SERVICE_GUEST_UPDATE':
       TaskAlertService.notifyNewTask();
       break;
@@ -263,6 +273,19 @@ Future<void> _showNotification(RemoteMessage message) async {
       await TaskAlertService.ensureEscalationRunning();
       final badgeCount = int.tryParse(data['badge_count']?.toString() ?? '0') ?? 0;
       TaskAlertService.resetEscalationCount(badgeCount);
+      break;
+
+    case 'ESCALATION_STARTED':
+    case 'ESCALATION_STAGE_1':
+    case 'ESCALATION_PULSE':
+      await TaskAlertService.ensureEscalationRunning();
+      TaskAlertService.notifyNewTask();
+      break;
+
+
+    case 'PENDING_ACCEPTANCE':
+      await TaskAlertService.ensureServiceRunning();
+      TaskAlertService.notifyNewTask();
       break;
 
     case 'ACCEPTED':

@@ -206,22 +206,22 @@ class DirectRequestCard extends StatelessWidget {
                   ),
 
                   // Assignment status row
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      const Icon(Icons.assignment_ind_outlined,
-                          size: 16, color: AppColors.textSecondary),
-                      const SizedBox(width: 6),
-                      Text(
-                        request.assignedToName != null && request.assignedToName!.isNotEmpty
-                            ? 'Assigned: ${request.assignedToName}'
-                            : 'Assigned: -',
-                        style: AppTypography.bodySecondary.copyWith(
-                          color: AppColors.textSecondary,
+                  if (request.assignedToName != null && request.assignedToName!.isNotEmpty && request.assignedToName != '-') ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Icon(Icons.assignment_ind_outlined,
+                            size: 16, color: AppColors.textSecondary),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Assigned: ${request.assignedToName}',
+                          style: AppTypography.bodySecondary.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),

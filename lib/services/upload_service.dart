@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 
 class UploadService {
   final Dio _dio = Dio();
@@ -34,7 +35,7 @@ class UploadService {
   }) async {
     try {
       final Map<String, dynamic> payload = {
-        "stage": "dev",
+        "stage": AppConfig.stage,
         "ENTERPRISE_ID": enterpriseId,
         "CONTENT_TYPE": contentType,
         "FILE_B64": base64,

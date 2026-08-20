@@ -2,6 +2,7 @@ import 'dart:developer' as dev;
 import 'package:dio/dio.dart';
 
 import '../constants/api_constants.dart';
+import '../constants/app_config.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 import '../services/order_alert_service.dart';
@@ -55,7 +56,7 @@ class LogoutService {
       final payload = {
         "user_id": userId,
         "installation_id": info["installation_id"],
-        "stage": "dev"
+        "stage": AppConfig.stage
       };
 
       final response = await _dio.post(ApiConstants.logout, data: payload);

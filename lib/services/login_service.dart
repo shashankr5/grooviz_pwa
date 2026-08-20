@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
+import '../constants/app_config.dart';
 import 'device_info.dart';
 import 'fcm_service.dart';
 import '../utils/user_session_helper.dart';
@@ -96,7 +97,7 @@ class LoginService {
         'device_model': deviceInfo['device_model'],
         'os_version': deviceInfo['os_version'],
         'app_version': deviceInfo['app_version'],
-        'stage': 'dev',
+        'stage': AppConfig.stage,
       };
 
       dev.log('📤 Login payload: ${jsonEncode(payload)}');
@@ -211,7 +212,7 @@ class LoginService {
         },
         body: jsonEncode({
           "mobile_no": mobile,   // ✅ FIXED
-          "stage": "dev",        // ✅ REQUIRED
+          "stage": AppConfig.stage,        // ✅ REQUIRED
         }),
       );
 
@@ -243,7 +244,7 @@ class LoginService {
         'mobile_no': mobile,
         'otp': otp,
         'action': 'VERIFY_OTP',
-        'stage': 'dev',
+        'stage': AppConfig.stage,
       };
 
       dev.log('📤 Verify OTP Payload: $payload');
@@ -265,7 +266,7 @@ class LoginService {
         'mobile_no': mobile,
         'new_pass': newPassword,
         'action': 'RESET_PASSWORD',
-        'stage': 'dev',
+        'stage': AppConfig.stage,
       };
 
       dev.log('📤 Reset Password Payload: $payload');

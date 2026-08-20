@@ -468,20 +468,21 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                   const SizedBox(height: 8),
 
                   // Row 4: Assigned Staff Meta
-                  Row(
-                    children: [
-                      const Icon(Icons.badge_outlined,
-                          color: AppColors.textSecondary, size: 14),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Assigned: $assignedTo',
-                        style: AppTypography.bodySecondary.copyWith(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
+                  if (isAlreadyAssigned)
+                    Row(
+                      children: [
+                        const Icon(Icons.badge_outlined,
+                            color: AppColors.textSecondary, size: 14),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Assigned: $assignedTo',
+                          style: AppTypography.bodySecondary.copyWith(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
 
                   // Row 5: Quick Action Buttons — ONLY shown when NOT assigned to anyone
                   if (!isAlreadyAssigned &&
