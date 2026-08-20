@@ -15,7 +15,6 @@
 
 import 'dart:async';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'food_order_service.dart';
 import 'home_service.dart';
 import 'order_alert_service.dart';
@@ -26,19 +25,23 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
   static final AlertReloadCoordinator instance = AlertReloadCoordinator._();
 
   static void init() {
-    instance._start();
-    WidgetsBinding.instance.addObserver(instance);
+    instance._init();
   }
 
   StreamSubscription<void>? _orderSub;
   StreamSubscription<void>? _taskSub;
   StreamSubscription<void>? _deliverySub;
 
-  Timer? _pollTimer;
-
   bool _orderInFlight    = false;
   bool _taskInFlight     = false;
   bool _deliveryInFlight = false;
+
+  // Collapse notification bursts into at most one follow-up request per
+  // domain, instead of issuing a request per FCM message.
+  bool _orderReloadQueued = false;
+  bool _taskReloadQueued = false;
+  bool _deliveryReloadQueued = false;
+  bool _started = false;
 
   // FIX-9: Stream for foreground service start failures.
   // UI can listen and show a persistent warning banner.
@@ -49,15 +52,18 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
   final FoodOrderService _foodOrderService = FoodOrderService();
   final HomeService      _homeService      = HomeService();
 
+  void _init() {
+    if (_started) return;
+    _start();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   void _start() {
+    _started = true;
+
     _orderSub    = OrderAlertService.onNewOrder.listen((_) => reloadFood());
     _taskSub     = TaskAlertService.onNewTask.listen((_) => reloadTasks());
     _deliverySub = TaskAlertService.onNewDelivery.listen((_) => reloadDelivery());
-
-    _pollTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _safetyPoll(),
-    );
 
     print('AlertReloadCoordinator: started');
   }
@@ -76,22 +82,17 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       if (!_didPause) return; // shade pull — skip
       _didPause = false;
-      print('AlertReloadCoordinator: app resumed — polling');
-      _safetyPoll();
+      print('AlertReloadCoordinator: app resumed; targeted FCM reloads remain active');
     }
-  }
-
-  Future<void> _safetyPoll() async {
-    final running = await FlutterForegroundTask.isRunningService;
-    if (!running) return;
-    print('AlertReloadCoordinator: safety poll running');
-    await Future.wait([reloadFood(), reloadTasks(), reloadDelivery()]);
   }
 
   // ── Food orders ─────────────────────────────────────────────────────────
 
   Future<void> reloadFood() async {
-    if (_orderInFlight) return;
+    if (_orderInFlight) {
+      _orderReloadQueued = true;
+      return;
+    }
     _orderInFlight = true;
     try {
       final result = await _foodOrderService.getFoodOrders();
@@ -119,13 +120,20 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       print('AlertReloadCoordinator.reloadFood error: $e');
     } finally {
       _orderInFlight = false;
+      if (_orderReloadQueued) {
+        _orderReloadQueued = false;
+        unawaited(reloadFood());
+      }
     }
   }
 
   // ── Service tasks ───────────────────────────────────────────────────────
 
   Future<void> reloadTasks() async {
-    if (_taskInFlight) return;
+    if (_taskInFlight) {
+      _taskReloadQueued = true;
+      return;
+    }
     _taskInFlight = true;
     try {
       final result = await _homeService.getTasks();
@@ -148,13 +156,20 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       print('AlertReloadCoordinator.reloadTasks error: $e');
     } finally {
       _taskInFlight = false;
+      if (_taskReloadQueued) {
+        _taskReloadQueued = false;
+        unawaited(reloadTasks());
+      }
     }
   }
 
   // ── Delivery (Ready orders) ─────────────────────────────────────────────
 
   Future<void> reloadDelivery() async {
-    if (_deliveryInFlight) return;
+    if (_deliveryInFlight) {
+      _deliveryReloadQueued = true;
+      return;
+    }
     _deliveryInFlight = true;
     try {
       final result = await _homeService.getReadyOrdersForRoomService();
@@ -177,6 +192,10 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       print('AlertReloadCoordinator.reloadDelivery error: $e');
     } finally {
       _deliveryInFlight = false;
+      if (_deliveryReloadQueued) {
+        _deliveryReloadQueued = false;
+        unawaited(reloadDelivery());
+      }
     }
   }
 
@@ -202,7 +221,6 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
     _orderSub?.cancel();
     _taskSub?.cancel();
     _deliverySub?.cancel();
-    _pollTimer?.cancel();
     _serviceFailController.close();
   }
 }

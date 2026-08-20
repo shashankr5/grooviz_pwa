@@ -7,6 +7,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import '../utils/user_session_helper.dart';
 import 'unified_alert_foreground_task.dart';
 import 'notification_constants.dart';
 import 'notification_message_builder.dart';
@@ -65,29 +66,76 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   _initForegroundTask();
 
+  // Guard: Ignore FCM messages if no active user session exists
+  final int? userId = await UserSessionHelper.getUserId();
+  if (userId == null || userId == 0) {
+    print('Background FCM | No active user session. Ignoring.');
+    return;
+  }
+
+  // Load user departments to filter out irrelevant notifications
+  final depts = await UserSessionHelper.getDepartments();
+  final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
+  final isRoomService = normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice"));
+  final isFoodBeverage = normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb"));
+  final isRoomServiceOrFnB = isRoomService || isFoodBeverage;
+
   final data      = message.data;
   final type      = (data['type'] ?? '').toString();
   final stopAlert = data['stop_alert'] == 'true';
-  print('Background FCM | type=$type | stop_alert=$stopAlert');
+  print('Background FCM | type=$type | stop_alert=$stopAlert | depts=$normalized');
 
+  // Filter out notifications based on department authorizations
   switch (type) {
     case 'NEW_FOOD_ORDER':
+      if (!isRoomServiceOrFnB) {
+        print('Background FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
+        return;
+      }
+      await _startServiceIfNeeded();
+      break;
+
     case 'NEW_SERVICE_TASK':
+    case 'TASK_REASSIGNED':
+    case 'ESCALATION_ALERT':
+      await _startServiceIfNeeded();
+      break;
+
     case 'NEW_DELIVERY_TASK':
     case 'ORDER_READY':
     case 'FOOD_ORDER_READY':
     case 'DELIVERY_READY':
     case 'DELIVERY_NOTIFICATION':
+      if (!isRoomService) {
+        print('Background FCM | Ignoring delivery alerts for non-Room Service user.');
+        return;
+      }
+      await _startServiceIfNeeded();
+      break;
+
     case 'PULSE':
-    case 'ESCALATION_ALERT':
-    case 'TASK_REASSIGNED':
+      final alertType = (data['alert_type'] ?? 'service').toString();
+      if (alertType == 'food' && !isRoomServiceOrFnB) return;
+      if (alertType == 'delivery' && !isRoomService) return;
       await _startServiceIfNeeded();
       break;
 
     case 'ORDER_ACCEPTED':
     case 'ORDER_CANCELLED':
-    case 'SERVICE_TASK_ACCEPTED':
+      if (!isRoomServiceOrFnB) return;
+      if (stopAlert) {
+        await _stopServiceIfRunning();
+      }
+      break;
+
     case 'DELIVERY_ACCEPTED':
+      if (!isRoomService) return;
+      if (stopAlert) {
+        await _stopServiceIfRunning();
+      }
+      break;
+
+    case 'SERVICE_TASK_ACCEPTED':
     case 'ACCEPTED':
       if (stopAlert) {
         await _stopServiceIfRunning();
@@ -95,13 +143,19 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       break;
 
     case 'ORDER_DELIVERED':
+      if (!isRoomServiceOrFnB) return;
+      await _stopServiceIfRunning();
+      break;
+
     case 'DELIVERY_DELIVERED':
+      if (!isRoomService) return;
       await _stopServiceIfRunning();
       break;
 
     case 'ORDER_STATUS_CHANGED':
       final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
       if (orderStatus == 'READY') {
+        if (!isRoomService) return;
         await _startServiceIfNeeded();
       }
       break;

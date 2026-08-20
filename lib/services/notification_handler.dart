@@ -7,6 +7,7 @@ import '../models/deep_link_payload.dart';
 import '../services/notification_navigation_coordinator.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
+import '../utils/user_session_helper.dart';
 import 'notification_constants.dart';
 import 'notification_message_builder.dart';
 
@@ -172,29 +173,51 @@ Future<void> _showNotification(RemoteMessage message) async {
   final data = message.data;
   final type = (data['type'] ?? '').toString();
 
-  print('🎯 Foreground FCM | type=$type');
+  // Guard: Ignore FCM messages if no active user session exists
+  final int? userId = await UserSessionHelper.getUserId();
+  if (userId == null || userId == 0) {
+    print('Foreground FCM | No active user session. Ignoring.');
+    return;
+  }
+
+  // Load user departments to filter out irrelevant notifications
+  final depts = await UserSessionHelper.getDepartments();
+  final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
+  final isRoomService = normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice"));
+  final isFoodBeverage = normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb"));
+  final isRoomServiceOrFnB = isRoomService || isFoodBeverage;
+
+  print('🎯 Foreground FCM | type=$type | depts=$normalized');
 
   switch (type) {
     case 'NEW_FOOD_ORDER':
+      if (!isRoomServiceOrFnB) {
+        print('Foreground FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
+        return;
+      }
       await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
       break;
 
     case 'ORDER_ACCEPTED':
+      if (!isRoomServiceOrFnB) return;
       OrderAlertService.notifyNewOrder();
       break;
 
     case 'ORDER_CANCELLED':
+      if (!isRoomServiceOrFnB) return;
       OrderAlertService.notifyNewOrder();
       break;
 
     case 'ORDER_DELIVERED':
+      if (!isRoomServiceOrFnB) return;
       await OrderAlertService.stop();
       break;
 
     case 'ORDER_STATUS_CHANGED':
       final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
       if (orderStatus == 'READY') {
+        if (!isRoomService) return;
         await TaskAlertService.ensureDeliveryRunning();
         TaskAlertService.notifyNewDelivery();
       }
@@ -204,6 +227,10 @@ Future<void> _showNotification(RemoteMessage message) async {
     case 'FOOD_ORDER_READY':
     case 'DELIVERY_READY':
     case 'DELIVERY_NOTIFICATION':
+      if (!isRoomService) {
+        print('Foreground FCM | Ignoring delivery alerts for non-Room Service user.');
+        return;
+      }
       await TaskAlertService.ensureDeliveryRunning();
       TaskAlertService.notifyNewDelivery();
       break;
@@ -238,15 +265,21 @@ Future<void> _showNotification(RemoteMessage message) async {
       break;
 
     case 'NEW_DELIVERY_TASK':
+      if (!isRoomService) {
+        print('Foreground FCM | Ignoring delivery alerts for non-Room Service user.');
+        return;
+      }
       await TaskAlertService.ensureDeliveryRunning();
       TaskAlertService.notifyNewDelivery();
       break;
 
     case 'DELIVERY_ACCEPTED':
+      if (!isRoomService) return;
       TaskAlertService.notifyNewDelivery();
       break;
 
     case 'DELIVERY_DELIVERED':
+      if (!isRoomService) return;
       TaskAlertService.notifyNewDelivery();
       break;
 
@@ -254,10 +287,12 @@ Future<void> _showNotification(RemoteMessage message) async {
       final alertType = (data['alert_type'] ?? 'service').toString();
       switch (alertType) {
         case 'food':
+          if (!isRoomServiceOrFnB) return;
           await OrderAlertService.ensureRunning();
           OrderAlertService.notifyNewOrder();
           break;
         case 'delivery':
+          if (!isRoomService) return;
           await TaskAlertService.ensureDeliveryRunning();
           TaskAlertService.notifyNewDelivery();
           break;
@@ -279,9 +314,10 @@ Future<void> _showNotification(RemoteMessage message) async {
     case 'ESCALATION_STAGE_1':
     case 'ESCALATION_PULSE':
       await TaskAlertService.ensureEscalationRunning();
-      TaskAlertService.notifyNewTask();
+      // Escalation pulses are reminders, not service-task mutations. Emitting
+      // onNewTask here made every pulse reload get_all_services_mobile twice:
+      // once in HomePage and once in AlertReloadCoordinator.
       break;
-
 
     case 'PENDING_ACCEPTANCE':
       await TaskAlertService.ensureServiceRunning();
@@ -299,15 +335,20 @@ Future<void> _showNotification(RemoteMessage message) async {
 
   final msg = NotificationMessageBuilder.build(data);
 
-  await localNotifications.show(
-    msg.notifId,
-    msg.title,
-    msg.body,
-    _buildDetails(msg),
-    payload: jsonEncode(data),
-  );
-
-  await updateGroupSummary();
+  try {
+    await localNotifications.show(
+      msg.notifId,
+      msg.title,
+      msg.body,
+      _buildDetails(msg),
+      payload: jsonEncode(data),
+    );
+    await updateGroupSummary();
+  } catch (e) {
+    // A bad native notification resource must not escape the FCM callback:
+    // it can delay acknowledgement and cause the same pulse to be redelivered.
+    print('Foreground notification display error: $e');
+  }
 }
 
 Future<void> updateGroupSummary() async {

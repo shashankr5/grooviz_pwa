@@ -37,6 +37,54 @@ class AlertSoundKey {
   static const String loopKey = 'active_alert_loop';
 }
 
+/// Serialises operations on the one shared Android foreground-alert service.
+/// Without this gate, rapid FCM pulses can restart the service while its
+/// previous task handler is still configuring just_audio.
+class AlertServiceRestartGate {
+  AlertServiceRestartGate._();
+
+  static Future<bool>? _operation;
+  static String? _lastSound;
+  static DateTime? _lastStartedAt;
+  static const _sameSoundCooldown = Duration(seconds: 4);
+
+  static Future<bool> run({
+    required String soundName,
+    required Future<bool> Function() operation,
+  }) {
+    final currentOperation = _operation;
+    if (currentOperation != null) return currentOperation;
+
+    final lastStartedAt = _lastStartedAt;
+    if (_lastSound == soundName &&
+        lastStartedAt != null &&
+        DateTime.now().difference(lastStartedAt) < _sameSoundCooldown) {
+      print('AlertServiceRestartGate: skipped duplicate $soundName pulse');
+      return Future.value(true);
+    }
+
+    final nextOperation = _run(soundName, operation);
+    _operation = nextOperation;
+    return nextOperation;
+  }
+
+  static Future<bool> _run(
+    String soundName,
+    Future<bool> Function() operation,
+  ) async {
+    try {
+      final started = await operation();
+      if (started) {
+        _lastSound = soundName;
+        _lastStartedAt = DateTime.now();
+      }
+      return started;
+    } finally {
+      _operation = null;
+    }
+  }
+}
+
 // ── Foreground task handler ────────────────────────────────────────────────
 
 class UnifiedAlertTaskHandler extends TaskHandler {

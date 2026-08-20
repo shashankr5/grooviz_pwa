@@ -65,28 +65,33 @@ class OrderAlertService {
     required String notificationTitle,
     required String notificationText,
   }) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(AlertSoundKey.prefKey, soundName);
-      await prefs.setString(AlertSoundKey.loopKey, 'false');
+    return AlertServiceRestartGate.run(
+      soundName: soundName,
+      operation: () async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(AlertSoundKey.prefKey, soundName);
+          await prefs.setString(AlertSoundKey.loopKey, 'false');
 
-      final isRunning = await FlutterForegroundTask.isRunningService;
-      if (isRunning) {
-        await FlutterForegroundTask.restartService();
-        print('OrderAlertService: foreground service restarted (sound=$soundName)');
-      } else {
-        await FlutterForegroundTask.startService(
-          notificationTitle: notificationTitle,
-          notificationText:  notificationText,
-          callback:          unifiedAlertStartCallback,
-        );
-        print('OrderAlertService: foreground service started (sound=$soundName)');
-      }
-      return true;
-    } catch (e) {
-      print('OrderAlertService._ensureRunning error: $e');
-      return false;
-    }
+          final isRunning = await FlutterForegroundTask.isRunningService;
+          if (isRunning) {
+            await FlutterForegroundTask.restartService();
+            print('OrderAlertService: foreground service restarted (sound=$soundName)');
+          } else {
+            await FlutterForegroundTask.startService(
+              notificationTitle: notificationTitle,
+              notificationText:  notificationText,
+              callback:          unifiedAlertStartCallback,
+            );
+            print('OrderAlertService: foreground service started (sound=$soundName)');
+          }
+          return true;
+        } catch (e) {
+          print('OrderAlertService._ensureRunning error: $e');
+          return false;
+        }
+      },
+    );
   }
 
   static Future<void> _reevaluate() async {
@@ -116,4 +121,4 @@ class OrderAlertService {
       print('OrderAlertService._stopService error: $e');
     }
   }
-}
+}

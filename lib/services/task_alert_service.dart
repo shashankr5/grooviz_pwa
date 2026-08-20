@@ -23,6 +23,9 @@ class TaskAlertService {
   static int get totalPending =>
       _pendingServiceCount + _pendingDeliveryCount;
 
+  static int get pendingServiceCount => _pendingServiceCount;
+  static int get pendingDeliveryCount => _pendingDeliveryCount;
+
   static Future<void> reevaluate() => _reevaluate();
 
   // ── Streams ─────────────────────────────────────────────────────────────
@@ -144,30 +147,44 @@ class TaskAlertService {
     required String notificationTitle,
     required String notificationText,
   }) async {
-    try {
-      // Write sound preference BEFORE starting service so the handler
-      // isolate can read it synchronously in onStart().
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(AlertSoundKey.prefKey, soundName);
-      await prefs.setString(AlertSoundKey.loopKey, shouldLoop ? 'true' : 'false');
+    return AlertServiceRestartGate.run(
+      soundName: soundName,
+      operation: () async {
+        try {
+          // Write sound preference BEFORE starting service so the handler
+          // isolate can read it synchronously in onStart().
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(AlertSoundKey.prefKey, soundName);
+          await prefs.setString(
+            AlertSoundKey.loopKey,
+            shouldLoop ? 'true' : 'false',
+          );
 
-      final isRunning = await FlutterForegroundTask.isRunningService;
-      if (isRunning) {
-        await FlutterForegroundTask.restartService();
-        print('TaskAlertService: foreground service restarted (sound=$soundName, loop=$shouldLoop)');
-      } else {
-        await FlutterForegroundTask.startService(
-          notificationTitle: notificationTitle,
-          notificationText:  notificationText,
-          callback:          unifiedAlertStartCallback,
-        );
-        print('TaskAlertService: foreground service started (sound=$soundName, loop=$shouldLoop)');
-      }
-      return true;
-    } catch (e) {
-      print('TaskAlertService._ensureRunning error: $e');
-      return false;
-    }
+          final isRunning = await FlutterForegroundTask.isRunningService;
+          if (isRunning) {
+            await FlutterForegroundTask.restartService();
+            print(
+              'TaskAlertService: foreground service restarted '
+              '(sound=$soundName, loop=$shouldLoop)',
+            );
+          } else {
+            await FlutterForegroundTask.startService(
+              notificationTitle: notificationTitle,
+              notificationText: notificationText,
+              callback: unifiedAlertStartCallback,
+            );
+            print(
+              'TaskAlertService: foreground service started '
+              '(sound=$soundName, loop=$shouldLoop)',
+            );
+          }
+          return true;
+        } catch (e) {
+          print('TaskAlertService._ensureRunning error: $e');
+          return false;
+        }
+      },
+    );
   }
 
   static Future<void> _reevaluate() async {
