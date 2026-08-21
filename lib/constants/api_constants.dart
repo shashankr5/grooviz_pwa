@@ -21,10 +21,11 @@ class ApiConstants {
   // Output: STATUS[0] + RESULT[]  (one row per department the user belongs to)
   static const String userDeptDetails = "$baseUrl/ScreenSync_get_user_dept_details_mobile";
 
-  // ── Home Page ─────────────────────────────────────────────────
+  // ── Home Page & Service Requests ──────────────────────────────
   static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile";
-  static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_order_mobile";
   static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile";
+  static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_request_mobile1";
+  static const String acceptServiceRequest = "$baseUrl/ScreenSync_accept_service_request_mobile1";
   static const String acceptServiceOrder = "$baseUrl/ScreenSync_accept_service_order_mobile";
   static const String updateServiceRequestStatus = "$baseUrl/ScreenSync_update_service_request_status_mobile";
 
@@ -32,7 +33,7 @@ class ApiConstants {
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";
   static const String addServiceNote = "$baseUrl/ScreenSync_add_service_note_mobile";
   static const String closeService = "$baseUrl/ScreenSync_close_service_mobile";
-  static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile";
+  static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile1";
   static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
 
   // ── Task Summary ──────────────────────────────────────────────

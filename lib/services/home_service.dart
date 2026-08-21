@@ -515,6 +515,19 @@ class HomeService {
     }
   }
 
+  // ── ACCEPT SERVICE REQUEST ────────────────────────────────────────────────
+  Future<Map<String, dynamic>> acceptTask({
+    required int taskId,
+    int? departmentId,
+    int? enterpriseId,
+    int? orderId,
+  }) async {
+    return await TaskService().acceptServiceRequest(
+      serviceRequestId: taskId,
+      enterpriseId:     enterpriseId,
+    );
+  }
+
 
 
 
@@ -647,36 +660,6 @@ class HomeService {
       };
     }
   }
-
-  // ── ACCEPT TASK ───────────────────────────────────────────────────────────
-
-  Future<Map<String, dynamic>> acceptTask({
-    required int taskId,
-    required int departmentId,
-    required int enterpriseId,
-    int? orderId,
-  }) async {
-    try {
-      final res = await TaskService().updateServiceRequestStatus(
-        serviceRequestId: taskId,
-        status:           'IN_PROGRESS',
-      );
-
-      return {
-        "success":     res['success'] == true,
-        "message":     res['message'] ?? 'Task accepted',
-        "updatedTask": res['status_data'],
-      };
-    } catch (e) {
-      dev.log("ERROR (acceptTask): $e");
-      return {
-        "success":     false,
-        "message":     ErrorHandler.friendlyMessage(e),
-        "updatedTask": null,
-      };
-    }
-  }
-
 
   Future<Map<String, dynamic>> getTaskDetails(task) async {
     return {"success": true, "task": task};

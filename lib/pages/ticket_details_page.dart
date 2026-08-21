@@ -323,11 +323,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final deptIdVal = _task['department_id'] ?? (_task['raw'] as Map?)?['department_id'];
     final deptId = deptIdVal is int ? deptIdVal : int.tryParse(deptIdVal?.toString() ?? '');
 
-    // Always use TaskService → ScreenSync_reassign_service_mobile
+    // Always use TaskService → ScreenSync_reassign_service_mobile1
     final result = await TaskService().reassignService(
-        taskId:       _serviceRequestId,
-        reassignTo:   userId,
-        departmentId: deptId,
+      taskId:     _serviceRequestId,
+      reassignTo: userId,
     );
 
     if (!mounted) return;
@@ -396,10 +395,17 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     setState(() => _isLoading = true);
 
-    final result = await TaskService().updateServiceRequestStatus(
-      serviceRequestId: _serviceRequestId,
-      status:           newStatus,
-    );
+    final Map<String, dynamic> result;
+    if (isAccept) {
+      result = await TaskService().acceptServiceRequest(
+        serviceRequestId: _serviceRequestId,
+      );
+    } else {
+      result = await TaskService().updateServiceRequestStatus(
+        serviceRequestId: _serviceRequestId,
+        status:           newStatus,
+      );
+    }
 
     if (!mounted) return;
     setState(() => _isLoading = false);

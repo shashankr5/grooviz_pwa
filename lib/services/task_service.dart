@@ -353,7 +353,71 @@ class TaskService {
   }
 
 
-  /// Reassign a service request to another staff member
+  /// Accept a service request using ScreenSync_accept_service_request_mobile1
+  Future<Map<String, dynamic>> acceptServiceRequest({
+    required int serviceRequestId,
+    int? enterpriseId,
+    String stage = AppConfig.stage,
+  }) async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      final entId = enterpriseId ?? await UserSessionHelper.getEnterpriseId();
+      if (userId == null || entId == null) {
+        return {'success': false, 'message': 'User session or enterprise not found'};
+      }
+
+      final payload = {
+        'stage':              stage,
+        'user_id':            userId,
+        'enterprise_id':      entId,
+        'service_request_id': serviceRequestId,
+      };
+
+      dev.log("📤 acceptServiceRequest: $payload");
+
+      final response = await _dio.post(
+        ApiConstants.acceptServiceRequest,
+        data: payload,
+      );
+
+      final data = response.data as Map? ?? const {};
+      final rawStatus = data['STATUS'];
+      final statusList = rawStatus is List
+          ? rawStatus
+          : (rawStatus is Map ? [rawStatus] : const <dynamic>[]);
+
+      if (statusList.isNotEmpty && statusList.first is Map) {
+        final statusMap = statusList.first as Map;
+        final flag = statusMap['status']?.toString().toUpperCase();
+        final message = statusMap['message']?.toString() ?? 'Service request accepted successfully';
+        if (flag == 'S') {
+          dev.log("✅ acceptServiceRequest success: $message");
+          return {
+            'success': true,
+            'message': message,
+          };
+        } else {
+          return {
+            'success': false,
+            'message': message,
+          };
+        }
+      }
+
+      return {
+        'success': false,
+        'message': 'Invalid server response from accept endpoint',
+      };
+    } catch (e) {
+      dev.log("❌ ERROR (acceptServiceRequest): $e");
+      return {
+        'success': false,
+        'message': ErrorHandler.friendlyMessage(e),
+      };
+    }
+  }
+
+  /// Reassign a service request to another staff member using ScreenSync_reassign_service_mobile1
   Future<Map<String, dynamic>> reassignService({
     required int taskId,
     required int reassignTo,
@@ -367,13 +431,10 @@ class TaskService {
       }
 
       final payload = {
+        'stage':              stage,
         'user_id':            userId,
-        'task_id':            taskId,
         'service_request_id': taskId,
         'reassign_to':        reassignTo,
-        'reassigned_to':      reassignTo,
-        if (departmentId != null && departmentId > 0) 'department_id': departmentId,
-        'stage':              stage,
       };
 
       dev.log("📤 reassignService: $payload");
@@ -384,44 +445,33 @@ class TaskService {
       );
 
       final data = response.data as Map? ?? const {};
-      // Deployments of this endpoint use either STATUS (OUT parameters) or
-      // the first RESULT row for the success flag. The current production
-      // endpoint returns the latter.
       final rawStatus = data['STATUS'];
       final statusList = rawStatus is List
           ? rawStatus
-          : rawStatus is Map
-              ? [rawStatus]
-              : const <dynamic>[];
-      final rawResult = data['RESULT'];
-      final resultList = rawResult is List
-          ? rawResult
-          : rawResult is Map
-              ? [rawResult]
-              : const <dynamic>[];
-      final statusFromStatus = statusList.isNotEmpty && statusList.first is Map
-          ? statusList.first as Map
-          : const <dynamic, dynamic>{};
-      final status = statusFromStatus.isNotEmpty
-          ? statusFromStatus
-          : resultList.isNotEmpty && resultList.first is Map
-              ? resultList.first as Map
-              : const <dynamic, dynamic>{};
+          : (rawStatus is Map ? [rawStatus] : const <dynamic>[]);
 
-      if (status['status']?.toString().toUpperCase() == 'S') {
-        return {
-          'success': true,
-          'message': status['message'] ?? 'Task reassigned successfully',
-          'updatedTask': resultList.isNotEmpty && resultList.first is Map
-              ? Map<String, dynamic>.from(resultList.first as Map)
-              : <String, dynamic>{},
-        };
-      } else {
-        return {
-          'success': false,
-          'message': status['message'] ?? 'Failed to reassign task',
-        };
+      if (statusList.isNotEmpty && statusList.first is Map) {
+        final statusMap = statusList.first as Map;
+        final flag = statusMap['status']?.toString().toUpperCase();
+        final message = statusMap['message']?.toString() ?? 'Task reassigned successfully';
+        if (flag == 'S') {
+          dev.log("✅ reassignService success: $message");
+          return {
+            'success': true,
+            'message': message,
+          };
+        } else {
+          return {
+            'success': false,
+            'message': message,
+          };
+        }
       }
+
+      return {
+        'success': false,
+        'message': 'Invalid server response from reassign endpoint',
+      };
     } catch (e) {
       dev.log("❌ ERROR (reassignService): $e");
       return {
