@@ -37,17 +37,18 @@ DateTime parseOrderDate(String s) {
       }
     }
 
+    // Strip trailing Z so database timestamp is treated directly as local hotel time
     if (str.endsWith('Z') || str.endsWith('z')) {
-      return DateTime.parse(str).toLocal();
+      str = str.substring(0, str.length - 1);
     }
-    if (str.contains('+') || (str.contains('-') && str.indexOf('-') > 8)) {
-      return DateTime.parse(str).toLocal();
-    }
-    // Parse database timestamp directly as local hotel time
     return DateTime.parse(str);
   } catch (_) {
     try {
-      return DateTime.parse(s.trim().replaceFirst(' ', 'T'));
+      var fallback = s.trim().replaceFirst(' ', 'T');
+      if (fallback.endsWith('Z') || fallback.endsWith('z')) {
+        fallback = fallback.substring(0, fallback.length - 1);
+      }
+      return DateTime.parse(fallback);
     } catch (_) {
       return DateTime.now();
     }
@@ -69,7 +70,7 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
   for (final o in apiOrders) {
     final orderNo     = o['orderNumber'];
     final raw         = o['raw'];
-    final createdTime = (raw?['order_time'] ?? raw?['delivered_time'] ?? '').toString();
+    final createdTime = (raw?['created_at'] ?? raw?['order_time'] ?? raw?['delivered_time'] ?? '').toString();
 
     if (!grouped.containsKey(orderNo)) {
       final extraVal = o['extraEtaMinutes'] ?? raw?['extra_eta_minutes'] ?? 0;
@@ -85,13 +86,25 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
           raw?['eta_locked'] == '1' ||
           extraEta >= 14;
 
-      final acceptedDate = o['status'] == FoodOrderStatus.preparing.label
-          ? parseOrderDate(raw?['kitchen_accepted_at']?.toString() ?? '')
+      final acceptedTimeStr = (raw?['summary_preparing_time'] ??
+              raw?['status_updated_time'] ??
+              raw?['kitchen_accepted_at'] ??
+              '')
+          .toString();
+      final acceptedDate = (o['status'] == FoodOrderStatus.preparing.label &&
+              acceptedTimeStr.isNotEmpty)
+          ? parseOrderDate(acceptedTimeStr)
           : null;
       final createdDate  = parseOrderDate(createdTime);
 
       DateTime? expiresDate;
-      final rawExpires = raw?['eta_expires_at']?.toString() ?? '';
+      final rawExpires = (raw?['final_eta_time'] ??
+              raw?['eta_time'] ??
+              raw?['eta_expires_at'] ??
+              o['finalEtaTime'] ??
+              '')
+          .toString();
+
       if (rawExpires.isNotEmpty) {
         expiresDate = parseOrderDate(rawExpires);
       } else if (acceptedDate != null) {
@@ -100,7 +113,10 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
         expiresDate = createdDate.add(Duration(minutes: 15 + extraEta));
       }
 
-      final tapCountVal = raw?['eta_tap_count'] ?? o['etaTapCount'] ?? 0;
+      final tapCountVal = raw?['summary_eta_tap_count'] ??
+          raw?['eta_tap_count'] ??
+          o['etaTapCount'] ??
+          0;
       final tapCount    = tapCountVal is num
           ? tapCountVal.toInt()
           : (int.tryParse(tapCountVal.toString()) ?? 0);
@@ -123,7 +139,7 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
         // FoodOrdersPage additionally tracks locked orders in its own Set.
         'etaLocked':    locked,
         'cancelReason': o['cancelReason'] ?? raw?['cancel_reason'] ?? '',
-        'isVeg':        raw?['is_veg'],
+        'isVeg':        o['isVeg'] ?? raw?['is_veg'],
       };
     }
 
@@ -131,7 +147,7 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
       'name':         o['foodItem'],
       'qty':          o['quantity'],
       'instructions': o['cookingInstructions'],
-      'isVeg':        o['raw']?['is_veg'] ?? raw?['is_veg'],
+      'isVeg':        o['isVeg'] ?? o['raw']?['is_veg'] ?? raw?['is_veg'],
     });
   }
 

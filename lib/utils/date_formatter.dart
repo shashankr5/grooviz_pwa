@@ -146,6 +146,15 @@ class DateFormatter {
     }
   }
 
+  /// Formats a DateTime object as "H:MM AM/PM" (e.g. "1:09 PM")
+  static String formatDateTimeOnlyAmPm(DateTime? d) {
+    if (d == null) return '—';
+    final h = d.hour > 12 ? d.hour - 12 : (d.hour == 0 ? 12 : d.hour);
+    final min = d.minute.toString().padLeft(2, '0');
+    final p = d.hour >= 12 ? 'PM' : 'AM';
+    return '$h:$min $p';
+  }
+
   /// Formats date-only String as "DD/MM/YYYY" (used in guest_checkout_history_page.dart)
   static String formatDateOnlyFullYear(String? s) {
     if (s == null || s.trim().isEmpty) return '—';

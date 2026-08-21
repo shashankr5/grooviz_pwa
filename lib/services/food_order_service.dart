@@ -534,6 +534,7 @@ class FoodOrderService {
         "statusColor":         _statusColor(statusVal),
         "cancelReason":        m["cancel_reason"]          ?? "",
         "orderTime":           _formatTime(orderTimeVal),
+        "isVeg":               m["is_veg"],
         // ETA fields (new v1)
         "etaTapCount":         _safeInt(m["summary_eta_tap_count"] ?? m["eta_tap_count"]),
         "etaTapMinutes":       _safeInt(m["eta_tap_minutes"]),
@@ -569,6 +570,7 @@ class FoodOrderService {
         "statusColor":         const Color(0xFFD32F2F),
         "cancelReason":        m["cancel_reason"]          ?? "",
         "orderTime":           _formatTime(orderTimeVal),
+        "isVeg":               m["is_veg"],
         "etaTapCount":         0,
         "etaTapMinutes":       0,
         "extraEtaMinutes":     0,
