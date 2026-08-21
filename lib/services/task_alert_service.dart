@@ -18,7 +18,6 @@ class TaskAlertService {
 
   static int _pendingServiceCount  = 0;
   static int _pendingDeliveryCount = 0;
-  static int _escalationCount      = 0;
 
   static int get totalPending =>
       _pendingServiceCount + _pendingDeliveryCount;
@@ -33,12 +32,9 @@ class TaskAlertService {
       StreamController.broadcast();
   static final StreamController<void> _newDeliveryController =
       StreamController.broadcast();
-  static final StreamController<int>  _escalationController =
-      StreamController.broadcast();               // emits badge count
 
   static Stream<void> get onNewTask       => _newTaskController.stream;
   static Stream<void> get onNewDelivery   => _newDeliveryController.stream;
-  static Stream<int>  get onEscalation    => _escalationController.stream;
 
   static void notifyNewTask()     => _newTaskController.add(null);
   static void notifyNewDelivery() => _newDeliveryController.add(null);
@@ -48,7 +44,8 @@ class TaskAlertService {
   static Future<bool> startServiceAlert()    => ensureServiceRunning();
   static Future<bool> ensureServiceRunning() => _ensureRunning(
         soundName:         AlertSoundKey.task,
-        shouldLoop:        false,
+        // Service task alerts loop until explicitly accepted/stopped by any device.
+        shouldLoop:        true,
         notificationTitle: 'New Service Request',
         notificationText:  'Tap to view pending tasks',
       );
@@ -61,10 +58,15 @@ class TaskAlertService {
   }
 
   /// PRIMARY STOP GATE for service tasks.
-  static void resetServiceCount(int count) {
+  static void resetServiceCount(
+    int count, {
+    bool reconcileAlert = false,
+  }) {
     _pendingServiceCount = count.clamp(0, 9999);
     print('TaskAlertService.resetServiceCount($count)');
-    _reevaluate();
+    // Reconciliation must always stop a stale alert at zero. It may only
+    // start/restart an alert for a real incoming event.
+    if (count <= 0 || reconcileAlert) _reevaluate();
   }
 
   // ── Delivery API ─────────────────────────────────────────────────────────
@@ -89,53 +91,20 @@ class TaskAlertService {
   }
 
   /// PRIMARY STOP GATE for delivery tasks.
-  static void resetDeliveryCount(int count) {
+  static void resetDeliveryCount(
+    int count, {
+    bool reconcileAlert = false,
+  }) {
     _pendingDeliveryCount = count.clamp(0, 9999);
     print('TaskAlertService.resetDeliveryCount($count)');
-    _reevaluate();
+    if (count <= 0 || reconcileAlert) _reevaluate();
   }
-
-  // ── Escalation API ───────────────────────────────────────────────────────
-  //
-  // NEW: plays escalation_notification.wav exactly ONCE to the escalation
-  // recipient. Does NOT loop. Service stays alive as a silent watcher so
-  // subsequent FCMs can trigger more plays if needed.
-
-  static Future<bool> ensureEscalationRunning() => _ensureRunning(
-        soundName:         AlertSoundKey.escalation,
-        shouldLoop:        false,                  // play once, no loop
-        notificationTitle: 'Task Escalated',
-        notificationText:  'A task requires your attention',
-      );
-
-  /// Called when the server reports a new escalation badge count.
-  static void resetEscalationCount(int count) {
-    _escalationCount = count.clamp(0, 9999);
-    print('TaskAlertService.resetEscalationCount($count)');
-    _escalationController.add(_escalationCount);
-  }
-
-  // ── NEW: Called by WebSocket ESCALATION_ALERT handler ────────────────────
-  //
-  // Emits the server-provided badge_count on the onEscalation stream so
-  // HomePage and TasksPage update their badge counts and escalated task
-  // lists in real time without a manual reload.
-  static void notifyEscalation(int badgeCount) {
-    _escalationCount = badgeCount.clamp(0, 9999);
-    if (!_escalationController.isClosed) {
-      _escalationController.add(badgeCount);
-    }
-    print('TaskAlertService.notifyEscalation($badgeCount)');
-  }
-
-  static int get escalationCount => _escalationCount;
 
   // ── Force stop (logout / app reset) ─────────────────────────────────────
 
   static Future<void> stopAll() async {
     _pendingServiceCount  = 0;
     _pendingDeliveryCount = 0;
-    _escalationCount      = 0;
     await _stopService();
   }
 
@@ -188,29 +157,19 @@ class TaskAlertService {
   }
 
   static Future<void> _reevaluate() async {
-    // If OrderAlertService has pending food orders, food orders take priority
-    if (OrderAlertService.pendingOrderCount > 0) {
-      await OrderAlertService.ensureRunning();
-      return;
-    }
-
+    // ARCHITECTURE: _reevaluate() is a STOP-ONLY gate.
+    // It NEVER restarts the foreground service — restarts are driven exclusively
+    // by FCM/WS new-event handlers (NEW_FOOD_ORDER, NEW_SERVICE_TASK, etc.).
+    // This eliminates spurious sound replays triggered by:
+    //   • pull-to-refresh (_loadDeliveryCounts → resetDeliveryCount(0) → reevaluate)
+    //   • home-icon tap (_refreshCurrentTab → _loadTasks → resetServiceCount)
+    //   • post-accept reload (_acceptTask → _loadTasks → resetServiceCount)
+    //   • cold-launch reconciliation (AlertReloadCoordinator.reloadTasks)
+    if (OrderAlertService.pendingOrderCount > 0) return; // Food pending — service still running
     if (totalPending == 0) {
-      await _stopService();
-    } else {
-      // Restart if not running — covers cold-launch and app-resume.
-      await _ensureRunning(
-        soundName:         _pendingDeliveryCount > 0
-            ? AlertSoundKey.delivery
-            : AlertSoundKey.task,
-        shouldLoop:        true,
-        notificationTitle: _pendingDeliveryCount > 0
-            ? 'Order Ready for Delivery'
-            : 'New Service Request',
-        notificationText: _pendingDeliveryCount > 0
-            ? 'Tap to view delivery queue'
-            : 'Tap to view pending tasks',
-      );
+      await _stopService(); // All clear — stop the foreground service
     }
+    // totalPending > 0: service already running and looping — nothing to do
   }
 
   static Future<void> _stopService() async {

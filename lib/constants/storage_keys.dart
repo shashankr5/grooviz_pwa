@@ -71,6 +71,40 @@ class StorageKeys {
   /// `bool` — flag set when the token must be re-registered on next launch.
   static const fcmNeedsReregistration = 'fcm_needs_reregistration';
 
+  // ─── Rush Hour / F&B Config (saved at login from login_mobile SP) ───────────
+
+  /// `int` — 0 or 1; whether rush hour is currently active (from login + WS sync).
+  static const rushHourActive = 'rush_hour_active';
+
+  /// `int` — max number of ETA taps allowed per order (from enterprise_food_service_rule).
+  static const maxTapCount = 'max_tap_count';
+
+  /// `int` — minutes added per ETA tap (tap_count_min from enterprise_food_service_rule).
+  static const tapCountMin = 'tap_count_min';
+
+  /// `String` — rush hour status string: 'ACTIVE' | 'INACTIVE'.
+  static const rushHourStatus = 'rush_hour_status';
+
+  /// `String` (JSON) — raw rush_hour_data JSON blob from enterprise_food_service_rule.
+  static const rushHourData = 'rush_hour_data';
+
+  // ─── User Dept / Escalation Rule (from get_user_dept_details_mobile) ─────────
+
+  /// `int` — food department ID for the logged-in user.
+  static const foodDeptId = 'food_dept_id';
+
+  /// `int` — completion_minutes from enterprise_escalation_user_rule.
+  static const completionMinutes = 'completion_minutes';
+
+  /// `int` — supervisor user_id from enterprise_escalation_user_rule.
+  static const supervisorUserId = 'supervisor_user_id';
+
+  /// `String` — supervisor full_name.
+  static const supervisorName = 'supervisor_name';
+
+  /// `int` — supervisor dept ID.
+  static const supervisorDeptId = 'supervisor_dept_id';
+
   // ─── Foreground Task (UnifiedAlertForegroundTask) ────────────────────────
 
   /// `bool` — flag written before startService() to detect premature exits.

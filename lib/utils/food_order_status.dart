@@ -8,19 +8,20 @@ enum FoodOrderStatus {
 }
 
 extension FoodOrderStatusX on FoodOrderStatus {
-  /// For API payload
+  /// For API payload matching MySQL enum:
+  /// enum('Pending','Accepted','Preparing','Ready','Delivered','Cancelled')
   String get api {
     switch (this) {
       case FoodOrderStatus.pending:
-        return "PENDING";
+        return "Pending";
       case FoodOrderStatus.preparing:
-        return "PREPARING";
+        return "Preparing";
       case FoodOrderStatus.ready:
-        return "READY";
+        return "Ready";
       case FoodOrderStatus.delivered:
-        return "DELIVERED";
+        return "Delivered";
       case FoodOrderStatus.cancelled:
-        return "CANCELLED";
+        return "Cancelled";
     }
   }
 

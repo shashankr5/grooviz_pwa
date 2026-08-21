@@ -157,36 +157,79 @@ class LoginService {
       }
       await UserSessionHelper.saveIsLoggedIn(true);
 
-      // Save role and departments at login so RoleChangeWatcher has a
-      // baseline to compare against. Without this, _loadBaseline() returns
-      // empty values and the watcher's empty-baseline guard fires immediately,
-      // skipping every comparison — so no logout ever triggers on role change.
-      final rawRole = user['role'] ?? user['user_role'];
-      if (rawRole != null) {
-        await UserSessionHelper.saveRole(rawRole.toString().trim());
-        dev.log('✅ Role saved at login: $rawRole');
+      // ── Save rush-hour / F&B config returned by login_mobile SP ─────────
+      // These fields come directly from enterprise_food_service_rule via the SP.
+      try {
+        final rushActive = _readInt(user['current_rush_hour']) ?? 0;
+        final maxTap     = _readInt(user['max_tap_count'])     ?? 0;
+        final tapMin     = _readInt(user['tap_count_min'])     ?? 0;
+        final rushStatus = (user['rush_hour_status'] ?? 'INACTIVE').toString();
+        final rushData   = user['rush_hour_data']?.toString() ?? '';
+        await UserSessionHelper.saveRushHourConfig(
+          rushHourActive: rushActive,
+          maxTapCount:    maxTap,
+          tapCountMin:    tapMin,
+          rushHourStatus: rushStatus,
+          rushHourData:   rushData,
+        );
+        dev.log('✅ Rush-hour config saved: active=$rushActive, maxTap=$maxTap, tapMin=$tapMin');
+      } catch (e) {
+        dev.log('⚠️ Could not save rush-hour config at login: $e');
       }
 
+      // ── Fetch dept + escalation rule (replaces old role/departments) ─────
+      // get_user_dept_details_mobile returns one row per dept the user has access to.
+      // We look for the first food department row to seed F&B-related session keys.
       try {
-        final rawDepts = user['departments'];
-        List<String> deptList = [];
-        if (rawDepts is String && rawDepts.isNotEmpty) {
-          deptList = List<String>.from(jsonDecode(rawDepts));
-        } else if (rawDepts is List) {
-          deptList = List<String>.from(rawDepts);
-        }
-        if (deptList.isNotEmpty) {
-          await UserSessionHelper.saveDepartments(deptList);
-          dev.log('✅ Departments saved at login: $deptList');
+        final deptResponse = await _dio.post(
+          ApiConstants.userDeptDetails,
+          data: {'user_id': userId, 'stage': AppConfig.stage},
+        );
+        final deptStatus = _toList(deptResponse.data['STATUS']);
+        final deptResult = _toList(deptResponse.data['RESULT']);
+
+        if (deptStatus.isNotEmpty && deptStatus[0]['status'] == 'S' && deptResult.isNotEmpty) {
+          // Save all dept names as the departments list
+          final deptNames = deptResult
+              .map((r) => (r['department_name'] ?? '').toString().trim())
+              .where((n) => n.isNotEmpty)
+              .toList();
+          if (deptNames.isNotEmpty) {
+            await UserSessionHelper.saveDepartments(deptNames);
+            dev.log('✅ Departments saved from dept details: $deptNames');
+          }
+
+          // Save role from first row
+          final firstRow = deptResult.first;
+          final roleFromDept = firstRow['department_name']?.toString().trim() ?? '';
+          if (roleFromDept.isNotEmpty) {
+            await UserSessionHelper.saveRole(roleFromDept);
+          }
+
+          // Find food dept row for F&B seeding
+          final foodRow = deptResult.firstWhere(
+            (r) => (r['department_type'] ?? '').toString().toLowerCase() == 'food',
+            orElse: () => deptResult.first,
+          );
+
+          await UserSessionHelper.saveDeptDetails(
+            foodDeptId:       _readInt(foodRow['department_id'])        ?? 0,
+            completionMinutes: _readInt(foodRow['completion_minutes'])   ?? 30,
+            supervisorUserId:  _readInt(foodRow['supervisor_user_id'])   ?? 0,
+            supervisorName:    (foodRow['supervisor_user_name'] ?? '').toString(),
+            supervisorDeptId:  _readInt(foodRow['supervisor_dept_id'])   ?? 0,
+          );
+          dev.log('✅ Dept details saved at login');
         }
       } catch (e) {
-        dev.log('⚠️ Could not save departments at login: $e');
+        dev.log('⚠️ Could not fetch dept details at login: $e');
+        // Non-fatal — app can continue; dept details will be re-fetched when needed.
       }
 
       return {
         'success': true,
         'message': statusMessage,
-        'user': user,
+        'user':    user,
         'user_id': userId,
       };
     } on DioException catch (e) {
@@ -325,5 +368,12 @@ class LoginService {
   Map<String, dynamic> _handleError(dynamic error) {
     dev.log('❌ Error: $error');
     return {'success': false, 'message': ErrorHandler.friendlyMessage(error)};
+  }
+
+  /// Safe int parser for dynamic values from server response maps.
+  static int? _readInt(dynamic value) {
+    if (value is int)    return value;
+    if (value == null)   return null;
+    return int.tryParse(value.toString());
   }
 }

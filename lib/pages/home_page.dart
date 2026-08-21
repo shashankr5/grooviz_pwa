@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/session_change_service.dart';
 import '../services/task_alert_service.dart';
+import '../services/order_alert_service.dart';
 import '../services/escalation_service.dart';
 import '../utils/date_formatter.dart';
 import '../utils/user_session_helper.dart';
@@ -140,11 +141,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final ValueNotifier<bool> _scrollAtBottomNotifier = ValueNotifier(false);
 
   int get currentSectionCount {
-    if (selectedFilter == "Escalated") {
-      return _searchQuery.isEmpty
-          ? escalatedTasks.length
-          : escalatedTasks.where((t) => _matchesQuery(t, _searchQuery)).length;
-    }
     return filteredTasks.length;
   }
 
@@ -313,11 +309,8 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       userRole = role ?? "";
-      // Manager, GM, Admin default to the Escalated filter on open.
-      // Supervisor and below start on "All" to see their own workload first.
-      if (EscalationVisibility.defaultsToEscalated(escalationRoleFromName(userRole))) {
-        selectedFilter = "Escalated";
-      }
+      // Escalation filtering is disabled; always show the normal task queue.
+      if (selectedFilter == "Escalated") selectedFilter = "All";
       _roleLoaded = true;
     });
   }
@@ -349,6 +342,20 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
 
+
+  /// Keeps the legacy KPI count available without restoring SLA cards,
+  /// escalation banners, sounds, or notifications.
+  void _recalcEscalation() {
+    escalatedTasks = tasks.where((task) {
+      final raw = task['raw'] as Map? ?? const {};
+      return task['is_escalated'] == 1 ||
+          task['is_escalated'] == true ||
+          raw['is_escalated'] == 1 ||
+          raw['is_escalated'] == true ||
+          raw['escalation_instance_id'] != null;
+    }).toList();
+    _escalationBadgeCount = escalatedTasks.length;
+  }
 
   /// Calls sp_resolve_escalation_mobile to stop the pulse engine and escalation
   /// climb for a task after accept / close / reassign.
@@ -438,13 +445,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         "assignedTo":  t["raw"]?["accepted_by_user_name"] ?? t["raw"]?["assigned_to_name"] ?? "-",
       }).toList();
 
-      // Calculate escalatedTasks locally from the main feed list
-      escalatedTasks = tasks.where((t) {
-        final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
-        final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
-        return isEsc;
-      }).toList();
-      _escalationBadgeCount = escalatedTasks.length;
+      // Calculate escalatedTasks locally from the main feed list.
+      // Only Supervisor+ roles receive the escalation badge and filter —
+      // Staff should not see tasks marked escalated at their own level
+      // (the scheduler notifies the correct hierarchy level via push).
+      _recalcEscalation();
 
       _isLoading = false;
     });
@@ -578,7 +583,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    // Optimistically decrement and stop if count hits zero, keep looping if > 0
     await TaskAlertService.stopOneServiceAlert();
+    await OrderAlertService.stopOne();
     await _loadTasks();
     _resolveEscalationForTask(task, resolutionType: 'accept');
     AppSnackBar.show(context, "Task Accepted 🎉");
@@ -1264,8 +1271,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
 
-          // Task list — Escalated or normal TimelineTaskCard
-          if (selectedFilter == "Escalated")
+          // Task list — Escalated or normal TimelineTaskCard.
+          // The Escalated view is only available to Supervisor and above;
+          // Staff always see the normal filtered list.
+          if (selectedFilter == "Escalated" &&
+              EscalationVisibility.canViewEscalatedTab(
+                  escalationRoleFromName(userRole)))
             _buildEscalatedList()
           else
             ListView.builder(
@@ -1310,15 +1321,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                               // Refresh escalated list so the closed task
                               // disappears from the Escalated tab immediately.
-                              // Recalculate badge and feed locally
-                              setState(() {
-                                escalatedTasks = tasks.where((t) {
-                                  final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
-                                  final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
-                                  return isEsc;
-                                }).toList();
-                                _escalationBadgeCount = escalatedTasks.length;
-                              });
+                              setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task);
                             },
                             onReassign: (updatedTask) {
@@ -1348,15 +1351,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                 }
                               });
                               // Refresh escalated list + stop pulse engine.
-                              // Recalculate badge and feed locally
-                              setState(() {
-                                escalatedTasks = tasks.where((t) {
-                                  final rawTask = t["raw"] as Map<String, dynamic>? ?? {};
-                                  final isEsc = t["is_escalated"] == 1 || t["is_escalated"] == true || rawTask["is_escalated"] == 1 || rawTask["is_escalated"] == true || rawTask["escalation_instance_id"] != null;
-                                  return isEsc;
-                                }).toList();
-                                _escalationBadgeCount = escalatedTasks.length;
-                              });
+                              setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
                             },
                           ),

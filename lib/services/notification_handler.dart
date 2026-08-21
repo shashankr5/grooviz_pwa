@@ -7,9 +7,11 @@ import '../models/deep_link_payload.dart';
 import '../services/notification_navigation_coordinator.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
 import '../utils/user_session_helper.dart';
 import 'notification_constants.dart';
 import 'notification_message_builder.dart';
+import 'notification_policy.dart';
 
 final FlutterLocalNotificationsPlugin localNotifications =
     FlutterLocalNotificationsPlugin();
@@ -33,7 +35,14 @@ Future<void> setupFirebaseNotifications() async {
 
   // Cold start from FCM push notification tap
   final initialMessage = await messaging.getInitialMessage();
-  if (initialMessage != null) _handleMessage(initialMessage);
+  if (initialMessage != null) {
+    _handleMessage(initialMessage); // navigate to correct page
+    // User tapped the notification to open the app — stop the looping alert.
+    // AlertReloadCoordinator will re-evaluate true pending counts when the page loads.
+    // If tasks remain open, the NEXT Lambda FCM pulse will restart the alert.
+    await TaskAlertService.stopAll();
+    await OrderAlertService.stop();
+  }
 
   // Resume/Foreground from FCM push notification tap
   FirebaseMessaging.onMessageOpenedApp.listen(_handleMessage);
@@ -51,6 +60,9 @@ Future<void> setupFirebaseNotifications() async {
           _handleMessage(RemoteMessage(data: {'type': payload}));
         }
       }
+      // Stop the looping alert — user acknowledged by tapping the local notification.
+      await TaskAlertService.stopAll();
+      await OrderAlertService.stop();
     }
   } catch (e) {
     print('⚠️ localNotifications launch details check error: $e');
@@ -189,6 +201,23 @@ Future<void> _showNotification(RemoteMessage message) async {
 
   print('🎯 Foreground FCM | type=$type | depts=$normalized');
 
+  // ESCALATION_PULSE is a scheduler reminder, not a new escalation. Alerts
+  // are event-driven: notify once for the escalation event and ignore later
+  // pulses so they cannot repeatedly restart audio or replace the notification.
+  if (type == 'ESCALATION_PULSE') {
+    print('Foreground FCM | Ignoring periodic escalation pulse');
+    return;
+  }
+
+  // Escalation is currently disabled in the client. Do not allow legacy
+  // server events to produce a local notification, sound, or task reload.
+  if (type == 'ESCALATION_ALERT' ||
+      type == 'ESCALATION_STARTED' ||
+      type == 'ESCALATION_STAGE_1') {
+    print('Foreground FCM | Ignoring disabled escalation event: $type');
+    return;
+  }
+
   switch (type) {
     case 'NEW_FOOD_ORDER':
       if (!isRoomServiceOrFnB) {
@@ -197,15 +226,17 @@ Future<void> _showNotification(RemoteMessage message) async {
       }
       await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
+      // The FCM is only a hint. Confirm the live queue before keeping the
+      // foreground alert or showing a user-facing notification.
+      await AlertReloadCoordinator.instance.reloadFood();
+      if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
     case 'ORDER_ACCEPTED':
-      if (!isRoomServiceOrFnB) return;
-      OrderAlertService.notifyNewOrder();
-      break;
-
     case 'ORDER_CANCELLED':
       if (!isRoomServiceOrFnB) return;
+      // Optimistically decrement and stop if count hits zero, keep looping if > 0
+      await OrderAlertService.stopOne();
       OrderAlertService.notifyNewOrder();
       break;
 
@@ -239,10 +270,17 @@ Future<void> _showNotification(RemoteMessage message) async {
     case 'NEW_SERVICE_TASK':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
+      // Auto-reload the task list so the new request appears immediately
+      // without the user needing to manually pull-to-refresh.
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
+    case 'ACCEPTED':
     case 'SERVICE_TASK_ACCEPTED':
+      // Optimistically decrement and stop if count hits zero, keep looping if > 0
+      await TaskAlertService.stopOneServiceAlert();
       TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     case 'SERVICE_STATUS_UPDATE':
@@ -252,16 +290,19 @@ Future<void> _showNotification(RemoteMessage message) async {
         await OrderAlertService.stop();
       } else {
         TaskAlertService.notifyNewTask();
+        await AlertReloadCoordinator.instance.reloadTasks();
       }
       break;
 
     case 'SERVICE_GUEST_UPDATE':
       TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     case 'TASK_REASSIGNED':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     case 'NEW_DELIVERY_TASK':
@@ -300,23 +341,10 @@ Future<void> _showNotification(RemoteMessage message) async {
         default:
           await TaskAlertService.ensureServiceRunning();
           TaskAlertService.notifyNewTask();
+          // Pulse means the task is still unaccepted — keep list fresh.
+          await AlertReloadCoordinator.instance.reloadTasks();
           break;
       }
-      break;
-
-    case 'ESCALATION_ALERT':
-      await TaskAlertService.ensureEscalationRunning();
-      final badgeCount = int.tryParse(data['badge_count']?.toString() ?? '0') ?? 0;
-      TaskAlertService.resetEscalationCount(badgeCount);
-      break;
-
-    case 'ESCALATION_STARTED':
-    case 'ESCALATION_STAGE_1':
-    case 'ESCALATION_PULSE':
-      await TaskAlertService.ensureEscalationRunning();
-      // Escalation pulses are reminders, not service-task mutations. Emitting
-      // onNewTask here made every pulse reload get_all_services_mobile twice:
-      // once in HomePage and once in AlertReloadCoordinator.
       break;
 
     case 'PENDING_ACCEPTANCE':
@@ -327,19 +355,26 @@ Future<void> _showNotification(RemoteMessage message) async {
     case 'ACCEPTED':
       TaskAlertService.resetServiceCount(0);
       TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     default:
       print('Foreground FCM: unhandled type=$type');
   }
 
+  if (!NotificationPolicy.shouldShowLocalNotification(data)) {
+    return;
+  }
+
   final msg = NotificationMessageBuilder.build(data);
+  final title = data['title']?.toString().trim();
+  final body = data['body']?.toString().trim();
 
   try {
     await localNotifications.show(
       msg.notifId,
-      msg.title,
-      msg.body,
+      title == null || title.isEmpty ? msg.title : title,
+      body == null || body.isEmpty ? msg.body : body,
       _buildDetails(msg),
       payload: jsonEncode(data),
     );

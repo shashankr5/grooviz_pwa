@@ -52,10 +52,15 @@ class OrderAlertService {
 
   /// PRIMARY STOP GATE. Called by _loadFoodOrders() and AlertReloadCoordinator.
   /// Only reliable cross-device stop mechanism.
-  static void resetCount(int pendingCount) {
+  static void resetCount(
+    int pendingCount, {
+    bool reconcileAlert = false,
+  }) {
     _pendingOrderCount = pendingCount.clamp(0, 9999);
     print('OrderAlertService.resetCount($pendingCount)');
-    _reevaluate();
+    // Page bootstrap/refresh updates counts silently. A zero count must still
+    // stop a stale foreground alert immediately.
+    if (pendingCount <= 0 || reconcileAlert) _reevaluate();
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
@@ -71,7 +76,8 @@ class OrderAlertService {
         try {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(AlertSoundKey.prefKey, soundName);
-          await prefs.setString(AlertSoundKey.loopKey, 'false');
+          // Food orders loop until explicitly accepted/stopped.
+          await prefs.setString(AlertSoundKey.loopKey, 'true');
 
           final isRunning = await FlutterForegroundTask.isRunningService;
           if (isRunning) {
@@ -95,20 +101,14 @@ class OrderAlertService {
   }
 
   static Future<void> _reevaluate() async {
-    if (_pendingOrderCount > 0) {
-      await _ensureRunning(
-        soundName:         AlertSoundKey.food,
-        notificationTitle: 'New Order',
-        notificationText:  'Waiting for acceptance...',
-      );
-    } else {
-      // 0 food orders pending. Delegate to TaskAlertService if tasks exist; else stop.
-      if (TaskAlertService.totalPending > 0) {
-        await TaskAlertService.reevaluate();
-      } else {
-        await _stopService();
-      }
-    }
+    // ARCHITECTURE: _reevaluate() is a STOP-ONLY gate.
+    // It NEVER restarts the foreground service — restarts are driven exclusively
+    // by FCM/WS new-event handlers (NEW_FOOD_ORDER, NEW_SERVICE_TASK, etc.).
+    // This eliminates spurious sound replays from page loads, tab taps, and
+    // pull-to-refresh cycles.
+    if (_pendingOrderCount > 0) return; // Food still pending — service keeps running
+    if (TaskAlertService.totalPending > 0) return; // Task/delivery pending — keep service alive
+    await _stopService(); // All clear — stop foreground service
   }
 
   static Future<void> _stopService() async {

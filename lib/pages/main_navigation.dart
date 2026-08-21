@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
-import 'services_page.dart';
 import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
@@ -35,6 +34,7 @@ class _MainNavigationState extends State<MainNavigation>
     with WidgetsBindingObserver {
   int _currentIndex = 0;
   List<String> _departments = [];
+  String _userRole = '';
   bool _isLoadingDepts = true;
 
   late final RoleChangeWatcher _roleWatcher;
@@ -43,7 +43,6 @@ class _MainNavigationState extends State<MainNavigation>
   final GlobalKey<HomePageState>       _homeKey     = GlobalKey<HomePageState>();
   final GlobalKey<FoodOrdersPageState> _foodKey     = GlobalKey<FoodOrdersPageState>();
   final GlobalKey<TasksPageState>      _tasksKey    = GlobalKey<TasksPageState>();
-  final GlobalKey<ServicesPageState>   _servicesKey = GlobalKey<ServicesPageState>();
 
   // ── Nav config ────────────────────────────────────────────────────────────
 
@@ -64,15 +63,6 @@ class _MainNavigationState extends State<MainNavigation>
         icon: Icon(Icons.fastfood_outlined, size: 26),
         activeIcon: Icon(Icons.fastfood, size: 26),
         label: 'Food',
-      ),
-    ),
-    _NavEntry(
-      key: 'services',
-      page: ServicesPage(key: _servicesKey),
-      item: const BottomNavigationBarItem(
-        icon: Icon(Icons.room_service_outlined, size: 26),
-        activeIcon: Icon(Icons.room_service, size: 26),
-        label: 'Services',
       ),
     ),
     _NavEntry(
@@ -105,35 +95,123 @@ class _MainNavigationState extends State<MainNavigation>
   ];
 
   // ── Department → visible tab keys ─────────────────────────────────────────
+  //
+  // Each department is mapped to exactly the tabs its staff need.
+  // Fuzzy matching handles casing/spacing variants from the server.
+  // Management roles (Manager, GM, Admin) bypass dept restrictions
+  // and see every tab so they can supervise the full operation.
 
   Set<String> _tabsForDepartment(String dept) {
     final d = dept.trim().toLowerCase();
 
-    if (d == 'food & beverage') {
-      return {'food', 'profile'};
+    // ── Food & Beverage ───────────────────────────────────────────────────
+    // F&B staff work on the Food tab; they don't handle service requests
+    // or room deliveries directly.
+    if (d == 'food & beverage' ||
+        d == 'food and beverage' ||
+        d == 'f&b' ||
+        d == 'fnb' ||
+        d.contains('food') && d.contains('beverage')) {
+      return {'food', 'tasks', 'profile'};
     }
-    if (d == 'front office') {
-      return {'home', 'tasks', 'services', 'camera'};
+
+    // ── Front Office ──────────────────────────────────────────────────────
+    // Front-desk staff handle service requests and can view guest camera
+    // content. They don't handle food orders or room-service deliveries.
+    if (d == 'front office' ||
+        d == 'frontoffice' ||
+        d == 'front desk' ||
+        d == 'frontdesk' ||
+        d.contains('front') && d.contains('office')) {
+      return {'home', 'tasks', 'camera'};
     }
-    if (d == 'it' ||
+
+    // ── Room Service ──────────────────────────────────────────────────────
+    // Room-service staff deliver food orders and handle service requests.
+    if (d.contains('room') && d.contains('service') ||
+        d == 'roomservice') {
+      return {'home', 'tasks'};
+    }
+
+    // ── Housekeeping ──────────────────────────────────────────────────────
+    if (d == 'housekeeping' ||
         d == 'house keeping' ||
-        d == 'maintenance' ||
-        (d.contains('room') && d.contains('service'))) {
-      return {'home', 'tasks', 'services'};
+        d.contains('housekeep') ||
+        d.contains('house keep')) {
+      return {'home', 'tasks'};
     }
-    return {'home', 'food', 'tasks', 'services'};
+
+    // ── Maintenance / Engineering ─────────────────────────────────────────
+    if (d == 'maintenance' ||
+        d == 'engineering' ||
+        d.contains('mainten') ||
+        d.contains('engineer')) {
+      return {'home', 'tasks'};
+    }
+
+    // ── IT ────────────────────────────────────────────────────────────────
+    if (d == 'it' ||
+        d == 'information technology' ||
+        d.contains('informat') && d.contains('tech')) {
+      return {'home', 'tasks'};
+    }
+
+    // ── Recreation / Spa / Leisure ────────────────────────────────────────
+    if (d == 'recreation' ||
+        d == 'spa' ||
+        d == 'leisure' ||
+        d == 'gym' ||
+        d.contains('recreat') ||
+        d.contains('wellness')) {
+      return {'home', 'tasks'};
+    }
+
+    // ── Laundry ───────────────────────────────────────────────────────────
+    if (d == 'laundry' || d.contains('laundr')) {
+      return {'home', 'tasks'};
+    }
+
+    // ── Security ──────────────────────────────────────────────────────────
+    if (d == 'security' || d.contains('securit')) {
+      return {'home', 'tasks'};
+    }
+
+    // ── Concierge / Guest Relations ───────────────────────────────────────
+    if (d == 'concierge' ||
+        d == 'guest relations' ||
+        d == 'guest services' ||
+        d.contains('concierge') ||
+        d.contains('guest relat')) {
+      return {'home', 'tasks', 'camera'};
+    }
+
+    // ── Default: any unrecognised department sees the core tabs ───────────
+    return {'home', 'tasks'};
   }
 
   List<String> get _visibleKeys {
+    // Management roles (Manager, GM, Admin) are not restricted by department —
+    // they supervise all operations and need every tab.
+    const _managementRoles = {
+      'admin', 'general manager', 'manager',
+    };
+    if (_managementRoles.contains(_userRole.trim().toLowerCase())) {
+      return _allNavItems.map((e) => e.key).toList();
+    }
+
+    // No departments stored yet — show minimal set while loading.
     if (_departments.isEmpty) return ['home', 'tasks'];
 
+    // Union the allowed tabs across all of the user's departments.
     final allowed = <String>{};
     for (final dept in _departments) {
       allowed.addAll(_tabsForDepartment(dept));
     }
 
+    // 'profile' is only shown when 'home' is absent (F&B-only users).
     if (allowed.contains('home')) allowed.remove('profile');
 
+    // Preserve the canonical ordering defined in _allNavItems.
     return _allNavItems
         .map((e) => e.key)
         .where((key) => allowed.contains(key))
@@ -203,7 +281,10 @@ class _MainNavigationState extends State<MainNavigation>
 
   void _onTabTapped(int index) {
     if (_currentIndex == index) {
-      _refreshCurrentTab(index);
+      // Tapping the already-active tab: do NOT re-fetch data.
+      // Refreshing on same-tab tap causes _loadDeliveryCounts → resetDeliveryCount(0)
+      // → _reevaluate which previously re-triggered the foreground alert service.
+      // Standard bottom-nav UX: active-tab tap is a no-op (or scroll-to-top via page key).
       return;
     }
     setState(() => _currentIndex = index);
@@ -295,11 +376,13 @@ class _MainNavigationState extends State<MainNavigation>
 
   Future<void> _loadDepartments() async {
     final depts = await UserSessionHelper.getDepartments();
+    final role  = await UserSessionHelper.getRole();
     if (mounted) {
       setState(() {
         _departments    = depts;
+        _userRole       = role ?? '';
         _isLoadingDepts = false;
-        // Clamp index to valid range after dept change
+        // Clamp index to valid range after dept/role change
         final entries = _activeEntries;
         if (_currentIndex >= entries.length) _currentIndex = 0;
       });

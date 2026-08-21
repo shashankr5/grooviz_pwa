@@ -384,8 +384,9 @@ class TaskService {
       );
 
       final data = response.data as Map? ?? const {};
-      // The mobile procedure returns its OUT parameters in STATUS and the
-      // reassignment/FCM details in RESULT. RESULT itself has no `status`.
+      // Deployments of this endpoint use either STATUS (OUT parameters) or
+      // the first RESULT row for the success flag. The current production
+      // endpoint returns the latter.
       final rawStatus = data['STATUS'];
       final statusList = rawStatus is List
           ? rawStatus
@@ -398,9 +399,14 @@ class TaskService {
           : rawResult is Map
               ? [rawResult]
               : const <dynamic>[];
-      final status = statusList.isNotEmpty && statusList.first is Map
+      final statusFromStatus = statusList.isNotEmpty && statusList.first is Map
           ? statusList.first as Map
           : const <dynamic, dynamic>{};
+      final status = statusFromStatus.isNotEmpty
+          ? statusFromStatus
+          : resultList.isNotEmpty && resultList.first is Map
+              ? resultList.first as Map
+              : const <dynamic, dynamic>{};
 
       if (status['status']?.toString().toUpperCase() == 'S') {
         return {

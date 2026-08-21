@@ -3,7 +3,8 @@ class ApiConstants {
   static const String baseUrl = "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production";
   static const String apiKey = "sa9F4GyTT45OImNkKjaHu6bsJbk8UWmZfKdzmeoc";
 
-  // ── Authentication ────────────────────────────────────────────
+  // ── Authentication ─────────────────────────────────────────────
+  // login_mobile SP — new enterprise-grade version (same Lambda URL)
   static const String login          = "$baseUrl/ScreenSync_login_mobile";
   static const String logout         = "$baseUrl/ScreenSync_logout_mobile";
   static const String sendOtp        = "$baseUrl/ScreenSync_send_otp_mobile";
@@ -13,19 +14,27 @@ class ApiConstants {
   // ── Profile ───────────────────────────────────────────────────
   static const String profile        = "$baseUrl/ScreenSync_get_profile_mobile";
 
+  // ── User Dept Details (v1) ────────────────────────────────────
+  // get_user_dept_details_mobile — returns dept + escalation rule.
+  // Called at login to seed role/dept (replaces old login 'role'+'departments').
+  // Input:  { user_id, stage }
+  // Output: STATUS[0] + RESULT[]  (one row per department the user belongs to)
+  static const String userDeptDetails = "$baseUrl/ScreenSync_get_user_dept_details_mobile";
+
   // ── Home Page ─────────────────────────────────────────────────
   static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile";
   static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_order_mobile";
   static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile";
   static const String acceptServiceOrder = "$baseUrl/ScreenSync_accept_service_order_mobile";
   static const String updateServiceRequestStatus = "$baseUrl/ScreenSync_update_service_request_status_mobile";
- 
+
   // ── Ticket Details ────────────────────────────────────────────
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";
   static const String addServiceNote = "$baseUrl/ScreenSync_add_service_note_mobile";
   static const String closeService = "$baseUrl/ScreenSync_close_service_mobile";
   static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile";
   static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
+
   // ── Task Summary ──────────────────────────────────────────────
   static const String taskSummary    = "$baseUrl/ScreenSync_get_tasks_summary_mobile";
 
@@ -33,19 +42,37 @@ class ApiConstants {
   static const String tasksByRole     = "$baseUrl/ScreenSync_get_tasks_by_role_mobile";
   static const String teamPerformance = "$baseUrl/ScreenSync_get_team_performance_mobile";
 
- // ── Food Orders — Room Service Tab ────────────────────────────
+  // ── Food Orders — F&B (v1, enterprise-grade) ─────────────────
+  // All v1 F&B endpoints use order_id (summary_id from order_status_summary)
+  // NOT order_number. The 'stage' key is mandatory in every payload.
+
+  /// GET orders — input: { user_id, stage } (enterprise_id derived server-side)
+  /// Output: STATUS[0] + RESULT[] with summary_id, final_eta_time, eta_tap_count, etc.
+  static const String getFoodOrdersV1 = "$baseUrl/ScreenSync_get_food_orders_mobile1";
+
+  /// ACCEPT order — input: { user_id, enterprise_id, order_id (summary_id), stage }
+  /// Output: STATUS[0] only (Lambda discards RESULT)
+  static const String acceptFoodOrderV1 = "$baseUrl/ScreenSync_accept_food_order_mobile1";
+
+  /// UPDATE status (Ready/Delivered/Cancelled) — input: { user_id, enterprise_id, order_id, status, cancel_reason, stage }
+  /// Output: STATUS[0] only
+  static const String updateFoodOrderV1 = "$baseUrl/ScreenSync_update_food_order_mobile1";
+
+  /// ETA TAP — input: { user_id, enterprise_id, order_id (summary_id), stage }
+  /// Server reads tap config from enterprise_food_service_rule and updates ETA.
+  /// Output: STATUS[0] + RESULT[0] with updated eta_tap_count, final_eta_time, etc.
+  static const String tapFoodOrderEtaV1 = "$baseUrl/ScreenSync_update_food_tap_count";
+
+  // ── Rush Hour — F&B (v1) ──────────────────────────────────────
+  /// SET rush hour ON/OFF — input: { user_id, rush_hour_active (0|1), stage }
+  /// Output: STATUS[0] with current_rush_hour, rush_hour_status, enterprise_id
+  static const String setRushHourV1 = "$baseUrl/ScreenSync_set_rush_hour_state_mobile";
+
+  // ── Food Orders — Room Service Tab ────────────────────────────
   static const String getReadyOrders          = "$baseUrl/ScreenSync_get_ready_orders_for_room_service_mobile";
   static const String getAcceptedOrders       = "$baseUrl/ScreenSync_get_accepted_orders_for_room_service_mobile";
   static const String getDeliveredOrders      = "$baseUrl/ScreenSync_get_delivered_orders_for_room_service_mobile";
   static const String updateRoomServiceStatus = "$baseUrl/ScreenSync_update_room_service_status_mobile";
-
-  // ── Food Orders — F&B Tab ─────────────────────────────────────
-  static const String foodOrderDetails      = "$baseUrl/ScreenSync_get_food_orders_mobile";
-  static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile";
-  static const String orderSummary          = "$baseUrl/ScreenSync_get_order_summary_mobile";
-
-  // ── Rush Hour (F&B) ───────────────────────────────────────────
-  static const String getRushHour = "$baseUrl/ScreenSync_get_rush_hour_state_mobile";
 
   // ── Camera / Content ──────────────────────────────────────────
   static const String getRooms         = "$baseUrl/ScreenSync_get_rooms_for_mobile";
@@ -58,9 +85,15 @@ class ApiConstants {
   static const String guestBill      = "$baseUrl/ScreenSync_get_guest_bill_mobile";
 
   // ── Deprecated Endpoints (DO NOT USE — kept for historical reference) ────
-  // Escalation status is now embedded in every get_all_services_mobile RESULT
-  // row, so none of the old per-task or trigger endpoints are needed.
+  // These endpoints are superseded by v1 equivalents above.
+  // Remove from production after all devices are updated.
   //
+  // static const String foodOrderDetails      = "$baseUrl/ScreenSync_get_food_orders_mobile";       // → getFoodOrdersV1
+  // static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile"; // → updateFoodOrderV1 + tapFoodOrderEtaV1
+  // static const String orderSummary          = "$baseUrl/ScreenSync_get_order_summary_mobile";      // → not migrated yet
+  // static const String getRushHour           = "$baseUrl/ScreenSync_get_rush_hour_state_mobile";    // → setRushHourV1 response / login cache
+  //
+  // Legacy escalation / service endpoints (no v1 equivalent):
   // static const String acceptTaskOld              = "$baseUrl/ScreenSync_task_accept_mobile";
   // static const String reassignTicketOld          = "$baseUrl/ScreenSync_reassign_task_mobile";
   // static const String escalationBadgeCountOld    = "$baseUrl/ScreenSync_get_escalation_badge_count_mobile";

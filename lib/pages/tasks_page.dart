@@ -111,6 +111,8 @@ class TasksPageState extends State<TasksPage> {
   int  totalTasks      = 0;
   int  completedTasks  = 0;
   int  inProgressTasks = 0;
+  // Retained as an internal compatibility value for existing analytics code.
+  // Escalation is no longer shown or alerted in the client.
   int  escalatedTasks  = 0;
 
   // FIX 2: _allTasks holds the full untruncated list.
@@ -129,9 +131,6 @@ class TasksPageState extends State<TasksPage> {
   double                            _escalationRatePct     = 0.0;
   Map<String, Map<String, dynamic>> _deptPerformance      = {};
 
-  // ── Escalation stream ─────────────────────────────────────────────────────
-  StreamSubscription<int>? _escSub;
-
   static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -143,14 +142,10 @@ class TasksPageState extends State<TasksPage> {
   void initState() {
     super.initState();
     _init();
-    _escSub = TaskAlertService.onEscalation.listen((count) {
-      if (mounted) setState(() => escalatedTasks = count);
-    });
   }
 
   @override
   void dispose() {
-    _escSub?.cancel();
     super.dispose();
   }
 
@@ -1086,8 +1081,6 @@ class TasksPageState extends State<TasksPage> {
   // ── Stat Cards ────────────────────────────────────────────────────────────
 
   Widget _buildStatCards() {
-    final showEscalated = escalatedTasks > 0 || _isManagementOnly(_userRoleId);
-
     final cards = [
       _StatCardData(
         count:       '$totalTasks',
@@ -1110,15 +1103,6 @@ class TasksPageState extends State<TasksPage> {
         accentColor: AppColors.success,
         filterStatus: 'completed',
       ),
-      if (showEscalated)
-        _StatCardData(
-          count:       '$escalatedTasks',
-          label:       'Escalated',
-          icon:        Icons.warning_amber_rounded,
-          accentColor: AppColors.error,
-          highlight:   escalatedTasks > 0,
-          filterStatus: 'escalated',
-        ),
     ];
 
     return Padding(
@@ -1354,36 +1338,44 @@ class TasksPageState extends State<TasksPage> {
                               ),
                             ),
                             const SizedBox(height: 3),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                Text(
-                                  escRateStr,
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: escColor,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: escColor.withValues(alpha: 0.12),
-                                    borderRadius: BorderRadius.circular(5),
-                                  ),
-                                  child: Text(
-                                    escLabel,
+                            // This column can be as narrow as ~82px on
+                            // smaller phones. Scale the rate and badge as a
+                            // unit instead of allowing the Row to overflow.
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    escRateStr,
                                     style: TextStyle(
-                                      fontSize: 9.5,
-                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
                                       color: escColor,
-                                      letterSpacing: 0.3,
                                     ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: escColor.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: Text(
+                                      escLabel,
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: escColor,
+                                        letterSpacing: 0.3,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),

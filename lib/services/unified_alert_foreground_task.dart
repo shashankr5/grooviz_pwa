@@ -96,6 +96,9 @@ class UnifiedAlertTaskHandler extends TaskHandler {
     try {
       final prefs     = await SharedPreferences.getInstance();
       final soundName = prefs.getString(AlertSoundKey.prefKey) ?? AlertSoundKey.food;
+      // shouldLoop=true  → food orders & service tasks (loop until explicit stop)
+      // shouldLoop=false → delivery & escalation (play once, service stays as watcher)
+      final shouldLoop = prefs.getString(AlertSoundKey.loopKey) == 'true';
 
       final assetPath = 'assets/audio/$soundName.wav';
       final tempDir   = await getTemporaryDirectory();
@@ -131,19 +134,25 @@ class UnifiedAlertTaskHandler extends TaskHandler {
 
       _player = AudioPlayer();
       await _player!.setFilePath(file.path);
-      await _player!.setLoopMode(LoopMode.off);
+      // Loop mode: food/service alerts loop until explicitly stopped (stopAll/stopOneServiceAlert).
+      // Delivery/escalation play once and the service stays alive as a silent watcher.
+      await _player!.setLoopMode(shouldLoop ? LoopMode.one : LoopMode.off);
 
-      // Single-Chime Server Pulse (Industry Standard):
-      // Play alert chime once per pulse, trigger one 200ms haptic vibration, then stop player.
-      // The foreground service remains active as a silent watcher for the next FCM pulse.
       await _player!.play();
       HapticFeedback.vibrate();
-      await _player!.processingStateStream.firstWhere(
-        (state) => state == ProcessingState.completed,
-      );
-      await _player!.stop();
 
-      print('UnifiedAlertTaskHandler: played $soundName once');
+      if (!shouldLoop) {
+        // Play-once mode: wait for the clip to finish, then stop the player.
+        // The foreground service remains alive as a silent watcher for the next FCM pulse.
+        await _player!.processingStateStream.firstWhere(
+          (state) => state == ProcessingState.completed,
+        );
+        await _player!.stop();
+        print('UnifiedAlertTaskHandler: played $soundName once (no-loop)');
+      } else {
+        // Loop mode: audio runs until onDestroy() is called (i.e., stopAll / stopOneServiceAlert).
+        print('UnifiedAlertTaskHandler: looping $soundName — will stop on explicit stopAll()');
+      }
     } catch (e) {
       print('UnifiedAlertTaskHandler.onStart error: $e');
       // Don't stop service — stay alive as watcher even if audio fails

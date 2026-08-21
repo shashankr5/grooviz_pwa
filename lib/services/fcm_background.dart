@@ -11,6 +11,10 @@ import '../utils/user_session_helper.dart';
 import 'unified_alert_foreground_task.dart';
 import 'notification_constants.dart';
 import 'notification_message_builder.dart';
+import 'notification_policy.dart';
+import 'alert_reload_coordinator.dart';
+import 'order_alert_service.dart';
+import 'task_alert_service.dart';
 
 void _initForegroundTask() {
   FlutterForegroundTask.init(
@@ -85,6 +89,22 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final stopAlert = data['stop_alert'] == 'true';
   print('Background FCM | type=$type | stop_alert=$stopAlert | depts=$normalized');
 
+  // Do not surface periodic scheduler reminders as user alerts. Initial
+  // escalation events are still handled below as ESCALATION_ALERT.
+  if (type == 'ESCALATION_PULSE') {
+    print('Background FCM | Ignoring periodic escalation pulse');
+    return;
+  }
+
+  // Escalation is currently disabled in the client. Do not start an alert,
+  // reconcile its queue, or show a local notification for legacy events.
+  if (type == 'ESCALATION_ALERT' ||
+      type == 'ESCALATION_STARTED' ||
+      type == 'ESCALATION_STAGE_1') {
+    print('Background FCM | Ignoring disabled escalation event: $type');
+    return;
+  }
+
   // Filter out notifications based on department authorizations
   switch (type) {
     case 'NEW_FOOD_ORDER':
@@ -93,12 +113,18 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         return;
       }
       await _startServiceIfNeeded();
+      // An event can arrive after another staff member has accepted the
+      // order. Reconcile with the server before retaining a foreground alert
+      // or posting a stale system notification.
+      await AlertReloadCoordinator.instance.reloadFood();
+      if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
     case 'NEW_SERVICE_TASK':
     case 'TASK_REASSIGNED':
-    case 'ESCALATION_ALERT':
       await _startServiceIfNeeded();
+      // Pre-fetch the task list so it's ready when the user opens the app.
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     case 'NEW_DELIVERY_TASK':
@@ -114,30 +140,30 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       break;
 
     case 'PULSE':
-      final alertType = (data['alert_type'] ?? 'service').toString();
-      if (alertType == 'food' && !isRoomServiceOrFnB) return;
-      if (alertType == 'delivery' && !isRoomService) return;
-      await _startServiceIfNeeded();
-      break;
+      // Background isolates have no reliable in-memory queue. A scheduler
+      // pulse must never wake the foreground service or create a stale alert.
+      return;
 
     case 'ORDER_ACCEPTED':
     case 'ORDER_CANCELLED':
       if (!isRoomServiceOrFnB) return;
-      if (stopAlert) {
+      // Reconcile count by fetching true state from API
+      await AlertReloadCoordinator.instance.reloadFood();
+      if (TaskAlertService.totalPending == 0 && OrderAlertService.pendingOrderCount == 0) {
         await _stopServiceIfRunning();
       }
       break;
 
     case 'DELIVERY_ACCEPTED':
       if (!isRoomService) return;
-      if (stopAlert) {
-        await _stopServiceIfRunning();
-      }
+      await _stopServiceIfRunning(); // Delivery is play-once anyway
       break;
 
     case 'SERVICE_TASK_ACCEPTED':
     case 'ACCEPTED':
-      if (stopAlert) {
+      // Reconcile count by fetching true state from API
+      await AlertReloadCoordinator.instance.reloadTasks();
+      if (TaskAlertService.totalPending == 0 && OrderAlertService.pendingOrderCount == 0) {
         await _stopServiceIfRunning();
       }
       break;
@@ -166,10 +192,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       if (newStatus == 'DELIVERED' || newStatus == 'COMPLETED' || newStatus == 'CANCELLED') {
         await _stopServiceIfRunning();
       }
+      await AlertReloadCoordinator.instance.reloadTasks();
       break;
   }
 
-  await _showBackgroundNotification(data);
+  if (NotificationPolicy.shouldShowLocalNotification(data)) {
+    await _showBackgroundNotification(data);
+  }
 }
 
 Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
@@ -180,6 +209,8 @@ Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
     await plugin.initialize(const InitializationSettings(android: android, iOS: ios));
 
     final msg = NotificationMessageBuilder.build(data);
+    final title = data['title']?.toString().trim();
+    final body = data['body']?.toString().trim();
 
     final androidDetails = AndroidNotificationDetails(
       msg.channelId,
@@ -197,8 +228,8 @@ Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
 
     await plugin.show(
       msg.notifId,
-      msg.title,
-      msg.body,
+      title == null || title.isEmpty ? msg.title : title,
+      body == null || body.isEmpty ? msg.body : body,
       NotificationDetails(android: androidDetails),
       payload: jsonEncode(data),
     );

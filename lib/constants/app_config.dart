@@ -21,5 +21,5 @@ class AppConfig {
   /// The runtime stage read from the STAGE dart-define flag.
   /// Pass --dart-define=STAGE=dev at build/run time for development.
   static const String stage =
-      String.fromEnvironment('STAGE', defaultValue: 'prod');
+      String.fromEnvironment('STAGE', defaultValue: 'dev');
 }

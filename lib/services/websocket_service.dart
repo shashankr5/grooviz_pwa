@@ -1,14 +1,15 @@
 // services/websocket_service.dart
 //
 // CHANGES IN THIS VERSION:
+//  • Stop looping alerts immediately on all devices when a task or order is accepted/cancelled, cross-device.
 //  • RUSH_HOUR_UPDATED — broadcast to all page listeners so FoodOrdersPage
 //    can update rush hour state in real-time across all devices without
 //    a manual reload. No sound or alert side-effects needed for this type.
 //
 // Previous changes retained:
-//  • ESCALATION_ALERT — calls TaskAlertService.notifyEscalation()
+//  • ESCALATION_ALERT — ignored
 //  • PULSE            — re-rings task alert sound
-//  • ACCEPTED         — another device accepted a task; refreshes task list
+//  • ACCEPTED         — another device accepted a task; refreshes task list and stops alert loops
 //  • TASK_CLOSED      — task closed from another device; refreshes task list
 //  FIX-3: Connection identity guard in connect()
 //  FIX-5: disconnect() for use on logout
@@ -21,7 +22,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'order_alert_service.dart';
 import 'task_alert_service.dart';
-import 'escalation_service.dart';
 import 'session_change_service.dart';
 import '../utils/user_session_helper.dart';
 
@@ -186,11 +186,14 @@ class WebSocketService {
       }
 
       if (type == 'ORDER_ACCEPTED' || type == 'ORDER_CANCELLED') {
+        // Optimistically decrement and stop if count hits zero, keep looping if > 0
+        OrderAlertService.stopOne();
         OrderAlertService.notifyNewOrder();
         return;
       }
 
       if (type == 'ORDER_DELIVERED') {
+        TaskAlertService.stopAll();
         OrderAlertService.stop();
         OrderAlertService.notifyNewOrder();
         return;
@@ -224,7 +227,14 @@ class WebSocketService {
         return;
       }
 
-      if (type == 'SERVICE_TASK_ACCEPTED' || type == 'SERVICE_STATUS_CHANGED' || type == 'SERVICE_STATUS_UPDATE') {
+      if (type == 'SERVICE_TASK_ACCEPTED') {
+        // Optimistically decrement and stop if count hits zero, keep looping if > 0
+        TaskAlertService.stopOneServiceAlert();
+        TaskAlertService.notifyNewTask();
+        return;
+      }
+
+      if (type == 'SERVICE_STATUS_CHANGED' || type == 'SERVICE_STATUS_UPDATE' || type == 'TASK_REASSIGNED') {
         TaskAlertService.notifyNewTask();
         return;
       }
@@ -248,31 +258,30 @@ class WebSocketService {
         return;
       }
 
-      // ── Escalation alert ───────────────────────────────────────────────
-
-      if (type == 'ESCALATION_ALERT') {
-        // Play escalation sound (one-shot, not looped)
-        TaskAlertService.ensureEscalationRunning();
-        // Update badge count AND always refresh the escalated task list.
-        // EscalationService emits on both streams unconditionally —
-        // no selectedFilter guard unlike the old TaskAlertService path.
-        EscalationService.instance.handleEscalationAlert(
-          Map<String, dynamic>.from(data),
-        );
+      // Escalation is not an active client feature.  Ignore its transport
+      // events so they cannot create a sound, badge, stale list, or alert.
+      if (type == 'ESCALATION_ALERT' ||
+          type == 'ESCALATION_STARTED' ||
+          type == 'ESCALATION_STAGE_1' ||
+          type == 'ESCALATION_PULSE') {
         return;
       }
 
       // ── Pulse ──────────────────────────────────────────────────────────
 
       if (type == 'PULSE') {
-        TaskAlertService.ensureServiceRunning();
-        TaskAlertService.notifyNewTask();
+        // A pulse is not a new request. Re-ring only when the already
+        // reconciled queue says actionable service work still exists.
+        if (TaskAlertService.pendingServiceCount > 0) {
+          TaskAlertService.ensureServiceRunning();
+        }
         return;
       }
 
       // ── Accepted ───────────────────────────────────────────────────────
 
       if (type == 'ACCEPTED') {
+        // Optimistically decrement and stop if count hits zero, keep looping if > 0
         TaskAlertService.stopOneServiceAlert();
         TaskAlertService.notifyNewTask();
         return;
@@ -374,13 +383,6 @@ class WebSocketService {
   // ── Dispose ────────────────────────────────────────────────────────────
 
   void dispose() {
-    // NOTE: isConnected is NOT disposed here.
-    // WebSocketService is a singleton that outlives any individual session.
-    // Calling isConnected.dispose() would permanently kill the ValueNotifier
-    // and cause "ValueNotifier<bool> used after being disposed" crashes when
-    // connect() next sets isConnected.value after a re-login.
-    // Instead: set the value to false so all listeners see disconnected state,
-    // then let disconnect() manage credential cleanup.
     _isDisposed = true;
     _subscription?.cancel();
     _channel?.sink.close(status.normalClosure);

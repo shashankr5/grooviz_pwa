@@ -67,7 +67,7 @@ class NotificationNavigationCoordinator {
             );
           }
         } else {
-          _showStaleWarning('Requested task is no longer available or has been closed.');
+          _showAlreadyHandled('This task has already been handled.');
         }
       } else if (payload.entityType == DeepLinkEntityType.delivery) {
         final navState = navigatorKey.currentState;
@@ -96,7 +96,7 @@ class NotificationNavigationCoordinator {
         } else {
           // BUG 2+3 FIX: resolver now checks cancelled orders and returns a fully
           // grouped order. If still null, the order genuinely doesn't exist.
-          _showStaleWarning('Requested food order is no longer active.');
+          _showAlreadyHandled('This order has already been handled.');
         }
       }
     } catch (e) {
@@ -115,18 +115,25 @@ class NotificationNavigationCoordinator {
     }
   }
 
-  void _showStaleWarning(String message) {
+  void _showAlreadyHandled(String message) {
     final context = navigatorKey.currentContext;
     if (context == null) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          '⚠️ $message',
-          style: const TextStyle(color: Colors.white),
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_outline,
+                color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(message,
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          ],
         ),
-        backgroundColor: AppColors.error,
-        duration: const Duration(seconds: 4),
+        backgroundColor: AppColors.textSecondary,
+        duration: const Duration(seconds: 3),
       ),
     );
   }

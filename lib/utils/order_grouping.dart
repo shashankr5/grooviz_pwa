@@ -106,6 +106,7 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
           : (int.tryParse(tapCountVal.toString()) ?? 0);
 
       grouped[orderNo] = {
+        'summaryId':    o['summaryId'] ?? raw?['summary_id'],
         'orderNo':      orderNo,
         'room':         o['roomNumber'],
         'guest':        (o['guestName'] ?? 'Guest').toString(),

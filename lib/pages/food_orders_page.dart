@@ -58,6 +58,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   DateTime? _rushHourEndsAt;
   bool      _rushHourLoading = false; // prevents double-taps during API call
 
+  // ETA tap limit from enterprise_food_service_rule (loaded from session at init)
+  int _maxTapCountFromSession = 5; // safe default; overwritten in initState
+
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
   String   selectedFilter = 'All';
@@ -400,35 +403,21 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     }
   }
 
-  // ── NEW: tell the server to activate rush hour ────────────────────────
-  Future<void> _setRushHour({required bool active, int durationMinutes = 0}) async {
+  // ── NEW: tell the server to toggle rush hour ON or OFF ─────────────────
+  // Duration is now determined by the server from enterprise_food_service_rule.
+  // The old 'durationMinutes' parameter has been removed.
+  Future<void> _setRushHour({required bool active}) async {
     if (_rushHourLoading) return;
     if (mounted) setState(() => _rushHourLoading = true);
 
     try {
-      final result = await _foodOrderService.setRushHour(
-        active: active,
-        durationMinutes: durationMinutes,
-      );
+      final result = await _foodOrderService.setRushHour(active: active);
 
       if (!mounted) return;
 
       if (result["success"] == true) {
-        final endsAt  = result["rush_hour_ends_at"]?.toString();
-        final extra   = (result["rush_hour_extra_min"] as num?)?.toInt() ?? 10;
-        DateTime? parsedEndsAt;
-        if (active) {
-          if (durationMinutes > 0) {
-            parsedEndsAt = DateTime.now().add(Duration(minutes: durationMinutes));
-          } else if (endsAt != null && endsAt.isNotEmpty) {
-            parsedEndsAt = _parseRushHourEndsAt(endsAt);
-          }
-        }
-        _applyRushHourState(
-          active:   active,
-          endsAt:   parsedEndsAt,
-          extraMin: extra,
-        );
+        final newActive = result["rush_hour_active"] == true || result["rush_hour_active"] == 1;
+        _applyRushHourState(active: newActive);
         // WebSocket broadcast is done server-side; other devices update via WS.
       } else {
         _showError(result["message"]);
@@ -538,6 +527,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
       if (mounted) _loadFoodOrders();
     });
+    // Load max tap count from session (saved at login from enterprise_food_service_rule)
+    UserSessionHelper.getMaxTapCount().then((v) {
+      if (mounted && v > 0) setState(() => _maxTapCountFromSession = v);
+    });
   }
 
   @override
@@ -644,7 +637,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   bool _isMaxDelayReached(Map<String, dynamic> order) {
     if (order['etaLocked'] == true) return true;
     final tapCount = (order['etaTapCount'] as num?)?.toInt() ?? 0;
-    if (tapCount >= 5) return true;
+    // Use server-configured max from enterprise_food_service_rule (via session).
+    // Falls back to 5 if not configured.
+    if (tapCount >= _maxTapCountFromSession && _maxTapCountFromSession > 0) return true;
     final orderNo = order['orderNo']?.toString() ?? '';
     if (_maxDelayReachedOrders.contains(orderNo)) return true;
     return (order['extraEta'] ?? 0) as int >= _kMaxExtraEta;
@@ -661,8 +656,14 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       order['status']  = FoodOrderStatus.ready.label;
       order['readyAt'] = DateTime.now();
     });
+    final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
+    if (summaryId == 0) {
+      _showError("Order ID missing. Please refresh.");
+      setState(() { order['status'] = FoodOrderStatus.preparing.label; order.remove('readyAt'); });
+      return;
+    }
     final result = await _foodOrderService.updateFoodOrderStatus(
-        orderNumber: order["orderNo"],
+        summaryId: summaryId,
         status: FoodOrderStatus.ready.api);
     if (!mounted) return;
     if (result["success"] != true) {
@@ -672,8 +673,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       });
       _showError(result["message"]);
     } else {
-      final b = result["data"]?["new_status"];
-      if (b != null) order["raw"]["order_status"] = b;
+      order["raw"]["order_status"] = "READY";
       await _loadFoodOrders();
       AppSnackBar.show(context, "Order marked Ready");
     }
@@ -876,9 +876,6 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       ),
     );
   }
-
-  // ── REMOVED: _deactivateRushHour() and _activateRushHour() ───────────────
-  // Both now go through _setRushHour() which calls the server first.
 
   // ====================== COUNTS ======================
   int get _pendingCount =>
@@ -1099,9 +1096,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
             )
           else
             GestureDetector(
-              onTap: () => rushHourActive
-                  ? _setRushHour(active: false)
-                  : _showRushHourOptions(),
+              onTap: () => rushHourActive ? _setRushHour(active: false) : _showRushHourOptions(),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 width: 44, height: 24,
@@ -1540,6 +1535,11 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               return;
                             }
                             HapticFeedback.selectionClick();
+                            final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
+                            if (summaryId == 0) {
+                              _showError("Order ID missing. Please refresh.");
+                              return;
+                            }
                             final initialExpires = DateTime.now().add(Duration(
                                 minutes: 15 + (rushHourActive ? _rushExtraMinutes() : 0)));
                             setState(() {
@@ -1557,9 +1557,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               }
                             });
                             final result =
-                                await _foodOrderService.updateFoodOrderStatus(
-                                    orderNumber: order["orderNo"],
-                                    status: FoodOrderStatus.preparing.api);
+                                await _foodOrderService.acceptFoodOrder(
+                                    summaryId: summaryId);
                             if (!mounted) return;
                             if (result["success"] != true) {
                               setState(() {
@@ -1569,16 +1568,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               });
                               _showError(result["message"]);
                             } else {
-                              final b = result["data"]?["new_status"];
-                              if (b != null) order["raw"]["order_status"] = b;
-                              final serverExpires = result["etaExpiresAt"]?.toString() ??
-                                  result["data"]?["eta_expires_at"]?.toString() ??
-                                  '';
-                              if (serverExpires.isNotEmpty) {
-                                setState(() {
-                                  order["etaExpiresAt"] = parseOrderDate(serverExpires);
-                                });
-                              }
+                              order["raw"]["order_status"] = "ACCEPTED";
                               await OrderAlertService.stopOne();
                               AppSnackBar.show(context, "Order accepted");
                             }
@@ -1629,78 +1619,62 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               ? () => _showError(
                                   "Maximum delay reached. Cannot add more time.")
                               : () async {
-                                  final orderNo =
-                                      order['orderNo']?.toString() ?? '';
-                                  final prevExpires =
-                                      order['etaExpiresAt'] as DateTime?;
-                                  final baseTime =
-                                      (prevExpires != null && prevExpires.isAfter(DateTime.now()))
-                                          ? prevExpires
-                                          : DateTime.now();
-                                  final newExpires =
-                                      baseTime.add(const Duration(minutes: 2));
-                                  final prevTaps =
-                                      (order['etaTapCount'] as num?)?.toInt() ?? 0;
-                                  final newTaps = prevTaps + 1;
-                                  const addMinutes = 2;
+                                   final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
+                                   if (summaryId == 0) {
+                                     _showError("Order ID missing. Please refresh.");
+                                     return;
+                                   }
+                                   final orderNo   = order['orderNo']?.toString() ?? '';
+                                   final prevTaps  = (order['etaTapCount'] as num?)?.toInt() ?? 0;
+                                   final newTaps   = prevTaps + 1;
 
-                                  setState(() {
-                                    order['etaExpiresAt'] = newExpires;
-                                    order['etaTapCount']  = newTaps;
-                                    order['etaLocked']    = newTaps >= 5;
-                                    if (newTaps >= 5) {
-                                      _maxDelayReachedOrders.add(orderNo);
-                                    }
-                                  });
+                                   // Optimistic update
+                                   setState(() {
+                                     order['etaTapCount'] = newTaps;
+                                     order['etaLocked']   =
+                                         newTaps >= _maxTapCountFromSession &&
+                                         _maxTapCountFromSession > 0;
+                                     if (order['etaLocked'] == true) {
+                                       _maxDelayReachedOrders.add(orderNo);
+                                     }
+                                   });
 
-                                  final result = await _foodOrderService
-                                      .updateFoodOrderStatus(
-                                    orderNumber: orderNo,
-                                    status:      'ADD_ETA',
-                                    addMinutes:  addMinutes,
-                                  );
+                                   final result = await _foodOrderService.tapEta(
+                                     summaryId: summaryId,
+                                   );
 
-                                  if (!mounted) return;
+                                   if (!mounted) return;
 
-                                  if (result["success"] != true) {
-                                    setState(() {
-                                      order['etaExpiresAt'] = prevExpires;
-                                      order['etaTapCount']  = prevTaps;
-                                      order['etaLocked']    = prevTaps >= 5;
-                                      if (prevTaps < 5) {
-                                        _maxDelayReachedOrders.remove(orderNo);
-                                      }
-                                    });
-                                    _showError(result["message"]);
-                                    return;
-                                  }
+                                   if (result["success"] != true) {
+                                     // Roll back optimistic update
+                                     setState(() {
+                                       order['etaTapCount'] = prevTaps;
+                                       order['etaLocked']   =
+                                           prevTaps >= _maxTapCountFromSession &&
+                                           _maxTapCountFromSession > 0;
+                                       if (order['etaLocked'] != true) {
+                                         _maxDelayReachedOrders.remove(orderNo);
+                                       }
+                                     });
+                                     _showError(result["message"]);
+                                     return;
+                                   }
 
-                                  final serverExpires =
-                                      result["etaExpiresAt"]?.toString() ??
-                                      result["data"]?["eta_expires_at"]?.toString() ??
-                                      '';
-                                  final serverTaps =
-                                      (result["etaTapCount"] as num?)?.toInt() ??
-                                      (result["data"]?["eta_tap_count"] as num?)?.toInt() ??
-                                      newTaps;
-                                  final serverLocked =
-                                      result["etaLocked"] == 1 ||
-                                      result["etaLocked"] == true ||
-                                      result["etaLocked"] == '1' ||
-                                      result["data"]?["eta_locked"] == 1 ||
-                                      result["data"]?["eta_locked"] == true;
+                                   // Apply server-confirmed tap state
+                                   final serverTaps   = (result["etaTapCount"] as num?)?.toInt() ?? newTaps;
+                                   final serverEtaStr = result["finalEtaTime"]?.toString() ?? '';
+                                   final serverLocked = serverTaps >= _maxTapCountFromSession &&
+                                                        _maxTapCountFromSession > 0;
 
-                                  setState(() {
-                                    if (serverExpires.isNotEmpty) {
-                                      order['etaExpiresAt'] = parseOrderDate(serverExpires);
-                                    }
-                                    order['etaTapCount'] = serverTaps;
-                                    order['etaLocked']   = serverLocked;
-                                    if (serverLocked) {
-                                      _maxDelayReachedOrders.add(orderNo);
-                                    }
-                                  });
-                                },
+                                   setState(() {
+                                     order['etaTapCount'] = serverTaps;
+                                     order['etaLocked']   = serverLocked;
+                                     if (serverLocked) _maxDelayReachedOrders.add(orderNo);
+                                     if (serverEtaStr.isNotEmpty) {
+                                       order['etaExpiresAt'] = parseOrderDate(serverEtaStr);
+                                     }
+                                   });
+                                 },
                           child: Container(
                             padding: const EdgeInsets.all(11),
                             decoration: BoxDecoration(
@@ -1782,6 +1756,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   // ── MODALS ────────────────────────────────────────────────────
+  // Rush hour is now toggled directly — no duration picker.
+  // Duration is set server-side from enterprise_food_service_rule.
   void _showRushHourOptions() {
     showModalBottomSheet(
       context: context,
@@ -1794,51 +1770,76 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
           children: [
             Container(
               margin: const EdgeInsets.only(top: 12, bottom: 8),
-              width: 36, height: 4,
+              width: 36,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
             const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('Rush Hour Duration',
+              padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
+              child: Text('Enable Rush Hour?',
                   style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary)),
             ),
-            _rushOption('30 Minutes', 30),
-            _rushOption('1 Hour',     60),
-            _rushOption('2 Hours',   120),
-            _rushOption('4 Hours',   240),
-            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: Text(
+                'Rush hour duration and extra ETA are set by your enterprise configuration.',
+                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: AppColors.border),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('Cancel',
+                          style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _setRushHour(active: true);
+                      },
+                      icon: const Icon(Icons.local_fire_department_rounded,
+                          size: 16, color: Colors.white),
+                      label: const Text('Enable',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
-
-  Widget _rushOption(String label, int minutes) => ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppColors.errorLight,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(Icons.local_fire_department_rounded,
-              color: AppColors.error, size: 18),
-        ),
-        title: Text(label,
-            style: const TextStyle(fontWeight: FontWeight.w600)),
-        trailing: const Icon(Icons.chevron_right_rounded,
-            color: AppColors.textDisabled),
-        onTap: () {
-          Navigator.pop(context);
-          // ── Now calls the server instead of setting state directly ──
-          _setRushHour(active: true, durationMinutes: minutes);
-        },
-      );
 
   void _showCancelReasons(Map<String, dynamic> order) {
     showModalBottomSheet(
@@ -1885,7 +1886,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                   });
                   final result =
                       await _foodOrderService.updateFoodOrderStatus(
-                          orderNumber:  order["orderNo"],
+                          summaryId:    (order['summaryId'] as num?)?.toInt() ?? 0,
                           status:       FoodOrderStatus.cancelled.api,
                           cancelReason: reason);
                   if (!mounted) return;
@@ -1897,8 +1898,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     _showError(result["message"]);
                     return;
                   }
-                  final b = result["data"]?["new_status"];
-                  if (b != null) order["raw"]["order_status"] = b;
+                  order["raw"]["order_status"] = "CANCELLED";
                   setState(() {
                     order["raw"]["cancel_reason"] = reason;
                     foodOrders.remove(order);

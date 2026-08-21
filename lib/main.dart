@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'pages/login_page.dart';
 import 'pages/main_navigation.dart';
@@ -15,6 +16,8 @@ import 'services/fcm_service.dart';
 import 'services/notification_handler.dart';
 import 'services/fcm_background.dart';
 import 'services/alert_reload_coordinator.dart';
+import 'services/task_alert_service.dart';
+import 'services/order_alert_service.dart';
 import 'services/notification_navigation_coordinator.dart';
 import 'services/bluetooth_printer_service.dart';
 import 'utils/user_session_helper.dart';
@@ -76,6 +79,29 @@ void main() async {
     unawaited(bluetoothPrinterService.init());
 
     final bool isLoggedIn = await UserSessionHelper.isLoggedIn();
+
+    if (isLoggedIn) {
+      // COLD LAUNCH RECONCILIATION:
+      // Fetch the true pending counts from the server before rendering the app.
+      try {
+        await AlertReloadCoordinator.instance.reloadTasks();
+        await AlertReloadCoordinator.instance.reloadFood();
+        await AlertReloadCoordinator.instance.reloadDelivery();
+      } catch (e) {
+        print('Cold launch reconciliation reloads failed: $e');
+      }
+
+      // If true pending counts are zero, cancel all notifications and stop the service
+      if (TaskAlertService.totalPending == 0 && OrderAlertService.pendingOrderCount == 0) {
+        await TaskAlertService.stopAll();
+        await OrderAlertService.stop();
+        // Cancel all local notifications in the shade
+        try {
+          final FlutterLocalNotificationsPlugin localNotif = FlutterLocalNotificationsPlugin();
+          await localNotif.cancelAll();
+        } catch (_) {}
+      }
+    }
 
     runApp(MyApp(isLoggedIn: isLoggedIn));
   }, (error, stack) {

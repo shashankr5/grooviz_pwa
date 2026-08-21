@@ -31,10 +31,9 @@ class KpiCommandGrid extends StatelessWidget {
           spacing: 12,
           runSpacing: 12,
           children: [
-            // Tile 1: Escalated SLA Breaches
             _KpiTile(
               width: itemWidth,
-              title: 'Escalated SLA',
+              title: 'Escalated',
               count: escalationCount,
               icon: Icons.warning_amber_rounded,
               bgColor: AppColors.errorLight,
@@ -43,7 +42,7 @@ class KpiCommandGrid extends StatelessWidget {
               onTap: () => onFilterSelected('Escalated'),
             ),
 
-            // Tile 2: Open Requests
+            // Open Requests
             _KpiTile(
               width: itemWidth,
               title: 'Open Requests',

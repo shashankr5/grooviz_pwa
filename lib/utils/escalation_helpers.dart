@@ -9,6 +9,7 @@
 // All escalation UI layers import from here — no more duplicated role
 // constants scattered across home_page, ticket_details, timeline_task_card.
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
 
@@ -116,34 +117,67 @@ class EscalationVisibility {
 enum EscalationAccentStyle { info, warning, critical }
 
 // ── Task-map escalation extractor ─────────────────────────────────────────────
+//
+// All fields come from get_all_services_mobile RESULT rows mapped by
+// HomeService._mapTasks(). No additional network call is ever made here.
 
 class EscalationInfo {
-  final bool isEscalated;
-  final int? instanceId;
-  final String? stageName;        // "Level 2 – Supervisor"
-  final int? stageId;
-  final String? escalationStatus; // "Working" | null
+  // ── Current escalation state ──────────────────────────────────────────────
+  final bool    isEscalated;
+  final int?    instanceId;       // escalation_instance_id
+  final int?    stageId;          // current_stage_id
+  final String? stageName;        // current_stage_name  e.g. "Level 2 – Supervisor"
+  final int?    stageLevel;       // current_stage_level  e.g. 2
+  final String? escalationStatus; // "Working" | "Completed" | null
   final DateTime? nextEscalationAt;
-  final int? escalationTimeMinutes;
-  final String? escalatedToName;
+  final int?    escalationTimeMinutes;
+
+  // ── Who is currently being notified ──────────────────────────────────────
+  // Parsed from current_stage_users_json — first name shown inline on cards.
+  final String?       currentNotifiedName;  // display name of lead notified user
+  final List<String>  currentNotifiedNames; // all names at current stage
+
+  // ── Acceptance ────────────────────────────────────────────────────────────
+  final int?    acceptedStageLevel; // level at which the task was accepted
+  final String? acceptedStageName;  // name of that level
+
+  // ── Closure ───────────────────────────────────────────────────────────────
+  final String? closedByName; // closed_by_user_name
+
+  // ── Most recent reassignment ──────────────────────────────────────────────
+  final String?   reassignedToName;   // recent_reassigned_to_user_name
+  final String?   reassignedByName;   // recent_reassigned_by_user_name
+  final DateTime? reassignedAt;       // recent_reassigned_at
 
   const EscalationInfo({
     required this.isEscalated,
     this.instanceId,
-    this.stageName,
     this.stageId,
+    this.stageName,
+    this.stageLevel,
     this.escalationStatus,
     this.nextEscalationAt,
     this.escalationTimeMinutes,
-    this.escalatedToName,
+    this.currentNotifiedName,
+    this.currentNotifiedNames = const [],
+    this.acceptedStageLevel,
+    this.acceptedStageName,
+    this.closedByName,
+    this.reassignedToName,
+    this.reassignedByName,
+    this.reassignedAt,
   });
 
   static const EscalationInfo none = EscalationInfo(isEscalated: false);
 
-  /// Extract from the task map produced by HomeService._mapTasks().
+  // ── Factory ───────────────────────────────────────────────────────────────
+
+  /// Build from the task map produced by HomeService._mapTasks().
+  /// Returns [EscalationInfo.none] when the task is not escalated.
   factory EscalationInfo.fromTask(Map<String, dynamic> task) {
     final raw = task['raw'] as Map? ?? {};
 
+    // ── Is escalated? ────────────────────────────────────────────────────
     final instanceId = (task['escalation_instance_id'] ??
         raw['escalation_instance_id']) as int?;
 
@@ -155,35 +189,108 @@ class EscalationInfo {
 
     if (!isEscalated) return EscalationInfo.none;
 
+    // ── SLA countdown ────────────────────────────────────────────────────
     final nextRaw = (task['next_escalation_at'] ??
-            raw['next_escalation_at'] ??
-            '')
-        .toString();
+            raw['next_escalation_at'] ?? '').toString();
     DateTime? nextAt;
     if (nextRaw.isNotEmpty && nextRaw != 'null') {
       nextAt = DateTime.tryParse(nextRaw.replaceAll(' ', 'T'))?.toLocal();
     }
 
+    // ── Reassigned at ────────────────────────────────────────────────────
+    final reassignedAtRaw = (task['recent_reassigned_at'] ??
+            raw['recent_reassigned_at'] ?? '').toString();
+    DateTime? reassignedAt;
+    if (reassignedAtRaw.isNotEmpty && reassignedAtRaw != 'null') {
+      reassignedAt =
+          DateTime.tryParse(reassignedAtRaw.replaceAll(' ', 'T'))?.toLocal();
+    }
+
+    // ── Current stage users (parse JSON array) ───────────────────────────
+    // current_stage_users_json is a JSON array of objects with a "name" key.
+    // Extract display names for "Notified: X, Y" line on cards.
+    final List<String> notifiedNames = _parseUserNames(
+      task['current_stage_users_json'] ?? raw['current_stage_users_json'],
+    );
+
     return EscalationInfo(
       isEscalated:           true,
       instanceId:            instanceId,
-      stageName:             (task['current_stage_name'] ??
-              raw['current_stage_name'] ??
-              task['stage_name'])
-          ?.toString(),
       stageId:               (task['current_stage_id'] ??
           raw['current_stage_id']) as int?,
+      stageName:             (task['current_stage_name'] ??
+              raw['current_stage_name'])
+          ?.toString(),
+      stageLevel:            _parseInt(task['current_stage_level'] ??
+          raw['current_stage_level']),
       escalationStatus:      (task['escalation_status'] ??
               raw['escalation_status'])
           ?.toString(),
       nextEscalationAt:      nextAt,
-      escalationTimeMinutes: (task['escalation_time_minutes'] ??
-          raw['escalation_time_minutes']) as int?,
-      escalatedToName:       (task['escalated_to_name'] ??
-              task['notified_user_name'] ??
-              raw['escalated_to_name'])
+      escalationTimeMinutes: _parseInt(task['escalation_time_minutes'] ??
+          raw['escalation_time_minutes']),
+      currentNotifiedNames:  notifiedNames,
+      currentNotifiedName:   notifiedNames.isNotEmpty ? notifiedNames.first : null,
+      acceptedStageLevel:    _parseInt(task['accepted_stage_level'] ??
+          raw['accepted_stage_level']),
+      acceptedStageName:     (task['accepted_stage_name'] ??
+              raw['accepted_stage_name'])
           ?.toString(),
+      closedByName:          (task['closed_by_user_name'] ??
+              raw['closed_by_user_name'])
+          ?.toString(),
+      reassignedToName:      (task['recent_reassigned_to_user_name'] ??
+              raw['recent_reassigned_to_user_name'])
+          ?.toString(),
+      reassignedByName:      (task['recent_reassigned_by_user_name'] ??
+              raw['recent_reassigned_by_user_name'])
+          ?.toString(),
+      reassignedAt:          reassignedAt,
     );
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  static int? _parseInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    return int.tryParse(v.toString());
+  }
+
+  /// Parse a JSON array value into a flat list of user name strings.
+  /// Handles: null, already-decoded List, or raw JSON String.
+  static List<String> _parseUserNames(dynamic raw) {
+    if (raw == null) return const [];
+    try {
+      List<dynamic> list;
+      if (raw is List) {
+        list = raw;
+      } else {
+        // May be a JSON string from the DB
+        final decoded = _tryDecodeJson(raw.toString());
+        if (decoded is List) {
+          list = decoded;
+        } else {
+          return const [];
+        }
+      }
+      return list
+          .whereType<Map>()
+          .map((u) =>
+              (u['name'] ?? u['user_name'] ?? u['username'] ?? '').toString().trim())
+          .where((n) => n.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static dynamic _tryDecodeJson(String s) {
+    try {
+      return jsonDecode(s);
+    } catch (_) {
+      return null;
+    }
   }
 
   // ── SLA countdown helpers ─────────────────────────────────────────────────
@@ -195,10 +302,8 @@ class EscalationInfo {
     return nextEscalationAt!.difference(DateTime.now()).inSeconds;
   }
 
-  bool get isOverdue => hasCountdown && remainingSeconds <= 0;
-
-  bool get isWarning =>
-      hasCountdown && remainingSeconds > 0 && remainingSeconds <= 60;
+  bool get isOverdue  => hasCountdown && remainingSeconds <= 0;
+  bool get isWarning  => hasCountdown && remainingSeconds > 0 && remainingSeconds <= 60;
 
   /// e.g. "05:30" or "+02:14" when overdue
   String get countdownLabel {
@@ -211,9 +316,35 @@ class EscalationInfo {
   /// Human-readable SLA line for banners/cards
   String get slaLabel {
     if (!hasCountdown) return stageName ?? 'Escalated';
-    if (isOverdue)  return '${remainingSeconds.abs() ~/ 60} min overdue';
-    if (isWarning)  return 'Due in < 1 min';
+    if (isOverdue) return '${remainingSeconds.abs() ~/ 60} min overdue';
+    if (isWarning) return 'Due in < 1 min';
     return '${remainingSeconds ~/ 60} min remaining';
+  }
+
+  /// "Level 2 – Supervisor" or just "Level 2" when name is absent
+  String get stageLevelLabel {
+    if (stageLevel == null) return stageName ?? '';
+    if (stageName != null && stageName!.isNotEmpty) return stageName!;
+    return 'Level $stageLevel';
+  }
+
+  /// "Accepted at Level 2 – Supervisor" line for the detail banner
+  String? get acceptedAtLabel {
+    if (acceptedStageLevel == null) return null;
+    if (acceptedStageName != null && acceptedStageName!.isNotEmpty) {
+      return 'Accepted at: $acceptedStageName';
+    }
+    return 'Accepted at: Level $acceptedStageLevel';
+  }
+
+  /// Comma-joined list of currently notified users, capped at 3.
+  String get notifiedSummary {
+    if (currentNotifiedNames.isEmpty) return '';
+    final shown = currentNotifiedNames.take(3).join(', ');
+    final extra = currentNotifiedNames.length > 3
+        ? ' +${currentNotifiedNames.length - 3}'
+        : '';
+    return '$shown$extra';
   }
 }
 

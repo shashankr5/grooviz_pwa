@@ -98,7 +98,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     // Silently fetch fresh ticket data so stale notes / status from the
     // parent list are replaced with the current server state.
     _refreshFromServer();
-    _loadEscalationHistory();
 
     _scrollController.addListener(() {
       final show = _scrollController.offset > 300;
@@ -185,6 +184,50 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       // Network / parse failure — silently fall back to the placeholder data.
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  // ── Fetch escalation audit trail for task ─────────────────────────────────
+
+  Future<void> _loadEscalationHistory() async {
+    if (_serviceRequestId == 0) return;
+    setState(() => _isLoadingEscHist = true);
+    try {
+      final res =
+          await _homeService.getEscalationHistoryForTask(_serviceRequestId);
+      if (!mounted) return;
+      if (res['success'] == true) {
+        setState(() {
+          _escalationHistory =
+              (res['history'] as List? ?? []).cast<Map<String, dynamic>>();
+        });
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _isLoadingEscHist = false);
+  }
+
+  // ── Resolve assignee phone ────────────────────────────────────────────────
+
+  Future<void> _fetchAssignedPhone() async {
+    final raw          = _task['raw'] as Map<String, dynamic>? ?? {};
+    final assignedToId = (raw['assigned_to'] ?? '').toString();
+    if (assignedToId.isEmpty) return;
+
+    setState(() => _phoneLoading = true);
+    try {
+      final result = await _homeService.getStaffList(
+        requestId: _serviceRequestId,
+      );
+      if (!mounted) return;
+      if (result['success'] == true) {
+        final staff =
+            (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
+        for (final s in staff) {
+          final sid = (s['userId'] ?? s['id'] ?? '').toString();
+          if (sid == assignedToId) {
+            final phone = (s['phone'] ?? '').toString();
+            if (phone.isNotEmpty && mounted) {
+              setState(() {
                 _assignedPhone = phone;
                 if (_task['raw'] is Map) {
                   (_task['raw'] as Map)['assigned_to_phone'] = phone;
@@ -213,20 +256,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     return int.tryParse(v.toString());
   }
 
-  bool get _isEscalated {
-    final isEscVal = (_task['is_escalated'] ??
-            (_task['raw'] as Map?)?['is_escalated'] ??
-            0);
-    if (isEscVal == 1 || isEscVal == true) return true;
-    if (_task['task_flag'] == 'Escalated') return true;
-
-    // Check service request specific fields
-    final escId = _task['escalation_instance_id'] ?? (_task['raw'] as Map?)?['escalation_instance_id'];
-    final escStatus = _task['escalation_status'] ?? (_task['raw'] as Map?)?['escalation_status'];
-    if (escId != null && escStatus != null) return true;
-
-    return false;
-  }
+  // Escalation presentation is disabled until the feature is reintroduced
+  // end-to-end. Normal service-task actions remain unchanged.
+  bool get _isEscalated => false;
 
   bool get _canTakeOver {
     if (!_isEscalated) return false;
@@ -939,10 +971,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
                   const SizedBox(height: 12),
 
-                  _buildEscalationHistoryCard(),
-
-                  const SizedBox(height: 12),
-
                   _buildNoteCard(),
 
                   if (!_isClosed) ...[
@@ -1056,12 +1084,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       decoration: BoxDecoration(
         color:        accentColor.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-            color: accentColor.withValues(alpha: 0.35), width: 1.5),
+        border: Border.all(color: accentColor.withValues(alpha: 0.35), width: 1.5),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header strip ──────────────────────────────────────────────
+          // ── Header strip: label + live countdown ────────────────────────
           Container(
             width:   double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
@@ -1076,13 +1104,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  EscalationDisplay.accentBarLabel(
-                      accentStyle, esc.stageName),
+                  EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
                   style: const TextStyle(
-                    color:         Colors.white,
-                    fontSize:      11,
-                    fontWeight:    FontWeight.w700,
-                    letterSpacing: 0.4,
+                    color: Colors.white, fontSize: 11,
+                    fontWeight: FontWeight.w700, letterSpacing: 0.4,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1093,24 +1118,22 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             ]),
           ),
 
-          // ── Body ──────────────────────────────────────────────────────
+          // ── Body: stage + SLA + detail rows ─────────────────────────────
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Stage pill column
-                if (esc.stageName != null && esc.stageName!.isNotEmpty) ...[
-                  EscalationDisplay.stagePill(esc.stageName!),
-                  const SizedBox(width: 12),
-                ],
-                // SLA info column
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
+                // Stage pill + SLA label on the same row
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    if (esc.stageName != null && esc.stageName!.isNotEmpty) ...[
+                      EscalationDisplay.stagePill(esc.stageName!),
+                      const SizedBox(width: 10),
+                    ],
+                    Expanded(
+                      child: Text(
                         esc.slaLabel,
                         style: TextStyle(
                           fontSize:   13,
@@ -1118,20 +1141,108 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                           color:      accentColor,
                         ),
                       ),
-                      if (originalAssignee.isNotEmpty) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          'Originally assigned to: $originalAssignee',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color:    AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
+
+                // ── Info rows ────────────────────────────────────────────
+                const SizedBox(height: 10),
+
+                // Currently notified staff at this level
+                if (esc.notifiedSummary.isNotEmpty)
+                  _escalationInfoRow(
+                    Icons.notifications_active_outlined,
+                    'Notified',
+                    esc.notifiedSummary,
+                    AppColors.warning,
+                  ),
+
+                // Accepted at level
+                if (esc.acceptedAtLabel != null)
+                  _escalationInfoRow(
+                    Icons.check_circle_outline_rounded,
+                    'Accepted',
+                    esc.acceptedAtLabel!
+                        .replaceFirst('Accepted at: ', ''),
+                    AppColors.success,
+                  ),
+
+                // Original assignee (before any escalation)
+                if (originalAssignee.isNotEmpty)
+                  _escalationInfoRow(
+                    Icons.person_outline_rounded,
+                    'Originally',
+                    originalAssignee,
+                    AppColors.textSecondary,
+                  ),
+
+                // Latest reassignment
+                if (esc.reassignedToName != null &&
+                    esc.reassignedToName!.isNotEmpty) ...[
+                  _escalationInfoRow(
+                    Icons.swap_horiz_rounded,
+                    'Reassigned to',
+                    esc.reassignedToName!,
+                    AppColors.info,
+                  ),
+                  if (esc.reassignedByName != null &&
+                      esc.reassignedByName!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 20, top: 1),
+                      child: Text(
+                        'by ${esc.reassignedByName}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color:    AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                ],
+
+                // Closed by
+                if (esc.closedByName != null &&
+                    esc.closedByName!.isNotEmpty)
+                  _escalationInfoRow(
+                    Icons.lock_outline_rounded,
+                    'Closed by',
+                    esc.closedByName!,
+                    AppColors.success,
+                  ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compact label + value row used inside the escalation banner body.
+  Widget _escalationInfoRow(
+      IconData icon, String label, String value, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 6),
+          Text(
+            '$label: ',
+            style: TextStyle(
+              fontSize:   12,
+              fontWeight: FontWeight.w600,
+              color:      color,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 12,
+                color:    AppColors.textPrimary,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

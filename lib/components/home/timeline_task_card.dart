@@ -114,41 +114,11 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
         .toString();
 
     // ── Resolution SLA Timer Logic ─────────────────────────────────────────
-    final String nextEscRaw = (task['next_escalation_at'] ??
-            task['raw']?['next_escalation_at'] ??
-            '')
-        .toString();
-    final DateTime? nextEscAt = _parseTimestamp(nextEscRaw);
-
-    final bool isInProgress = statusStr.toLowerCase() == 'in progress';
-    int? remainingSecs;
-    if (isInProgress && nextEscAt != null) {
-      remainingSecs = nextEscAt.difference(DateTime.now()).inSeconds;
-    }
-
-    final bool isWarningMin =
-        remainingSecs != null && remainingSecs > 0 && remainingSecs <= 60;
-    final bool isResolutionOverdue =
-        remainingSecs != null && remainingSecs <= 0;
-
-    if (isWarningMin) {
-      if (!_blinkController.isAnimating) {
-        _blinkController.repeat(reverse: true);
-      }
-    } else {
-      if (_blinkController.isAnimating) {
-        _blinkController.stop();
-        _blinkController.value = 1.0;
-      }
-    }
-
     final Color statusCol = AppColors.statusColor(statusStr);
     final Color statusBg = AppColors.statusLightColor(statusStr);
 
-    final esc         = EscalationInfo.fromTask(task);
-    final role        = escalationRoleFromName(widget.userRole);
-    final accentStyle = EscalationVisibility.accentStyle(role);
-    final hasBreach   = esc.isEscalated || isResolutionOverdue;
+    // Escalation presentation is disabled. Keep only the normal card styling;
+    // an independent resolution-SLA timer may still render where applicable.
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -157,49 +127,14 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
-          border: hasBreach
-              ? EscalationDisplay.escalatedBorder()
-              : Border.all(color: AppColors.border.withValues(alpha: 0.6)),
-          boxShadow: hasBreach
-              ? EscalationDisplay.escalatedShadow()
-              : [BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: const Offset(0, 4))],
+          border: Border.all(color: AppColors.border.withValues(alpha: 0.6)),
+          boxShadow: [
+            BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: Offset(0, 4)),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Escalation accent bar ──────────────────────────────────────
-            if (esc.isEscalated)
-              Container(
-                width:   double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 12),
-                decoration: BoxDecoration(
-                  color: EscalationDisplay.accentBarColor(accentStyle),
-                  borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(14)),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.warning_amber_rounded,
-                      color: Colors.white, size: 13),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      EscalationDisplay.accentBarLabel(
-                          accentStyle, esc.stageName),
-                      style: AppTypography.caption.copyWith(
-                        color:         Colors.white,
-                        fontSize:      10,
-                        fontWeight:    FontWeight.w700,
-                        letterSpacing: 0.5,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  EscalationDisplay.countdownChip(esc),
-                ]),
-              ),
-
             Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -263,76 +198,6 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                       // Status Pill & Live Resolution Timer
                       Row(
                         children: [
-                          if (isInProgress && remainingSecs != null) ...[
-                            AnimatedBuilder(
-                              animation: _blinkAnimation,
-                              builder: (ctx, child) {
-                                final opacity = isWarningMin
-                                    ? _blinkAnimation.value
-                                    : 1.0;
-                                final color = isResolutionOverdue
-                                    ? AppColors.error
-                                    : (isWarningMin
-                                        ? Colors.orange.shade800
-                                        : AppColors.primary);
-                                final bgColor = isResolutionOverdue
-                                    ? AppColors.errorLight
-                                    : (isWarningMin
-                                        ? Colors.orange.shade50
-                                        : AppColors.primaryLight);
-
-                                final absSecs = remainingSecs!.abs();
-                                final mins = (absSecs / 60).floor();
-                                final secs = (absSecs % 60);
-                                final timeFormatted =
-                                    '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
-
-                                final label = isResolutionOverdue
-                                    ? '+$timeFormatted'
-                                    : timeFormatted;
-
-                                return Opacity(
-                                  opacity: opacity,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 7, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: bgColor,
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                          color: color.withValues(alpha: 0.3),
-                                          width: 1.0),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          isResolutionOverdue
-                                              ? Icons.error_outline_rounded
-                                              : (isWarningMin
-                                                  ? Icons.bolt_rounded
-                                                  : Icons.timer_outlined),
-                                          size: 12,
-                                          color: color,
-                                        ),
-                                        const SizedBox(width: 3),
-                                        Text(
-                                          label,
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w700,
-                                            color: color,
-                                            letterSpacing: 0.2,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                            const SizedBox(width: 6),
-                          ],
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 10, vertical: 5),
@@ -577,4 +442,3 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     );
   }
 }
-

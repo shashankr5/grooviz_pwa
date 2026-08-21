@@ -241,8 +241,26 @@ class HomeService {
         "escalation_status":      m["escalation_status"],   // "Working" | null
         "current_stage_id":       m["current_stage_id"],
         "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 – Supervisor"
+        "current_stage_level":    m["current_stage_level"],  // numeric 1,2,3…
+        "current_stage_users_json": m["current_stage_users_json"], // JSON — users being notified now
         "next_escalation_at":     m["next_escalation_at"], // ISO-8601 — drives SLA countdown
         "escalation_time_minutes": m["escalation_time_minutes"],
+        // ── Acceptance fields ────────────────────────────────────────────
+        "accepted_stage_level":   m["accepted_stage_level"], // level at which task was accepted
+        "accepted_stage_name":    m["accepted_stage_name"],  // e.g. "Level 2 – Supervisor"
+        "accepted_user_json":     m["accepted_user_json"],   // JSON user object of acceptor
+        // ── Closure fields ───────────────────────────────────────────────
+        "closed_by_user_id":      m["closed_by_user_id"],
+        "closed_by_user_name":    m["closed_by_user_name"],
+        // ── Recent escalated users ───────────────────────────────────────
+        "recent_escalation_level":  m["recent_escalation_level"],
+        "recent_escalated_users_json": m["recent_escalated_users_json"],
+        // ── Reassignment fields ──────────────────────────────────────────
+        "recent_reassigned_to_user_id":   m["recent_reassigned_to_user_id"],
+        "recent_reassigned_to_user_name": m["recent_reassigned_to_user_name"],
+        "recent_reassigned_by_user_id":   m["recent_reassigned_by_user_id"],
+        "recent_reassigned_by_user_name": m["recent_reassigned_by_user_name"],
+        "recent_reassigned_at":           m["recent_reassigned_at"],
         // ── Timestamps ──────────────────────────────────────────────────
         "accepted_at":   m["accepted_at"],
         "created_at":    m["created_at"],
@@ -467,21 +485,25 @@ class HomeService {
           : rawStatus is Map
               ? [rawStatus]
               : const <dynamic>[];
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response"};
-      }
-
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
-
-      if (flag != "S") return {"success": false, "message": msg ?? "Failed"};
-
       final rawResult = response.data["RESULT"];
       final resultList = rawResult is List
           ? rawResult
           : rawResult is Map
               ? [rawResult]
               : const <dynamic>[];
+      final status = statusList.isNotEmpty && statusList.first is Map
+          ? statusList.first as Map
+          : resultList.isNotEmpty && resultList.first is Map
+              ? resultList.first as Map
+              : const <dynamic, dynamic>{};
+      if (status.isEmpty) {
+        return {"success": false, "message": "Invalid response"};
+      }
+
+      final flag = status["status"]?.toString().toUpperCase();
+      final msg = status["message"];
+      if (flag != "S") return {"success": false, "message": msg ?? "Failed"};
+
       final updatedTask = resultList.isNotEmpty && resultList.first is Map
           ? Map<String, dynamic>.from(resultList.first as Map)
           : <String, dynamic>{};
@@ -707,8 +729,21 @@ class HomeService {
         return {"success": false, "message": msg ?? "Failed", "team": []};
       }
 
-      final teamList       = response.data["RESULT"]  as List? ?? [];
-      final drillDownList  = response.data["RESULT2"] as List? ?? [];
+      final rawTeam = response.data["RESULT"];
+      final rawDrillDown = response.data["RESULT2"];
+      final teamList = (rawTeam is List
+              ? rawTeam
+              : rawTeam is Map
+                  ? [rawTeam]
+                  : const <dynamic>[])
+          .whereType<Map>()
+          .map(_normaliseTeamPerformanceRow)
+          .toList();
+      final drillDownList = rawDrillDown is List
+          ? rawDrillDown
+          : rawDrillDown is Map
+              ? [rawDrillDown]
+              : const <dynamic>[];
 
       return {
         "success":    true,
@@ -729,6 +764,39 @@ class HomeService {
         "team": [],
       };
     }
+  }
+
+  /// API Gateway can deserialize database numeric columns as either numbers or
+  /// strings. Convert them once here so the activity/team UI always renders
+  /// the actual server values rather than falling back to zeroes.
+  static Map<String, dynamic> _normaliseTeamPerformanceRow(Map row) {
+    int asInt(dynamic value) => value is num
+        ? value.toInt()
+        : int.tryParse(value?.toString() ?? '') ?? 0;
+    double asDouble(dynamic value) => value is num
+        ? value.toDouble()
+        : double.tryParse(value?.toString() ?? '') ?? 0.0;
+
+    return {
+      ...Map<String, dynamic>.from(row),
+      'user_id': asInt(row['user_id'] ?? row['staff_id']),
+      'full_name': row['full_name'] ??
+          row['name'] ??
+          row['username'] ??
+          row['staff_name'] ??
+          '—',
+      'department_name': row['department_name'] ??
+          row['department'] ??
+          row['dept_name'] ??
+          '',
+      'role_name': row['role_name'] ?? row['role'] ?? '',
+      'department_id': asInt(row['department_id']),
+      'total_assigned': asInt(row['total_assigned']),
+      'total_closed': asInt(row['total_closed']),
+      'total_escalated': asInt(row['total_escalated']),
+      'avg_resolution_minutes': asDouble(row['avg_resolution_minutes']),
+      'escalation_rate_pct': asDouble(row['escalation_rate_pct']),
+    };
   }
 
 

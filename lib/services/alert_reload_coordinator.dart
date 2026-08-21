@@ -98,11 +98,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       final result = await _foodOrderService.getFoodOrders();
       if (result['success'] == true) {
         final orders = result['orders'] as List? ?? [];
-        final pendingCount = orders.where((o) {
-          final raw = o['raw'] as Map? ?? {};
-          final s = (raw['order_status'] ?? o['status'] ?? '').toString().toUpperCase();
-          return s == 'PENDING';
-        }).length;
+        // Prefer the normalized status returned by FoodOrderService. The raw
+        // database field differs between endpoint versions, while the mapped
+        // value is consistently Pending / Preparing / Ready / etc.
+        final pendingCount = orders.where((o) =>
+            (o['status'] ?? '').toString().trim().toUpperCase() == 'PENDING').length;
 
         // FIX-9: Check if service start succeeds when count > 0
         if (pendingCount > 0) {
@@ -113,7 +113,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
           }
         }
 
-        OrderAlertService.resetCount(pendingCount);
+        OrderAlertService.resetCount(pendingCount, reconcileAlert: true);
         print('AlertReloadCoordinator: food resetCount($pendingCount)');
       }
     } catch (e) {
@@ -149,7 +149,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
           }
         }
 
-        TaskAlertService.resetServiceCount(openCount);
+        TaskAlertService.resetServiceCount(openCount, reconcileAlert: true);
         print('AlertReloadCoordinator: service resetServiceCount($openCount)');
       }
     } catch (e) {
@@ -185,7 +185,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
           }
         }
 
-        TaskAlertService.resetDeliveryCount(count);
+        TaskAlertService.resetDeliveryCount(count, reconcileAlert: true);
         print('AlertReloadCoordinator: delivery resetDeliveryCount($count)');
       }
     } catch (e) {

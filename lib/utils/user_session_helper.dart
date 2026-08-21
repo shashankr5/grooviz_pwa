@@ -92,6 +92,70 @@ class UserSessionHelper {
     return prefs.getString(StorageKeys.userRole);
   }
 
+  // ---------- RUSH HOUR / F&B CONFIG (from login_mobile) ----------
+
+  static Future<void> saveRushHourConfig({
+    required int rushHourActive,
+    required int maxTapCount,
+    required int tapCountMin,
+    required String rushHourStatus,
+    String rushHourData = '',
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(StorageKeys.rushHourActive, rushHourActive);
+    await prefs.setInt(StorageKeys.maxTapCount, maxTapCount);
+    await prefs.setInt(StorageKeys.tapCountMin, tapCountMin);
+    await prefs.setString(StorageKeys.rushHourStatus, rushHourStatus);
+    await prefs.setString(StorageKeys.rushHourData, rushHourData);
+  }
+
+  static Future<bool> getRushHourActive() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getInt(StorageKeys.rushHourActive) ?? 0) == 1;
+  }
+
+  static Future<int> getMaxTapCount() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(StorageKeys.maxTapCount) ?? 0;
+  }
+
+  static Future<int> getTapCountMin() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(StorageKeys.tapCountMin) ?? 0;
+  }
+
+  static Future<String> getRushHourStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(StorageKeys.rushHourStatus) ?? 'INACTIVE';
+  }
+
+  // ---------- DEPT / ESCALATION RULE (from get_user_dept_details_mobile) ----------
+
+  static Future<void> saveDeptDetails({
+    required int foodDeptId,
+    required int completionMinutes,
+    required int supervisorUserId,
+    required String supervisorName,
+    required int supervisorDeptId,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(StorageKeys.foodDeptId, foodDeptId);
+    await prefs.setInt(StorageKeys.completionMinutes, completionMinutes);
+    await prefs.setInt(StorageKeys.supervisorUserId, supervisorUserId);
+    await prefs.setString(StorageKeys.supervisorName, supervisorName);
+    await prefs.setInt(StorageKeys.supervisorDeptId, supervisorDeptId);
+  }
+
+  static Future<int?> getFoodDeptId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(StorageKeys.foodDeptId);
+  }
+
+  static Future<int> getCompletionMinutes() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(StorageKeys.completionMinutes) ?? 30;
+  }
+
   // ---------- ROLE ID (numeric, from DB roles table) ----------
   // Role ID mapping (must match DB):
   //   1 = Admin
@@ -241,6 +305,18 @@ class UserSessionHelper {
     await prefs.remove(StorageKeys.isLoggedIn);
     await prefs.remove(StorageKeys.initialRole);
     await prefs.remove(StorageKeys.initialDepartments);
+    // F&B / rush-hour config
+    await prefs.remove(StorageKeys.rushHourActive);
+    await prefs.remove(StorageKeys.maxTapCount);
+    await prefs.remove(StorageKeys.tapCountMin);
+    await prefs.remove(StorageKeys.rushHourStatus);
+    await prefs.remove(StorageKeys.rushHourData);
+    // Dept / escalation rule
+    await prefs.remove(StorageKeys.foodDeptId);
+    await prefs.remove(StorageKeys.completionMinutes);
+    await prefs.remove(StorageKeys.supervisorUserId);
+    await prefs.remove(StorageKeys.supervisorName);
+    await prefs.remove(StorageKeys.supervisorDeptId);
 
     // Restore installation ID and device identifier
     if (installationId != null) {
