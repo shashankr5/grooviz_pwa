@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_typography.dart';
+import '../../utils/escalation_helpers.dart';
 
 class TimelineTaskCard extends StatefulWidget {
   final Map<String, dynamic> task;
   final bool isSupervisor;
+  /// Pass the current user's role string so escalation messaging is role-aware.
+  final String userRole;
   final VoidCallback onTap;
   final VoidCallback? onAccept;
   final VoidCallback? onReassign;
@@ -16,6 +19,7 @@ class TimelineTaskCard extends StatefulWidget {
     super.key,
     required this.task,
     required this.isSupervisor,
+    this.userRole = '',
     required this.onTap,
     this.onAccept,
     this.onReassign,
@@ -141,6 +145,11 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     final Color statusCol = AppColors.statusColor(statusStr);
     final Color statusBg = AppColors.statusLightColor(statusStr);
 
+    final esc         = EscalationInfo.fromTask(task);
+    final role        = escalationRoleFromName(widget.userRole);
+    final accentStyle = EscalationVisibility.accentStyle(role);
+    final hasBreach   = esc.isEscalated || isResolutionOverdue;
+
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
@@ -148,52 +157,47 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: isEscalated || isResolutionOverdue
-                ? AppColors.error
-                : AppColors.border.withValues(alpha: 0.6),
-            width: isEscalated || isResolutionOverdue ? 1.5 : 1.0,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.shadow,
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
+          border: hasBreach
+              ? EscalationDisplay.escalatedBorder()
+              : Border.all(color: AppColors.border.withValues(alpha: 0.6)),
+          boxShadow: hasBreach
+              ? EscalationDisplay.escalatedShadow()
+              : [BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: const Offset(0, 4))],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top Accent Bar for Escalated Items
-            if (isEscalated)
+            // ── Escalation accent bar ──────────────────────────────────────
+            if (esc.isEscalated)
               Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                decoration: const BoxDecoration(
-                  color: AppColors.error,
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(14),
-                    topRight: Radius.circular(14),
-                  ),
+                width:   double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: EscalationDisplay.accentBarColor(accentStyle),
+                  borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(14)),
                 ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning_amber_rounded,
-                        color: Colors.white, size: 14),
-                    const SizedBox(width: 6),
-                    Text(
-                      'SLA BREACHED — REQUIRES SUPERVISOR ATTENTION',
+                child: Row(children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Colors.white, size: 13),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      EscalationDisplay.accentBarLabel(
+                          accentStyle, esc.stageName),
                       style: AppTypography.caption.copyWith(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
+                        color:         Colors.white,
+                        fontSize:      10,
+                        fontWeight:    FontWeight.w700,
                         letterSpacing: 0.5,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 8),
+                  EscalationDisplay.countdownChip(esc),
+                ]),
               ),
 
             Padding(

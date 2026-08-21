@@ -1,22 +1,19 @@
 // home_page.dart
 //
-// CHANGES IN THIS VERSION:
-//  • _roleLoaded guard — bool _roleLoaded = false added. Set to true at end
-//    of _loadUserRole(). Loading gate changed from !_deptLoaded to
-//    !_deptLoaded || !_roleLoaded so Manager/GM/Admin never flash "All"
-//    before defaulting to "Escalated".
-//  • 60s escalation timer — Timer? _escalationTimer added. Started in
-//    initState, cancelled in dispose. Calls triggerEscalationCheck() every
-//    60 seconds as a client-side fallback for the SQS self-enqueue loop.
-//  • Escalation stream refresh — _escalationSub now also calls
-//    _loadEscalationBadge() to re-fetch the authoritative count from the
-//    server, and calls _loadEscalatedTasks() if the Escalated filter is
-//    currently selected so the list stays live.
-//  • Escalated tasks sort to top — filteredTasks default case now sorts
-//    escalated tasks first before the date sort.
-//  • onReassign clears escalation flags instantly — tasks[idx]["is_escalated"],
-//    ["alert_pending"], and the matching raw map keys are zeroed immediately
-//    on return from TicketDetailPage so the red border clears without a reload.
+// ESCALATION ARCHITECTURE:
+//  • Escalation is driven entirely server-side via SQS self-enqueue.
+//    The client-side 60s polling timer and
+//    ScreenSync_sp_check_and_escalate_mobile have been removed.
+//  • Escalation state (is_escalated, escalation_instance_id, current_stage_name,
+//    next_escalation_at) is embedded in every get_all_services_mobile RESULT
+//    row — no separate escalation API call is required.
+//  • Live updates arrive via WebSocket ESCALATION_ALERT events, which fan out
+//    to EscalationService.onBadgeUpdate and onListRefresh streams.
+//  • _roleLoaded guard — Manager/GM/Admin default to the "Escalated" filter
+//    and the loading gate waits for both dept and role to resolve.
+//  • Escalated tasks sort to top in the "All" filter view.
+//  • onClose / onReassign clears escalation flags instantly in local state
+//    so the red border disappears without waiting for a reload.
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -42,22 +39,15 @@ import 'profile_page.dart';
 import '../services/profile_service.dart';
 import '../services/notification_handler.dart';
 import '../services/notification_constants.dart';
+import '../utils/escalation_helpers.dart';
 
-// ── Role helpers ─────────────────────────────────────────────────────────────
+// ── Role helpers — delegate to EscalationRole from escalation_helpers.dart ───
 
-const _roleHierarchy = [
-  'Staff', 'Supervisor', 'Department Head', 'Manager', 'General Manager', 'Admin',
-];
+bool _isManagerRole(String? role) =>
+    escalationRoleFromName(role).isManagerOrAbove;
 
-bool _isManagerRole(String? role) {
-  if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 3; // Manager, GM, Admin
-}
-
-bool _isSupervisorOrAbove(String? role) {
-  if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 1; // Supervisor+
-}
+bool _isSupervisorOrAbove(String? role) =>
+    escalationRoleFromName(role).isSupervisorOrAbove;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -141,11 +131,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _escalationListSub; // list refresh (always)
   StreamSubscription<String>? _roleChangeSub;
 
-  // CHANGE: 60s escalation timer — client-side fallback for the SQS
-  // self-enqueue loop. Calls triggerEscalationCheck() every 60 seconds.
-  // If SQS is already working reliably, this can be removed without
-  // breaking anything (the SP is idempotent).
-  Timer? _escalationTimer;
+  // Scroll-FAB inactivity timer — hides the FAB after 5s of no scroll.
   Timer? _scrollFabTimer;
 
   // ── Scroll-to-top/bottom FAB ─────────────────────────────────────────────
@@ -275,7 +261,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _escalationSub?.cancel();
     _escalationListSub?.cancel();
     _roleChangeSub?.cancel();
-    _escalationTimer?.cancel();
     _scrollFabTimer?.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -328,19 +313,13 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       userRole = role ?? "";
-      if (_isManagerRole(userRole)) {
+      // Manager, GM, Admin default to the Escalated filter on open.
+      // Supervisor and below start on "All" to see their own workload first.
+      if (EscalationVisibility.defaultsToEscalated(escalationRoleFromName(userRole))) {
         selectedFilter = "Escalated";
       }
       _roleLoaded = true;
     });
-    if (_isManagerRole(userRole)) {
-      // Start 60s periodic check ONLY for Manager / GM / Admin.
-      _escalationTimer?.cancel();
-      _escalationTimer = Timer.periodic(
-        const Duration(seconds: 60),
-        (_) => EscalationService.instance.triggerCheck(),
-      );
-    }
   }
 
   Future<void> _loadUserDepartments() async {
@@ -1301,6 +1280,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   child: TimelineTaskCard(
                     task: task,
                     isSupervisor: _isSupervisorOrAbove(userRole),
+                    userRole: userRole,
                     onTap: () async {
                       await Navigator.push(
                         context,
@@ -1398,6 +1378,8 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // ── Escalated task list ───────────────────────────────────────────────────
+  // Visible to Supervisor and above. Manager+ see all dept escalations;
+  // Supervisors and Dept Heads see only their mapped department.
 
   Widget _buildEscalatedList() {
     final displayList = _searchQuery.isEmpty
@@ -1406,29 +1388,51 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (displayList.isEmpty) {
       return Padding(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 32),
         child: Center(
           child: Column(children: [
-            Icon(
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: _searchQuery.isEmpty
+                    ? AppColors.successLight
+                    : AppColors.bgLight,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
                 _searchQuery.isEmpty
-                    ? Icons.check_circle_outline_rounded
+                    ? Icons.verified_outlined
                     : Icons.search_off_rounded,
-                size: 48,
+                size: 40,
                 color: _searchQuery.isEmpty
                     ? AppColors.success
-                    : AppColors.textSecondary),
-            const SizedBox(height: 12),
+                    : AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 14),
             Text(
               _searchQuery.isEmpty
-                  ? "No escalated tasks"
-                  : "No matching escalated tasks",
+                  ? 'All clear — no SLA breaches'
+                  : 'No matching escalated tasks',
+              style: AppTypography.title.copyWith(
+                fontSize: 16,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _searchQuery.isEmpty
+                  ? 'Every task is within its SLA window.'
+                  : 'Try a different room, guest name, or request ID.',
               style: AppTypography.bodySecondary,
+              textAlign: TextAlign.center,
             ),
           ]),
         ),
       );
     }
 
+    final role = escalationRoleFromName(userRole);
     return ListView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -1449,15 +1453,14 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   onNoteAdded: (note) {
                     setState(() {
                       final idx = escalatedTasks.indexWhere((t) =>
-                          t["service_request_id"] ==
-                          task["service_request_id"]);
+                          t["service_request_id"] == task["service_request_id"]);
                       if (idx != -1) escalatedTasks[idx]["note"] = note;
                     });
                   },
                 ),
               ),
             ).then((_) => _loadTasks()),
-            child: _buildEscalatedCard(task),
+            child: _buildEscalatedCard(task, role),
           ),
         );
       },
@@ -1466,157 +1469,191 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ── Escalated task card ───────────────────────────────────────────────────
 
-  Widget _buildEscalatedCard(Map<String, dynamic> task) {
-    final rawRoom          = (task["room_number"] ?? task["room"] ?? task["requested_room"] ?? "-").toString();
-    final roomDisplay      = (rawRoom == "0" || rawRoom == "000" || rawRoom == "-" || rawRoom == "null" || rawRoom.isEmpty) ? "General" : "Room $rawRoom";
-    final requestId        = (task["service_request_id"] ?? task["task_id"] ?? task["id"] ?? "").toString();
-    final guestName        = (task["guest_name"] ?? task["guest"] ?? task["full_name"] ?? "").toString();
-    final rawTitle         = (task["name"] ?? task["title"] ?? task["service_name"] ?? "Service Request").toString();
-    final cleanTitle       = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
-    final escalatedTo      = (task["escalated_to_name"] ?? task["escalated_to"] ?? task["notified_user_name"] ?? "-").toString();
-    final overdueMins      = (task["overdue_minutes"] ?? task["overdueMinutes"] ?? task["age_minutes"] ?? 0) as int;
-    final deptName         = (task["department_name"] ?? task["department"] ?? "").toString();
-    final stageName        = (task["current_stage_name"] ?? task["stage_name"] ?? "").toString();
+  Widget _buildEscalatedCard(Map<String, dynamic> task, EscalationRole role) {
+    final raw = task['raw'] as Map<String, dynamic>? ?? {};
+
+    final rawRoom     = (task['room_number'] ?? task['room'] ?? task['requested_room'] ?? '-').toString();
+    final roomDisplay = (rawRoom == '0' || rawRoom == '000' || rawRoom == '-' ||
+            rawRoom == 'null' || rawRoom.isEmpty)
+        ? 'General'
+        : 'Room $rawRoom';
+
+    final requestId  = (task['service_request_id'] ?? task['task_id'] ?? task['id'] ?? '').toString();
+    final guestName  = (task['guest_name'] ?? task['guest'] ?? task['full_name'] ?? '').toString();
+    final rawTitle   = (task['name'] ?? task['title'] ?? task['service_name'] ?? 'Service Request').toString();
+    final cleanTitle = rawTitle.replaceFirst(
+        RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
+    final deptName   = (raw['department_name'] ?? task['department_name'] ?? task['department'] ?? '').toString();
+    final assignedTo = (raw['accepted_by_user_name'] ?? raw['assigned_to_name'] ?? task['assignedTo'] ?? '').toString();
+    final status     = (task['status'] ?? 'Open').toString();
+
+    final esc        = EscalationInfo.fromTask(task);
+    final accentStyle = EscalationVisibility.accentStyle(role);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color:        Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.error.withValues(alpha: 0.35), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-              color: AppColors.error.withValues(alpha: 0.06),
-              blurRadius: 10,
-              offset: const Offset(0, 3)),
-        ],
+        border:       EscalationDisplay.escalatedBorder(),
+        boxShadow:    EscalationDisplay.escalatedShadow(),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(children: [
-                  Container(
-                    padding: const EdgeInsets.all(7),
-                    decoration: BoxDecoration(
-                      color: AppColors.errorLight,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: const Icon(Icons.warning_amber_rounded,
-                        size: 16, color: AppColors.error),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Accent bar ───────────────────────────────────────────────────
+          Container(
+            width:   double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+            decoration: BoxDecoration(
+              color: EscalationDisplay.accentBarColor(accentStyle),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.warning_amber_rounded,
+                  color: Colors.white, size: 13),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
+                  style: const TextStyle(
+                    color:         Colors.white,
+                    fontSize:      10,
+                    fontWeight:    FontWeight.w700,
+                    letterSpacing: 0.5,
                   ),
-                  const SizedBox(width: 8),
-                  _pill(roomDisplay, AppColors.primaryLight, textColor: AppColors.primary),
-                  if (requestId.isNotEmpty && requestId != "0") ...[
-                    const SizedBox(width: 6),
-                    _pill("#$requestId", AppColors.bg, textColor: AppColors.textSecondary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              EscalationDisplay.countdownChip(esc),
+            ]),
+          ),
+
+          // ── Body ─────────────────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Row 1: Room pill, request ID, escalated pill
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(children: [
+                      _pill(roomDisplay, AppColors.primaryLight,
+                          textColor: AppColors.primary),
+                      if (requestId.isNotEmpty && requestId != '0') ...[
+                        const SizedBox(width: 6),
+                        _pill('#$requestId', AppColors.bg,
+                            textColor: AppColors.textSecondary),
+                      ],
+                    ]),
+                    // Status + escalated pill
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      _statusPill(status, AppColors.statusColor(status)),
+                      const SizedBox(width: 6),
+                      EscalationDisplay.statusPill(),
+                    ]),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
+
+                // Title
+                Text(
+                  cleanTitle,
+                  style: const TextStyle(
+                    fontSize:   15,
+                    fontWeight: FontWeight.w700,
+                    color:      AppColors.textPrimary,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+
+                const SizedBox(height: 8),
+
+                // Meta row: guest · dept · stage pill
+                Wrap(
+                  spacing:   8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (guestName.isNotEmpty && guestName != 'Unknown Guest')
+                      _metaChip(Icons.person_outline_rounded, guestName),
+                    if (deptName.isNotEmpty)
+                      _metaChip(Icons.business_rounded, deptName),
+                    if (esc.stageName != null && esc.stageName!.isNotEmpty)
+                      EscalationDisplay.stagePill(esc.stageName!),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
+                const Divider(height: 1, color: AppColors.borderLight),
+                const SizedBox(height: 10),
+
+                // Footer: SLA label + assigned staff
+                Row(children: [
+                  Icon(
+                    esc.isOverdue
+                        ? Icons.timer_off_rounded
+                        : Icons.timer_outlined,
+                    size: 13,
+                    color: esc.isOverdue ? AppColors.error : AppColors.warning,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    esc.slaLabel,
+                    style: TextStyle(
+                      fontSize:   12,
+                      fontWeight: FontWeight.w700,
+                      color: esc.isOverdue ? AppColors.error : AppColors.warning,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (assignedTo.isNotEmpty && assignedTo != '-') ...[
+                    const Icon(Icons.badge_outlined,
+                        size: 13, color: AppColors.textSecondary),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        assignedTo,
+                        style: const TextStyle(
+                          fontSize:   12,
+                          fontWeight: FontWeight.w500,
+                          color:      AppColors.textSecondary,
+                        ),
+                        maxLines:  1,
+                        overflow:  TextOverflow.ellipsis,
+                      ),
+                    ),
                   ],
                 ]),
-                _escalatedPill(),
               ],
             ),
-            const SizedBox(height: 10),
-            Text(
-              cleanTitle,
-              style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-
-            if (guestName.isNotEmpty && guestName != "Unknown Guest")
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text("👤 Guest: $guestName",
-                    style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500)),
-              ),
-            if (deptName.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text("🏢 Dept: $deptName",
-                    style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500)),
-              ),
-
-            if (stageName.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.errorLight,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    "Stage: $stageName",
-                    style: const TextStyle(
-                        color: AppColors.error,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 10),
-            Row(children: [
-              if (overdueMins > 0) ...[
-                const Icon(Icons.timer_off_rounded, size: 14, color: AppColors.error),
-                const SizedBox(width: 4),
-                Text("$overdueMins min overdue",
-                    style: const TextStyle(
-                        color: AppColors.error,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(width: 12),
-              ],
-              if (escalatedTo != "-" && escalatedTo != "Unknown") ...[
-                const Icon(Icons.person_rounded, size: 14, color: AppColors.primary),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text("Escalated to: $escalatedTo",
-                      style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ]),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
+  // ── Shared small helpers ──────────────────────────────────────────────────
 
-  Widget _escalatedPill() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppColors.errorLight,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.error.withOpacity(0.3)),
+  Widget _metaChip(IconData icon, String label) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon, size: 12, color: AppColors.textSecondary),
+      const SizedBox(width: 4),
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize:   12,
+          fontWeight: FontWeight.w500,
+          color:      AppColors.textSecondary,
+        ),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 5, height: 5,
-            decoration: const BoxDecoration(color: AppColors.error, shape: BoxShape.circle)),
-        const SizedBox(width: 4),
-        const Text("Escalated",
-            style: TextStyle(color: AppColors.error, fontWeight: FontWeight.w700, fontSize: 11)),
-      ]),
-    );
+    ]);
   }
 
   // ── Task card ─────────────────────────────────────────────────────────────
@@ -1683,7 +1720,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       textColor: AppColors.warning),
                   if (isEscalated) ...[
                     const SizedBox(width: 6),
-                    _pill("Escalated", AppColors.errorLight, textColor: AppColors.error),
+                    EscalationDisplay.statusPill(),
                   ],
                 ]),
                 _statusPill(isEscalated ? "Escalated" : status, statusClr),

@@ -43,8 +43,6 @@ class HomeService {
   }
 
 
-  static const String _checkAndEscalateUrl = "${ApiConstants.baseUrl}/ScreenSync_sp_check_and_escalate_mobile";
-
   // ── GET TASKS ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getTasks() async {
@@ -293,31 +291,6 @@ class HomeService {
     return DateFormatter.formatDateTimeAmPm(timestamp);
   }
 
-  Future<void> triggerEscalationCheck() async {
-    try {
-      final userId       = await UserSessionHelper.getUserId();
-      final enterpriseId = await UserSessionHelper.getEnterpriseId();
-
-      if (userId == null || enterpriseId == null) return;
-
-      final payload = {
-        "user_id":       userId,
-        "enterprise_id": enterpriseId,
-        "stage":         AppConfig.stage,
-      };
-
-      dev.log("📤 Triggering escalation check...");
-      final response = await _dio.post(
-        _checkAndEscalateUrl,
-        data: payload,
-      );
-
-      dev.log("📥 Escalation check response: ${response.data}");
-    } catch (e) {
-      dev.log("triggerEscalationCheck error (non-fatal): $e");
-    }
-  }
-
   // ── GET ESCALATION HISTORY FOR TASK ─────────────────────────────────────────
 
   Future<Map<String, dynamic>> getEscalationHistoryForTask(
@@ -386,14 +359,18 @@ class HomeService {
 
   // ── GET STAFF LIST ────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> getStaffList() async {
+  Future<Map<String, dynamic>> getStaffList({required int requestId}) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null) {
         return {"success": false, "message": "User not logged in", "staff": []};
       }
 
-      final payload = {"user_id": userId, "stage": AppConfig.stage};
+      final payload = {
+        "user_id":    userId,
+        "request_id": requestId,
+        "stage":      AppConfig.stage,
+      };
 
       dev.log("📤 Fetching staff list...");
       final response = await _dio.post(ApiConstants.staffList, data: payload);
@@ -484,7 +461,12 @@ class HomeService {
         return {"success": false, "message": "Server error"};
       }
 
-      final statusList = (response.data["RESULT"] ?? response.data["STATUS"]) as List?;
+      final rawStatus = response.data["STATUS"];
+      final statusList = rawStatus is List
+          ? rawStatus
+          : rawStatus is Map
+              ? [rawStatus]
+              : const <dynamic>[];
       if (statusList == null || statusList.isEmpty) {
         return {"success": false, "message": "Invalid response"};
       }
@@ -494,7 +476,15 @@ class HomeService {
 
       if (flag != "S") return {"success": false, "message": msg ?? "Failed"};
 
-      final updatedTask = (response.data["RESULT"] ?? response.data["STATUS"])[0];
+      final rawResult = response.data["RESULT"];
+      final resultList = rawResult is List
+          ? rawResult
+          : rawResult is Map
+              ? [rawResult]
+              : const <dynamic>[];
+      final updatedTask = resultList.isNotEmpty && resultList.first is Map
+          ? Map<String, dynamic>.from(resultList.first as Map)
+          : <String, dynamic>{};
       return {"success": true, "message": msg, "updatedTask": updatedTask};
     } catch (e) {
       dev.log("ERROR (reassignTicket): $e");

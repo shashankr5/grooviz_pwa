@@ -32,30 +32,18 @@ import '../services/task_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/escalation_helpers.dart';
 
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
 
-// ── Role helpers ──────────────────────────────────────────────────────────────
+// ── Role helpers — delegate to EscalationRole from escalation_helpers.dart ───
 
-const _roleHierarchy = [
-  'Staff',
-  'Supervisor',
-  'Department Head',
-  'Manager',
-  'General Manager',
-  'Admin',
-];
+bool _isManagerRole(String? role) =>
+    escalationRoleFromName(role).isManagerOrAbove;
 
-bool _isManagerRole(String? role) {
-  if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 3;
-}
-
-bool _isSupervisorOrAbove(String? role) {
-  if (role == null) return false;
-  return _roleHierarchy.indexOf(role) >= 1;
-}
+bool _isSupervisorOrAbove(String? role) =>
+    escalationRoleFromName(role).isSupervisorOrAbove;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -197,49 +185,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       // Network / parse failure — silently fall back to the placeholder data.
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
-    }
-  }
-
-  // ── Fetch escalation audit trail for task ────────────────────────────────
-
-  Future<void> _loadEscalationHistory() async {
-    if (_serviceRequestId == 0) return;
-    setState(() => _isLoadingEscHist = true);
-    try {
-      final res =
-          await _homeService.getEscalationHistoryForTask(_serviceRequestId);
-      if (!mounted) return;
-      if (res['success'] == true) {
-        setState(() {
-          _escalationHistory =
-              (res['history'] as List? ?? []).cast<Map<String, dynamic>>();
-        });
-
-      }
-    } catch (_) {}
-    if (mounted) setState(() => _isLoadingEscHist = false);
-  }
-
-  // ── Resolve assignee phone ────────────────────────────────────────────────
-
-  Future<void> _fetchAssignedPhone() async {
-    final raw          = _task['raw'] as Map<String, dynamic>? ?? {};
-    final assignedToId = (raw['assigned_to'] ?? '').toString();
-    if (assignedToId.isEmpty) return;
-
-    setState(() => _phoneLoading = true);
-    try {
-      final result = await _homeService.getStaffList();
-      if (!mounted) return;
-      if (result['success'] == true) {
-        final staff =
-            (result['staff'] as List? ?? []).cast<Map<String, dynamic>>();
-        for (final s in staff) {
-          final sid = (s['userId'] ?? s['id'] ?? '').toString();
-          if (sid == assignedToId) {
-            final phone = (s['phone'] ?? '').toString();
-            if (phone.isNotEmpty && mounted) {
-              setState(() {
                 _assignedPhone = phone;
                 if (_task['raw'] is Map) {
                   (_task['raw'] as Map)['assigned_to_phone'] = phone;
@@ -258,7 +203,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   int? get _assignedToId {
     final raw = _task['raw'] as Map?;
-    final v   = raw?['assigned_to'] ?? _task['assigned_to'];
+    // get_all_services_mobile identifies an accepted task with
+    // accepted_by_user_id; reassigned tasks may instead expose assigned_to.
+    final v = raw?['accepted_by_user_id'] ??
+        raw?['assigned_to'] ??
+        _task['accepted_by_user_id'] ??
+        _task['assigned_to'];
     if (v == null) return null;
     return int.tryParse(v.toString());
   }
@@ -281,9 +231,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   bool get _canTakeOver {
     if (!_isEscalated) return false;
     if (_task['status'] != 'In Progress') return false;
+    // A task already assigned to the signed-in user cannot be taken over.
+    // This applies to managers as well as supervisors.
+    if (_loggedInUserId == null || _assignedToId == _loggedInUserId) {
+      return false;
+    }
     if (_isManagerRole(widget.userRole)) return true;
     if (_isSupervisorOrAbove(widget.userRole)) {
-      return _assignedToId != _loggedInUserId;
+      return true;
     }
     return false;
   }
@@ -320,7 +275,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   Future<void> _takeOver() async {
     final userId = _loggedInUserId;
-    if (userId == null) return;
+    if (userId == null || _isLoading || !_canTakeOver) return;
 
     final confirm = await _showConfirmSheet(
       title:   'Take Over Task',
@@ -330,6 +285,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       icon:    Icons.person_add_rounded,
     );
     if (confirm != true) return;
+
+    setState(() => _isLoading = true);
 
     final deptIdVal = _task['department_id'] ?? (_task['raw'] as Map?)?['department_id'];
     final deptId = deptIdVal is int ? deptIdVal : int.tryParse(deptIdVal?.toString() ?? '');
@@ -502,7 +459,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Future<void> _loadStaffAndShowReassign() async {
     if (_staffList.isEmpty) {
       setState(() => _isLoadingStaff = true);
-      final result = await _homeService.getStaffList();
+      final result = await _homeService.getStaffList(requestId: _serviceRequestId);
       if (!mounted) return;
       if (result['success'] != true) {
         setState(() => _isLoadingStaff = false);
@@ -745,12 +702,28 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                     else
                                       GestureDetector(
                                         onTap: () async {
+                                        if (staffId == null) {
+                                          AppSnackBar.show(
+                                            context,
+                                            'This staff member has an invalid user ID',
+                                            isError: true,
+                                          );
+                                          return;
+                                        }
                                         Navigator.pop(ctx);
+                                        final confirm = await _showConfirmSheet(
+                                          title: 'Reassign Task',
+                                          body: 'Assign this task to $name? They will be notified and become responsible for it.',
+                                          confirm: 'Reassign',
+                                          color: AppColors.primary,
+                                          icon: Icons.swap_horiz_rounded,
+                                        );
+                                        if (confirm != true || !mounted) return;
                                         setState(() => _isLoading = true);
                                         // Always use TaskService → ScreenSync_reassign_service_mobile
                                         final res = await TaskService().reassignService(
                                              taskId:     _serviceRequestId,
-                                             reassignTo: staff['userId'] as int,
+                                             reassignTo: staffId,
                                            );
                                         if (!mounted) return;
                                         setState(() => _isLoading = false);
@@ -1066,118 +1039,162 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   );
 }
   // ── Escalated banner ──────────────────────────────────────────────────────
+  // Role-aware: accent colour and label change based on the viewer's authority.
 
   Widget _buildEscalatedBanner() {
+    final esc         = EscalationInfo.fromTask(_task);
+    final role        = escalationRoleFromName(widget.userRole);
+    final accentStyle = EscalationVisibility.accentStyle(role);
+    final accentColor = EscalationDisplay.accentBarColor(accentStyle);
+
     final raw              = _task['raw'] as Map<String, dynamic>? ?? {};
-    final overdue          =
-        (raw['overdue_minutes'] ?? _task['overdue_minutes'] ?? 0) as int;
-    final originalAssignee =
-        (raw['original_assignee_name'] ??
-                _task['original_assignee'] ??
-                '—')
-            .toString();
+    final originalAssignee = (raw['original_assignee_name'] ??
+            _task['original_assignee'] ??
+            '').toString().trim();
 
     return Container(
-      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color:        AppColors.errorLight,
-        borderRadius: BorderRadius.circular(16),
+        color:        accentColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
-            color: AppColors.error.withValues(alpha: 0.35), width: 1.5),
+            color: accentColor.withValues(alpha: 0.35), width: 1.5),
       ),
-      child: Row(children: [
-        Container(
-          padding: const EdgeInsets.all(9),
-          decoration: BoxDecoration(
-            color:  AppColors.error.withValues(alpha: 0.12),
-            shape:  BoxShape.circle,
+      child: Column(
+        children: [
+          // ── Header strip ──────────────────────────────────────────────
+          Container(
+            width:   double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+            decoration: BoxDecoration(
+              color: accentColor,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(13)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.warning_amber_rounded,
+                  color: Colors.white, size: 14),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  EscalationDisplay.accentBarLabel(
+                      accentStyle, esc.stageName),
+                  style: const TextStyle(
+                    color:         Colors.white,
+                    fontSize:      11,
+                    fontWeight:    FontWeight.w700,
+                    letterSpacing: 0.4,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              EscalationDisplay.countdownChip(esc),
+            ]),
           ),
-          child: const Icon(Icons.warning_amber_rounded,
-              color: AppColors.error, size: 22),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
+
+          // ── Body ──────────────────────────────────────────────────────
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-            const Text('Task Escalated',
-                style: TextStyle(
-                    color:      AppColors.error,
-                    fontWeight: FontWeight.bold,
-                    fontSize:   14)),
-            const SizedBox(height: 2),
-            Text(
-              overdue > 0
-                  ? '$overdue min overdue • Originally: $originalAssignee'
-                  : 'Originally: $originalAssignee',
-              style: TextStyle(
-                  color:    AppColors.error.withValues(alpha: 0.8),
-                  fontSize: 12),
+                // Stage pill column
+                if (esc.stageName != null && esc.stageName!.isNotEmpty) ...[
+                  EscalationDisplay.stagePill(esc.stageName!),
+                  const SizedBox(width: 12),
+                ],
+                // SLA info column
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        esc.slaLabel,
+                        style: TextStyle(
+                          fontSize:   13,
+                          fontWeight: FontWeight.w700,
+                          color:      accentColor,
+                        ),
+                      ),
+                      if (originalAssignee.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          'Originally assigned to: $originalAssignee',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color:    AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ]),
-        ),
-      ]),
+          ),
+        ],
+      ),
     );
   }
 
-  // ── Resolution SLA Banner ──────────────────────────────────────────────────
+  // ── Resolution SLA Banner ─────────────────────────────────────────────────
+  // Shown for In Progress tasks. Uses EscalationInfo for consistent
+  // countdown math — same source of truth as the list card.
 
   Widget _buildResolutionSlaBanner() {
     final status = (_task['status'] ?? 'Open').toString();
     if (status.toLowerCase() != 'in progress') return const SizedBox.shrink();
 
-    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
-    final nextEscRaw =
-        (raw['next_escalation_at'] ?? _task['next_escalation_at'] ?? '').toString();
-    if (nextEscRaw.isEmpty || nextEscRaw == 'null') return const SizedBox.shrink();
+    final esc = EscalationInfo.fromTask(_task);
+    if (!esc.hasCountdown) return const SizedBox.shrink();
 
-    final DateTime? nextEscAt =
-        DateTime.tryParse(nextEscRaw.replaceAll(' ', 'T'));
-    if (nextEscAt == null) return const SizedBox.shrink();
-
-    final remainingSecs = nextEscAt.difference(DateTime.now()).inSeconds;
-    final isWarningMin = remainingSecs > 0 && remainingSecs <= 60;
-    final isOverdue = remainingSecs <= 0;
-
-    final absSecs = remainingSecs.abs();
-    final mins = (absSecs / 60).floor();
-    final secs = (absSecs % 60);
-    final timeFormatted =
-        '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+    // Rebuild every second via the parent's periodic setState
+    final isOverdue  = esc.isOverdue;
+    final isWarning  = esc.isWarning;
 
     final Color bgColor = isOverdue
         ? AppColors.errorLight
-        : (isWarningMin ? Colors.orange.shade50 : AppColors.primaryLight);
+        : (isWarning ? AppColors.warningLight : AppColors.primaryLight);
     final Color borderColor = isOverdue
         ? AppColors.error.withValues(alpha: 0.4)
-        : (isWarningMin
-            ? Colors.orange.shade300
-            : AppColors.primary.withValues(alpha: 0.4));
-    final Color iconColor = isOverdue
+        : (isWarning
+            ? AppColors.warning.withValues(alpha: 0.5)
+            : AppColors.primary.withValues(alpha: 0.3));
+    final Color fgColor = isOverdue
         ? AppColors.error
-        : (isWarningMin ? Colors.orange.shade800 : AppColors.primary);
+        : (isWarning ? AppColors.warning : AppColors.primary);
+    final IconData icon = isOverdue
+        ? Icons.timer_off_outlined
+        : (isWarning ? Icons.bolt_rounded : Icons.timer_outlined);
+
+    final String headline = isOverdue
+        ? 'Resolution Overdue  (+${esc.countdownLabel})'
+        : (isWarning
+            ? 'Critical — Close Within  ${esc.countdownLabel}'
+            : 'SLA Countdown  ${esc.countdownLabel}');
+    final String subtext = isOverdue
+        ? 'Task sits unclosed past SLA deadline. Supervisor has been notified.'
+        : (isWarning
+            ? 'Must be closed immediately to prevent further escalation.'
+            : 'Staff accepted task. Resolution SLA clock is active.');
 
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(16),
+        color:        bgColor,
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: borderColor, width: 1.5),
       ),
       child: Row(children: [
         Container(
           padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
-            color: iconColor.withValues(alpha: 0.12),
-            shape: BoxShape.circle,
+            color:  fgColor.withValues(alpha: 0.12),
+            shape:  BoxShape.circle,
           ),
-          child: Icon(
-            isOverdue
-                ? Icons.timer_off_outlined
-                : (isWarningMin ? Icons.bolt_rounded : Icons.timer_outlined),
-            color: iconColor,
-            size: 22,
-          ),
+          child: Icon(icon, color: fgColor, size: 20),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -1185,27 +1202,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                isOverdue
-                    ? 'Resolution Overdue (+$timeFormatted)'
-                    : (isWarningMin
-                        ? '⚡ Critical: Close Within $timeFormatted'
-                        : 'Resolution Timer: $timeFormatted Remaining'),
+                headline,
                 style: TextStyle(
-                  color: iconColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+                  color:      fgColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize:   13,
                 ),
               ),
               const SizedBox(height: 2),
               Text(
-                isOverdue
-                    ? 'Task sits unclosed past SLA deadline. Supervisor has been notified.'
-                    : (isWarningMin
-                        ? 'Task must be closed in under 1 minute to prevent supervisor escalation!'
-                        : 'Staff accepted task. Resolution SLA clock is active.'),
+                subtext,
                 style: TextStyle(
-                  color: iconColor.withValues(alpha: 0.85),
+                  color:    fgColor.withValues(alpha: 0.8),
                   fontSize: 12,
+                  height:   1.35,
                 ),
               ),
             ],
@@ -1439,18 +1449,23 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   }
 
   // ── Escalation History Timeline Card ──────────────────────────────────────
+  // Visible to Supervisor and above only (EscalationVisibility.canViewEscalationHistory).
+  // Reads from ScreenSync_get_escalation_history_for_task_mobile (via
+  // HomeService.getEscalationHistoryForTask) loaded in _loadEscalationHistory().
 
   Widget _buildEscalationHistoryCard() {
-    if (!_isSupervisorOrAbove(widget.userRole)) return const SizedBox.shrink();
+    final role = escalationRoleFromName(widget.userRole);
+    if (!EscalationVisibility.canViewEscalationHistory(role)) {
+      return const SizedBox.shrink();
+    }
     if (_escalationHistory.isEmpty && !_isLoadingEscHist) {
       return const SizedBox.shrink();
     }
 
     return Container(
-      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color:        Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
             color: AppColors.primary.withValues(alpha: 0.15), width: 1.2),
         boxShadow: [
@@ -1463,43 +1478,46 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
+          // ── Header ──────────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 0),
+            child: Row(children: [
               Container(
                 padding: const EdgeInsets.all(7),
                 decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  shape: BoxShape.circle,
+                  color:  AppColors.primaryLight,
+                  shape:  BoxShape.circle,
                 ),
-                child: const Icon(Icons.history_rounded,
-                    size: 16, color: AppColors.primary),
+                child: const Icon(Icons.timeline_rounded,
+                    size: 15, color: AppColors.primary),
               ),
               const SizedBox(width: 10),
-              const Text(
-                'Escalation Audit History',
-                style: TextStyle(
-                  fontSize:   15,
-                  fontWeight: FontWeight.bold,
-                  color:      AppColors.textPrimary,
+              const Expanded(
+                child: Text(
+                  'Escalation History',
+                  style: TextStyle(
+                    fontSize:   14,
+                    fontWeight: FontWeight.w700,
+                    color:      AppColors.textPrimary,
+                  ),
                 ),
               ),
-              const Spacer(),
               if (_isLoadingEscHist)
                 const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 1.8, color: AppColors.primary),
                 )
               else
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 9, vertical: 3),
                   decoration: BoxDecoration(
                     color:        AppColors.primaryLight,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    '${_escalationHistory.length} events',
+                    '${_escalationHistory.length} stage${_escalationHistory.length == 1 ? '' : 's'}',
                     style: const TextStyle(
                       fontSize:   11,
                       fontWeight: FontWeight.w600,
@@ -1507,176 +1525,251 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                     ),
                   ),
                 ),
-            ],
+            ]),
           ),
-          const SizedBox(height: 12),
-          Divider(height: 1, color: Colors.grey.shade200),
-          const SizedBox(height: 12),
+
+          const SizedBox(height: 10),
+          const Divider(height: 1, color: AppColors.borderLight),
+          const SizedBox(height: 4),
+
+          // ── Timeline entries ─────────────────────────────────────────
           if (_escalationHistory.isEmpty && !_isLoadingEscHist)
-            const Text(
-              'No escalation log entries recorded for this request.',
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(14, 8, 14, 14),
+              child: Text(
+                'No escalation events recorded for this request.',
+                style: TextStyle(
+                    fontSize: 12, color: AppColors.textSecondary),
+              ),
             )
           else
-            ..._escalationHistory.map((item) {
-              final levelNum = item['escalation_level'] ?? 1;
-              final roleName = item['escalated_to_role'] ?? item['stage_name'] ?? item['escalation_stage_name'];
-              final stageName = roleName != null && roleName.toString().isNotEmpty
-                  ? 'Level $levelNum ($roleName)'
-                  : 'Level $levelNum';
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
+              child: Column(
+                children: _escalationHistory.asMap().entries.map((entry) {
+                  final idx    = entry.key;
+                  final item   = entry.value;
+                  final isLast = idx == _escalationHistory.length - 1;
 
-              var notifiedName = (item['escalated_to_name'] ??
-                      item['notified_user_name'] ??
-                      item['user_name'] ??
-                      '').toString().trim();
-              if (notifiedName.isEmpty || notifiedName == '—') {
-                notifiedName = (_task['assignedTo'] ?? (_task['raw'] as Map?)?['assigned_to_name'] ?? '').toString().trim();
-              }
+                  final levelNum = (item['escalation_level'] ?? idx + 1).toString();
+                  final roleName = (item['escalated_to_role'] ??
+                          item['stage_name'] ??
+                          item['escalation_stage_name'] ??
+                          '').toString().trim();
+                  final stageLabel = roleName.isNotEmpty
+                      ? 'Level $levelNum — $roleName'
+                      : 'Level $levelNum';
 
-              final userRole = (item['escalated_to_role'] ?? item['user_role'] ?? item['role_name'] ?? '').toString().trim();
-              final userDept = (item['department_name'] ?? item['dept_name'] ?? item['department'] ?? (_task['department_name'] ?? (_task['raw'] as Map?)?['department_name'] ?? '')).toString().trim();
+                  final notifiedName = () {
+                    var n = (item['escalated_to_name'] ??
+                            item['notified_user_name'] ??
+                            item['user_name'] ??
+                            '').toString().trim();
+                    if (n.isEmpty || n == '—') {
+                      n = (_task['assignedTo'] ??
+                              (_task['raw'] as Map?)?['assigned_to_name'] ??
+                              '').toString().trim();
+                    }
+                    return n;
+                  }();
 
-              final userDetailsList = <String>[
-                if (notifiedName.isNotEmpty && notifiedName != '—') notifiedName,
-                if (userRole.isNotEmpty && userRole != '—') userRole,
-                if (userDept.isNotEmpty && userDept != '—') userDept,
-              ];
-              final userDetailsStr = userDetailsList.join(' • ');
+                  final deptName = (item['department_name'] ??
+                          item['dept_name'] ??
+                          item['department'] ??
+                          (_task['raw'] as Map?)?['department_name'] ??
+                          '').toString().trim();
 
-              final origName = (item['original_assignee_name'] ?? '').toString();
+                  final origName   = (item['original_assignee_name'] ?? '').toString().trim();
+                  final resolvedBy = (item['resolved_by_name'] ?? '').toString().trim();
+                  final statusStr  = (item['escalation_status'] ??
+                          item['response_status'] ??
+                          item['status'] ??
+                          'Pending').toString();
+                  final timestampStr = (item['escalated_at'] ??
+                          item['notified_at'] ??
+                          item['created_at'] ??
+                          item['timestamp'] ??
+                          '').toString();
 
-              final statusStr = (item['escalation_status'] ??
+                  final dotColor = EscalationDisplay.historyDotColor(statusStr);
 
-                      item['response_status'] ??
-                      item['status'] ??
-                      'Pending')
-                  .toString();
-
-              final timestampStr = (item['escalated_at'] ??
-                      item['notified_at'] ??
-                      item['created_at'] ??
-                      item['timestamp'] ??
-                      '')
-                  .toString();
-
-              final resolvedByName = (item['resolved_by_name'] ?? '').toString();
-
-              Color statusColor;
-              switch (statusStr.toLowerCase()) {
-                case 'resolved':
-                case 'accepted':
-                case 'completed':
-                  statusColor = AppColors.success;
-                  break;
-                case 'open':
-                case 'timedout':
-                case 'cancelled':
-                  statusColor = AppColors.error;
-                  break;
-                case 'viewed':
-                case 'notified':
-                  statusColor = AppColors.primary;
-                  break;
-                default:
-                  statusColor = Colors.orange;
-              }
-
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 4),
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                stageName,
-                                style: const TextStyle(
-                                  fontSize:   13,
-                                  fontWeight: FontWeight.w600,
-                                  color:      AppColors.textPrimary,
+                  return IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Timeline spine
+                        SizedBox(
+                          width: 20,
+                          child: Column(children: [
+                            Container(
+                              width:  10,
+                              height: 10,
+                              margin: const EdgeInsets.only(top: 3),
+                              decoration: BoxDecoration(
+                                color:  dotColor,
+                                shape:  BoxShape.circle,
+                                border: Border.all(
+                                    color: dotColor.withValues(alpha: 0.4),
+                                    width: 2),
+                              ),
+                            ),
+                            if (!isLast)
+                              Expanded(
+                                child: Container(
+                                  width:  1.5,
+                                  margin: const EdgeInsets.only(top: 3),
+                                  color:  AppColors.borderLight,
                                 ),
                               ),
-                              const Spacer(),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 7, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: statusColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(6),
+                          ]),
+                        ),
+                        const SizedBox(width: 10),
+
+                        // Content
+                        Expanded(
+                          child: Padding(
+                            padding:
+                                EdgeInsets.only(bottom: isLast ? 0 : 16),
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                // Stage label + status pill
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        stageLabel,
+                                        style: const TextStyle(
+                                          fontSize:   13,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.textPrimary,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 7,
+                                              vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: dotColor.withValues(
+                                            alpha: 0.1),
+                                        borderRadius:
+                                            BorderRadius.circular(6),
+                                        border: Border.all(
+                                            color: dotColor.withValues(
+                                                alpha: 0.3)),
+                                      ),
+                                      child: Text(
+                                        statusStr,
+                                        style: TextStyle(
+                                          fontSize:   10,
+                                          fontWeight: FontWeight.w700,
+                                          color:      dotColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                child: Text(
-                                  statusStr,
-                                  style: TextStyle(
-                                    fontSize:   10,
-                                    fontWeight: FontWeight.w700,
-                                    color:      statusColor,
+
+                                const SizedBox(height: 4),
+
+                                // Notified user · role · dept tags
+                                if (notifiedName.isNotEmpty ||
+                                    roleName.isNotEmpty ||
+                                    deptName.isNotEmpty) ...[
+                                  Wrap(
+                                    spacing:   4,
+                                    runSpacing: 2,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      const Icon(
+                                          Icons.person_outline_rounded,
+                                          size:  12,
+                                          color: AppColors.textSecondary),
+                                      if (notifiedName.isNotEmpty)
+                                        Text(notifiedName,
+                                            style: const TextStyle(
+                                              fontSize:   12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppColors.textPrimary,
+                                            )),
+                                      if (roleName.isNotEmpty)
+                                        _historyTag(roleName,
+                                            AppColors.primaryLight,
+                                            AppColors.primary),
+                                      if (deptName.isNotEmpty)
+                                        _historyTag(deptName,
+                                            AppColors.infoLight,
+                                            AppColors.info),
+                                    ],
                                   ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            'Escalated To: ${userDetailsStr.isNotEmpty ? userDetailsStr : "Staff User"}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
+                                  const SizedBox(height: 3),
+                                ],
 
-                          if (origName.isNotEmpty && origName != '—')
-                            Text(
-                              'Originally: $origName',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textSecondary,
-                              ),
+                                if (origName.isNotEmpty && origName != '—')
+                                  _historySubline(
+                                      Icons.swap_horiz_rounded,
+                                      'Originally: $origName',
+                                      AppColors.textSecondary),
+
+                                if (resolvedBy.isNotEmpty)
+                                  _historySubline(
+                                      Icons.check_circle_outline_rounded,
+                                      'Resolved by: $resolvedBy',
+                                      AppColors.success),
+
+                                if (timestampStr.isNotEmpty)
+                                  _historySubline(
+                                      Icons.access_time_rounded,
+                                      _formatTs(timestampStr),
+                                      AppColors.textSecondary
+                                          .withValues(alpha: 0.7)),
+                              ],
                             ),
-                          if (resolvedByName.isNotEmpty)
-                            Text(
-                              'Resolved By: $resolvedByName',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppColors.success,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          if (timestampStr.isNotEmpty)
-                            Text(
-                              _formatTs(timestampStr),
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textSecondary
-                                    .withValues(alpha: 0.7),
-                              ),
-                            ),
-                        ],
-                      ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              );
-            }),
-
+                  );
+                }).toList(),
+              ),
+            ),
         ],
       ),
     );
   }
+
+  Widget _historyTag(String label, Color bg, Color fg) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color:        bg,
+          borderRadius: BorderRadius.circular(5),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 10, fontWeight: FontWeight.w600, color: fg)),
+      );
+
+  Widget _historySubline(IconData icon, String text, Color color) =>
+      Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(children: [
+          Icon(icon, size: 11, color: color),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(text,
+                style: TextStyle(fontSize: 11, color: color),
+                maxLines:  2,
+                overflow:  TextOverflow.ellipsis),
+          ),
+        ]),
+      );
 
   // ── Note display card ─────────────────────────────────────────────────────
 
@@ -1824,7 +1917,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: _takeOver,
+            onPressed: _isLoading ? null : _takeOver,
             icon:  const Icon(Icons.person_add_rounded, size: 16),
             label: const Text('Take Over',
                 style: TextStyle(

@@ -1,37 +1,26 @@
 // lib/services/escalation_service.dart
 //
-// EscalationService — singleton for all escalation-related API calls and
-// in-process event streams.
+// EscalationService — singleton for escalation event streams.
 //
-// ARCHITECTURE NOTE (updated):
-//  • Escalation status is now embedded in every get_all_services_mobile RESULT
-//    row (escalation_instance_id, escalation_status, current_stage_name,
+// ARCHITECTURE:
+//  • Escalation status is embedded in every get_all_services_mobile RESULT row
+//    (escalation_instance_id, escalation_status, current_stage_name,
 //    next_escalation_at). No separate per-task REST call is needed.
 //
-//  • resolveEscalation() has been REMOVED. The SP
-//    ScreenSync_update_service_request_status_mobile handles escalation
-//    resolution atomically inside its DB transaction. A separate round-trip
-//    was redundant and could race with the SP.
+//  • Escalation is triggered entirely server-side via the SQS self-enqueue
+//    loop. The old client-side 60s polling timer and
+//    ScreenSync_sp_check_and_escalate_mobile have been removed — the server
+//    owns the escalation clock.
 //
-//  • getTaskStatus() has been REMOVED. EscalationStatus is now built from the
-//    task map that _mapTasks() produces — no extra network call.
+//  • Resolution is handled atomically inside
+//    ScreenSync_update_service_request_status_mobile. No separate resolve
+//    round-trip is needed from the client.
 //
-//  • triggerCheck() — KEPT. Called by the 60s Manager+ timer in home_page.dart.
-//    Routes to ScreenSync_sp_check_and_escalate_mobile.
-//
-//  • onBadgeUpdate / onListRefresh streams — KEPT. Fed by WebSocket
-//    ESCALATION_ALERT events; consumed by home_page.dart.
-//
-// Deprecated endpoints (commented for reference — DO NOT CALL):
-//  // ScreenSync_get_escalation_status_mobile  → status in RESULT row now
-//  // ScreenSync_sp_resolve_escalation_mobile  → resolved inside update_status SP
+//  • onBadgeUpdate / onListRefresh streams are fed by WebSocket
+//    ESCALATION_ALERT events and consumed by home_page.dart.
 
 import 'dart:async';
 import 'dart:developer' as dev;
-import 'package:dio/dio.dart';
-import '../constants/api_constants.dart';
-import '../constants/app_config.dart';
-import '../utils/user_session_helper.dart';
 
 // ── EscalationStatus model ────────────────────────────────────────────────────
 //
@@ -109,27 +98,7 @@ class EscalationStatus {
 class EscalationService {
   EscalationService._();
 
-  // Active endpoint
-  static const String _checkAndEscalateUrl =
-      "${ApiConstants.baseUrl}/ScreenSync_sp_check_and_escalate_mobile";
-
-  // Deprecated — DO NOT USE (kept for historical reference)
-  // static const String _escalationStatusUrl =
-  //     "${ApiConstants.baseUrl}/ScreenSync_get_escalation_status_mobile";
-  // static const String _resolveEscalationUrl =
-  //     "${ApiConstants.baseUrl}/ScreenSync_sp_resolve_escalation_mobile";
-
   static final EscalationService instance = EscalationService._();
-
-  late final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 15),
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key':    ApiConstants.apiKey,
-    },
-    validateStatus: (c) => c != null && c < 500,
-  ));
 
   // ── Streams ───────────────────────────────────────────────────────────────
 
@@ -163,33 +132,19 @@ class EscalationService {
     dev.log('EscalationService: ESCALATION_ALERT badge=$badge');
   }
 
-  // ── Periodic check — Manager+ only ───────────────────────────────────────
-  // Called by the 60s Timer in home_page.dart (behind Manager+ role guard).
-
-  Future<void> triggerCheck() async {
-    try {
-      final userId       = await UserSessionHelper.getUserId();
-      final enterpriseId = await UserSessionHelper.getEnterpriseId();
-      await _dio.post(_checkAndEscalateUrl, data: {
-        if (userId != null)       'user_id':       userId,
-        if (enterpriseId != null) 'enterprise_id': enterpriseId,
-        'stage': AppConfig.stage,
-      });
-      dev.log('EscalationService.triggerCheck: OK');
-    } catch (e) {
-      dev.log('EscalationService.triggerCheck (non-fatal): $e');
-    }
-  }
-
-  // ── Legacy resolveEscalation compatibility method ─────────────────────────
-  // Escalation resolution is handled atomically inside the stored procedure.
+  // ── No-op compatibility shim ──────────────────────────────────────────────
+  // Resolution is handled atomically inside the update_status stored procedure.
+  // This method is retained so call-sites in home_page.dart compile without
+  // changes; it performs no network call.
   Future<void> resolveEscalation({
     required int serviceRequestId,
     required int resolvedByUserId,
     required String resolutionType,
   }) async {
     dev.log(
-        'EscalationService.resolveEscalation (handled in SP): sr=$serviceRequestId type=$resolutionType');
+      'EscalationService.resolveEscalation (no-op — handled in SP): '
+      'sr=$serviceRequestId type=$resolutionType',
+    );
   }
 
   // ── Dispose ───────────────────────────────────────────────────────────────
@@ -200,5 +155,3 @@ class EscalationService {
     _listCtrl.close();
   }
 }
-
-

@@ -383,20 +383,37 @@ class TaskService {
         data: payload,
       );
 
-      final data = response.data;
-      List<dynamic> statusList = (data['RESULT'] ?? data['STATUS'] ?? []) as List;
+      final data = response.data as Map? ?? const {};
+      // The mobile procedure returns its OUT parameters in STATUS and the
+      // reassignment/FCM details in RESULT. RESULT itself has no `status`.
+      final rawStatus = data['STATUS'];
+      final statusList = rawStatus is List
+          ? rawStatus
+          : rawStatus is Map
+              ? [rawStatus]
+              : const <dynamic>[];
+      final rawResult = data['RESULT'];
+      final resultList = rawResult is List
+          ? rawResult
+          : rawResult is Map
+              ? [rawResult]
+              : const <dynamic>[];
+      final status = statusList.isNotEmpty && statusList.first is Map
+          ? statusList.first as Map
+          : const <dynamic, dynamic>{};
 
-      
-      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+      if (status['status']?.toString().toUpperCase() == 'S') {
         return {
           'success': true,
-          'message': statusList[0]['message'] ?? 'Task reassigned successfully',
-          'updatedTask': statusList[0],
+          'message': status['message'] ?? 'Task reassigned successfully',
+          'updatedTask': resultList.isNotEmpty && resultList.first is Map
+              ? Map<String, dynamic>.from(resultList.first as Map)
+              : <String, dynamic>{},
         };
       } else {
         return {
           'success': false,
-          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to reassign task',
+          'message': status['message'] ?? 'Failed to reassign task',
         };
       }
     } catch (e) {
