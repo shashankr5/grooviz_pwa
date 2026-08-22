@@ -83,10 +83,13 @@ void main() async {
     if (isLoggedIn) {
       // COLD LAUNCH RECONCILIATION:
       // Fetch the true pending counts from the server before rendering the app.
+      // silentReconcile:true prevents the foreground alert from firing for
+      // requests that were already pending before the app was killed (FIX-10).
+      // Alerts are only started by live WS/FCM new-event callbacks.
       try {
-        await AlertReloadCoordinator.instance.reloadTasks();
-        await AlertReloadCoordinator.instance.reloadFood();
-        await AlertReloadCoordinator.instance.reloadDelivery();
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
       } catch (e) {
         print('Cold launch reconciliation reloads failed: $e');
       }

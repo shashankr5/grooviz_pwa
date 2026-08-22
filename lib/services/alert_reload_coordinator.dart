@@ -12,6 +12,11 @@
 //  FIX-9: Added _serviceStartFailed flag. If ensureRunning() returns false
 //          (foreground service failed to start), notifyServiceStartFailed
 //          stream fires so the UI can show a persistent warning to staff.
+//
+//  FIX-10: Added silentReconcile parameter to reloadFood/reloadTasks/reloadDelivery.
+//          Cold-launch reconciliation passes silentReconcile:true so that
+//          pre-existing pending requests do NOT restart the foreground alert.
+//          Alerts are only ever started by live WS/FCM new-event callbacks.
 
 import 'dart:async';
 import 'package:flutter/widgets.dart';
@@ -88,7 +93,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
 
   // ── Food orders ─────────────────────────────────────────────────────────
 
-  Future<void> reloadFood() async {
+  /// [silentReconcile] must be true for cold-launch reconciliation calls.
+  /// When true, a non-zero count keeps an already-running alert alive but
+  /// never starts a fresh alert for pre-existing pending orders — only
+  /// genuine new-event callbacks (WS/FCM) may start alerts.
+  Future<void> reloadFood({bool silentReconcile = false}) async {
     if (_orderInFlight) {
       _orderReloadQueued = true;
       return;
@@ -104,8 +113,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         final pendingCount = orders.where((o) =>
             (o['status'] ?? '').toString().trim().toUpperCase() == 'PENDING').length;
 
-        // FIX-9: Check if service start succeeds when count > 0
-        if (pendingCount > 0) {
+        // FIX-10: Only start the alert for a live new-event reload.
+        // Cold-launch reconciliation (silentReconcile:true) must never
+        // re-trigger the alert for orders that were already pending before
+        // the app was killed.
+        if (pendingCount > 0 && !silentReconcile) {
           final started = await OrderAlertService.ensureRunning();
           if (!started) {
             _serviceFailController.add('food');
@@ -114,7 +126,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         }
 
         OrderAlertService.resetCount(pendingCount, reconcileAlert: true);
-        print('AlertReloadCoordinator: food resetCount($pendingCount)');
+        print('AlertReloadCoordinator: food resetCount($pendingCount) silentReconcile=$silentReconcile');
       }
     } catch (e) {
       print('AlertReloadCoordinator.reloadFood error: $e');
@@ -129,7 +141,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
 
   // ── Service tasks ───────────────────────────────────────────────────────
 
-  Future<void> reloadTasks() async {
+  /// [silentReconcile] must be true for cold-launch reconciliation calls.
+  /// When true, a non-zero count keeps an already-running alert alive but
+  /// never starts a fresh "New Service Request" notification for pre-existing
+  /// open tasks — only genuine new-event callbacks (WS/FCM) may start alerts.
+  Future<void> reloadTasks({bool silentReconcile = false}) async {
     if (_taskInFlight) {
       _taskReloadQueued = true;
       return;
@@ -142,7 +158,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         final openCount =
             tasks.where((t) => (t['status'] ?? '') == 'Open').length;
 
-        if (openCount > 0) {
+        // FIX-10: Only start the alert for a live new-event reload.
+        // Cold-launch reconciliation (silentReconcile:true) must never
+        // re-trigger the "New Service Request" notification for tasks
+        // that were already open before the app was killed.
+        if (openCount > 0 && !silentReconcile) {
           final started = await TaskAlertService.ensureServiceRunning();
           if (!started) {
             _serviceFailController.add('task');
@@ -150,7 +170,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         }
 
         TaskAlertService.resetServiceCount(openCount, reconcileAlert: true);
-        print('AlertReloadCoordinator: service resetServiceCount($openCount)');
+        print('AlertReloadCoordinator: service resetServiceCount($openCount) silentReconcile=$silentReconcile');
       }
     } catch (e) {
       print('AlertReloadCoordinator.reloadTasks error: $e');
@@ -165,7 +185,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
 
   // ── Delivery (Ready orders) ─────────────────────────────────────────────
 
-  Future<void> reloadDelivery() async {
+  /// [silentReconcile] must be true for cold-launch reconciliation calls.
+  /// When true, a non-zero count keeps an already-running alert alive but
+  /// never starts a fresh alert for pre-existing ready orders — only
+  /// genuine new-event callbacks (WS/FCM) may start alerts.
+  Future<void> reloadDelivery({bool silentReconcile = false}) async {
     if (_deliveryInFlight) {
       _deliveryReloadQueued = true;
       return;
@@ -178,7 +202,11 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         // FIX-8: Use shared utility — same deduplication as DeliveryPage
         final count = distinctOrderCount(orders);
 
-        if (count > 0) {
+        // FIX-10: Only start the alert for a live new-event reload.
+        // Cold-launch reconciliation (silentReconcile:true) must never
+        // re-trigger the delivery alert for orders already ready before
+        // the app was killed.
+        if (count > 0 && !silentReconcile) {
           final started = await TaskAlertService.ensureDeliveryRunning();
           if (!started) {
             _serviceFailController.add('delivery');
@@ -186,7 +214,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
         }
 
         TaskAlertService.resetDeliveryCount(count, reconcileAlert: true);
-        print('AlertReloadCoordinator: delivery resetDeliveryCount($count)');
+        print('AlertReloadCoordinator: delivery resetDeliveryCount($count) silentReconcile=$silentReconcile');
       }
     } catch (e) {
       print('AlertReloadCoordinator.reloadDelivery error: $e');

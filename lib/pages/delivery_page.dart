@@ -74,6 +74,7 @@ class _DeliveryPageState extends State<DeliveryPage>
   final List<Map<String, dynamic>> readyOrders = [];
   final List<Map<String, dynamic>> acceptedOrders = [];
   final List<Map<String, dynamic>> deliveredOrders = [];
+  final Set<String> _expandedTimelineOrders = <String>{};
 
   StreamSubscription<void>? _deliverySub;
 
@@ -1132,6 +1133,11 @@ class _DeliveryPageState extends State<DeliveryPage>
               );
             }),
 
+            const SizedBox(height: 4),
+            _buildTimelineToggle(order),
+            if (_expandedTimelineOrders.contains(orderNo))
+              _buildDeliveryLifecycleStepper(order),
+
             // ── Action buttons ───────────────────────────────────────────
             const SizedBox(height: 8),
             if (uiStatus == 'Ready')
@@ -1202,6 +1208,155 @@ class _DeliveryPageState extends State<DeliveryPage>
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildTimelineToggle(Map<String, dynamic> order) {
+    final orderNo = (order['orderNumber'] ?? '').toString();
+    final expanded = _expandedTimelineOrders.contains(orderNo);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: () => setState(() {
+          if (expanded) {
+            _expandedTimelineOrders.remove(orderNo);
+          } else {
+            _expandedTimelineOrders.add(orderNo);
+          }
+        }),
+        icon: Icon(
+          Icons.timeline_rounded,
+          size: 16,
+          color: expanded ? AppColors.primary : AppColors.textSecondary,
+        ),
+        label: Text(expanded ? 'Hide timeline' : 'View timeline'),
+        style: TextButton.styleFrom(
+          foregroundColor: expanded ? AppColors.primary : AppColors.textSecondary,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+
+  DateTime? _firstTimelineDate(Map<String, dynamic> raw, List<String> keys) {
+    for (final key in keys) {
+      final value = raw[key]?.toString();
+      final parsed = _parseOrderTime(value);
+      if (parsed != null) return parsed;
+    }
+    return null;
+  }
+
+  /// Delivery follows the food-order lifecycle, but begins at hand-off:
+  /// Placed -> Ready for Room Service -> Accepted -> Delivered.
+  /// Each timestamp is optional because older enterprise responses may not
+  /// expose all history fields yet.
+  Widget _buildDeliveryLifecycleStepper(Map<String, dynamic> order) {
+    final raw = Map<String, dynamic>.from(order['raw'] as Map? ?? const {});
+    final status = (order['uiStatus'] ?? order['status'] ?? '').toString();
+    final createdAt = _firstTimelineDate(raw, const [
+          'created_at', 'order_time', 'placed_time',
+        ]) ??
+        (order['_orderTimeDt'] as DateTime?);
+    final readyAt = _firstTimelineDate(raw, const [
+      'summary_ready_time', 'ready_time', 'food_ready_at', 'status_updated_time',
+    ]);
+    final acceptedAt = _firstTimelineDate(raw, const [
+      'room_service_accepted_at', 'accepted_time', 'accepted_at',
+    ]);
+    final deliveredAt = _firstTimelineDate(raw, const [
+      'summary_delivered_time', 'delivered_time', 'delivered_at',
+    ]);
+
+    var activeStage = 1; // Ready is the first state shown in Delivery Management.
+    if (status == 'Accepted' || acceptedAt != null) activeStage = 2;
+    if (status == 'Delivered' || deliveredAt != null) activeStage = 3;
+
+    String time(DateTime? value, int stage) {
+      if (value != null) return DateFormatter.formatDateTimeOnlyAmPm(value);
+      return activeStage > stage ? 'Done' : (activeStage == stage ? 'Ongoing' : 'Pending');
+    }
+
+    final steps = <Map<String, dynamic>>[
+      {'title': 'Placed', 'time': time(createdAt, 0), 'icon': Icons.receipt_long_rounded, 'color': AppColors.primary},
+      {'title': 'Ready', 'time': time(readyAt, 1), 'icon': Icons.room_service_rounded, 'color': AppColors.orange},
+      {'title': 'Accepted', 'time': time(acceptedAt, 2), 'icon': Icons.delivery_dining_rounded, 'color': AppColors.info},
+      {'title': 'Delivered', 'time': time(deliveredAt, 3), 'icon': Icons.done_all_rounded, 'color': AppColors.success},
+    ];
+
+    return Container(
+      margin: const EdgeInsets.only(top: 2, bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Delivery Timeline',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textPrimary)),
+          const SizedBox(height: 14),
+          Stack(
+            alignment: Alignment.topCenter,
+            children: [
+              Positioned(
+                top: 11,
+                left: 28,
+                right: 28,
+                child: Container(height: 2, color: AppColors.borderLight),
+              ),
+              Positioned(
+                top: 11,
+                left: 28,
+                right: 28,
+                child: FractionallySizedBox(
+                  widthFactor: (activeStage / 3).clamp(0.0, 1.0),
+                  child: Container(height: 2, color: AppColors.primary),
+                ),
+              ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: List<Widget>.generate(steps.length, (index) {
+                  final step = steps[index];
+                  final done = index <= activeStage;
+                  final color = step['color'] as Color;
+                  return Expanded(
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            color: done ? color : Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: done ? color : AppColors.borderLight, width: 2),
+                          ),
+                          child: Icon(step['icon'] as IconData,
+                              size: 13, color: done ? Colors.white : AppColors.textDisabled),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(step['title'] as String,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                                color: done ? AppColors.textPrimary : AppColors.textSecondary)),
+                        const SizedBox(height: 2),
+                        Text(step['time'] as String,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 9, color: AppColors.textSecondary),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis),
+                      ],
+                    ),
+                  );
+                }),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

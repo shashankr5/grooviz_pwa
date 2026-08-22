@@ -78,7 +78,9 @@ class TaskAlertService {
   static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
   static Future<bool> ensureDeliveryRunning() => _ensureRunning(
         soundName:         AlertSoundKey.delivery,   // CHANGED from .task
-        shouldLoop:        false,
+        // A Ready order remains actionable until Room Service accepts it.
+        // _reevaluate() stops this loop when the Ready queue becomes empty.
+        shouldLoop:        true,
         notificationTitle: 'Order Ready for Delivery',
         notificationText:  'Tap to view delivery queue',
       );
