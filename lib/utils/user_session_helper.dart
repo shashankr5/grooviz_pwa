@@ -128,6 +128,10 @@ class UserSessionHelper {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(StorageKeys.rushHourStatus) ?? 'INACTIVE';
   }
+  static Future<String> getRushHourData() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(StorageKeys.rushHourData) ?? '';
+  }
 
   // ---------- DEPT / ESCALATION RULE (from get_user_dept_details_mobile) ----------
 

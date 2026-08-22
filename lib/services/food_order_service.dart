@@ -328,100 +328,107 @@ class FoodOrderService {
 
   // ── SET RUSH HOUR (v1) ────────────────────────────────────────────────────
   // Endpoint: ScreenSync_set_rush_hour_state_mobile
-  // Input:    { user_id, rush_hour_active (0|1), stage }
+  // Input:    { user_id, status: ACTIVE|INACTIVE, rush_hour: minutes, stage }
   // NOTE:     NO durationMinutes — server reads from enterprise_food_service_rule
   // Output:   STATUS[0] with JSON response body:
   //           { status, message, current_rush_hour, rush_hour_status, enterprise_id }
 
-  Future<Map<String, dynamic>> setRushHour({required bool active}) async {
+  /// Uses the enterprise-rule rush-hour contract.
+  /// Input: { user_id, status: ACTIVE|INACTIVE, rush_hour: minutes, stage }.
+  Future<Map<String, dynamic>> setRushHour({
+    required bool active,
+    int rushHourMinutes = 30,
+  }) async {
     try {
-      final int? userId = await UserSessionHelper.getUserId();
+      final userId = await UserSessionHelper.getUserId();
       if (userId == null || userId == 0) {
-        return {"success": false, "message": "User not logged in"};
+        return {'success': false, 'message': 'User not logged in'};
       }
-
+      final requestedMinutes = active ? rushHourMinutes.clamp(0, 24 * 60) : 0;
       final payload = <String, dynamic>{
-        "user_id":          userId,
-        "rush_hour_active": active ? 1 : 0,
-        "stage":            AppConfig.stage,
+        'user_id': userId,
+        'status': active ? 'ACTIVE' : 'INACTIVE',
+        'rush_hour': requestedMinutes,
+        'stage': AppConfig.stage,
       };
-
-      dev.log("📤 Set Rush Hour v1 (active=$active)");
-      dev.log("Payload: $payload");
-
-      final response = await _dio.post(
-        ApiConstants.setRushHourV1,
-        data: payload,
-      );
-
-      dev.log("📥 Raw Set Rush Hour Response: ${response.data}");
-
+      dev.log('Set rush hour: $payload');
+      final response = await _dio.post(ApiConstants.setRushHourV1, data: payload);
       if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error"};
+        return {'success': false, 'message': 'Server error'};
       }
 
-      // Lambda returns { STATUS: results[0] } — response field is a JSON string
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid server response"};
+      final data = response.data as Map? ?? const {};
+      Map<String, dynamic> firstMap(dynamic rows) {
+        if (rows is List) {
+          for (final row in rows) {
+            if (row is Map) return Map<String, dynamic>.from(row);
+          }
+        }
+        return <String, dynamic>{};
+      }
+      final statusRow = firstMap(data['STATUS']);
+      final resultRow = firstMap(data['RESULT']).isNotEmpty
+          ? firstMap(data['RESULT'])
+          : firstMap(data['RESULT2']);
+      final responseValue = statusRow['response'];
+      Map<String, dynamic> responseBody = <String, dynamic>{};
+      if (responseValue is Map) {
+        responseBody = Map<String, dynamic>.from(responseValue);
+      } else if (responseValue is String && responseValue.isNotEmpty) {
+        try {
+          responseBody = Map<String, dynamic>.from(jsonDecode(responseValue) as Map);
+        } catch (_) {}
+      }
+      final merged = <String, dynamic>{...statusRow, ...responseBody, ...resultRow};
+      final flag = (merged['p_out_mssg_flg'] ?? merged['status'] ?? '').toString().toUpperCase();
+      if (flag == 'F') {
+        return {'success': false, 'message': merged['message'] ?? 'Failed to update rush hour'};
       }
 
-      final flag = (statusList[0]["status"] ?? "F").toString();
-
-      // The SP OUT param p_out_mssg is a JSON object — Lambda wraps it in STATUS[0].response
-      dynamic responseBody = statusList[0]["response"];
-      Map<String, dynamic> body = {};
-      if (responseBody is String && responseBody.isNotEmpty) {
-        try { body = Map<String, dynamic>.from(jsonDecode(responseBody)); }
-        catch (_) {}
-      } else if (responseBody is Map) {
-        body = Map<String, dynamic>.from(responseBody);
-      }
-
-      if (flag != "S") {
-        return {
-          "success": false,
-          "message": body["message"] ?? statusList[0]["message"] ?? "Failed",
-        };
-      }
-
-      final newActive = body["current_rush_hour"];
-      final rushActive = newActive == 1 || newActive == true || newActive == "1";
-
-      // Persist updated rush hour state to SharedPreferences
+      // Certain deployed Lambda versions expose the first SELECT as {"1": 1}.
+      // An HTTP 200 without an explicit procedure failure is therefore accepted.
+      final returnedMinutes = int.tryParse((merged['current_rush_hour'] ?? requestedMinutes).toString()) ?? requestedMinutes;
+      final returnedStatus = (merged['rush_hour_status'] ?? (active ? 'ACTIVE' : 'INACTIVE')).toString().toUpperCase();
+      final rushActive = returnedStatus == 'ACTIVE';
       await UserSessionHelper.saveRushHourConfig(
         rushHourActive: rushActive ? 1 : 0,
-        maxTapCount:    await UserSessionHelper.getMaxTapCount(),
-        tapCountMin:    await UserSessionHelper.getTapCountMin(),
-        rushHourStatus: (body["rush_hour_status"] ?? (rushActive ? "ACTIVE" : "INACTIVE")).toString(),
+        maxTapCount: await UserSessionHelper.getMaxTapCount(),
+        tapCountMin: await UserSessionHelper.getTapCountMin(),
+        rushHourStatus: returnedStatus,
+        rushHourData: jsonEncode({'current_rush_hour': returnedMinutes}),
       );
-
       return {
-        "success":          true,
-        "message":          body["message"] ?? "Rush hour updated",
-        "rush_hour_active": rushActive,
-        "rush_hour_status": body["rush_hour_status"],
-        "enterprise_id":    body["enterprise_id"],
+        'success': true,
+        'message': merged['message'] ?? (rushActive ? 'Rush hour activated' : 'Rush hour deactivated'),
+        'rush_hour_active': rushActive,
+        'rush_hour_status': returnedStatus,
+        'current_rush_hour': returnedMinutes,
       };
     } catch (e, stack) {
-      dev.log("❌ ERROR (setRushHour v1): $e");
-      dev.log("❌ Stack: $stack");
-      return {"success": false, "message": "Network error"};
+      dev.log('Set rush hour failed: $e');
+      dev.log('$stack');
+      return {'success': false, 'message': 'Network error'};
     }
   }
 
-  // ── GET RUSH HOUR STATE ───────────────────────────────────────────────────
-  // Reads from SharedPreferences (saved at login or after setRushHour).
-  // Returns immediately without a network call.
-
+  // -- GET RUSH HOUR STATE ---------------------------------------------------
+  // Reads the most recently confirmed enterprise state from local storage.
   Future<Map<String, dynamic>> getRushHourState() async {
     try {
       final active = await UserSessionHelper.getRushHourActive();
       final status = await UserSessionHelper.getRushHourStatus();
+      final rawConfig = await UserSessionHelper.getRushHourData();
+      Map<String, dynamic> config = <String, dynamic>{};
+      if (rawConfig.isNotEmpty) {
+        try {
+          config = Map<String, dynamic>.from(jsonDecode(rawConfig) as Map);
+        } catch (_) {}
+      }
       return {
-        "success":          true,
+        "success": true,
         "rush_hour_active": active,
         "rush_hour_status": status,
+        "current_rush_hour": config['current_rush_hour'],
       };
     } catch (e) {
       dev.log("❌ ERROR (getRushHourState): $e");

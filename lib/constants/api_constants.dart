@@ -32,7 +32,7 @@ class ApiConstants {
   // ── Ticket Details ────────────────────────────────────────────
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";
   static const String addServiceNote = "$baseUrl/ScreenSync_add_service_note_mobile";
-  static const String closeService = "$baseUrl/ScreenSync_close_service_mobile";
+  static const String closeService = "$baseUrl/ScreenSync_close_service_mobile1";
   static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile1";
   static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
 

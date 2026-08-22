@@ -233,7 +233,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     data['rush_hour_active'] == 1    ||
                     data['rush_hour_active'] == '1';
     final endsAt  = data['rush_hour_ends_at']?.toString();
-    final extra   = (data['rush_hour_extra_min'] as num?)?.toInt() ?? 10;
+    final extra   = int.tryParse((data['current_rush_hour'] ?? data['rush_hour_extra_min'] ?? 15).toString()) ?? 15;
 
     DateTime? parsedEndsAt;
     if (active && endsAt != null && endsAt.isNotEmpty) {
@@ -280,7 +280,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     'Other',
   ];
 
-  int _rushExtraMinutes() => rushExtraMinutesSelected > 0 ? rushExtraMinutesSelected : 10;
+  // current_rush_hour is the configured total ETA while rush hour is active.
+  int _rushEtaMinutes() => rushExtraMinutesSelected > 0 ? rushExtraMinutesSelected : 15;
 
   // ====================== DATA LOADING ======================
   Future<void> _loadFoodOrders() async {
@@ -349,7 +350,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                         result["rush_hour_active"] == 1    ||
                         result["rush_hour_active"] == '1';
         final endsAt  = result["rush_hour_ends_at"]?.toString();
-        final extra   = (result["rush_hour_extra_min"] as num?)?.toInt() ?? 10;
+        final extra   = int.tryParse((result["current_rush_hour"] ?? result["rush_hour_extra_min"] ?? 15).toString()) ?? 15;
 
         DateTime? parsedEndsAt;
         if (active && endsAt != null && endsAt.isNotEmpty) {
@@ -423,8 +424,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       if (!mounted) return;
 
       if (result["success"] == true) {
-        final newActive = result["rush_hour_active"] == true || result["rush_hour_active"] == 1;
-        _applyRushHourState(active: newActive);
+        final newActive = result["rush_hour_active"] == true || result["rush_hour_active"] == 1 || result["rush_hour_active"] == '1';
+        final rushMinutes = int.tryParse((result["current_rush_hour"] ?? 15).toString()) ?? 15;
+        _applyRushHourState(active: newActive, extraMin: rushMinutes);
         // WebSocket broadcast is done server-side; other devices update via WS.
       } else {
         _showError(result["message"]);
@@ -439,9 +441,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   void _addNewOrder(Map<String, dynamic> order) {
     setState(() {
       if (rushHourActive) {
-        final extra         = _rushExtraMinutes();
-        order['etaMinutes'] = (order['etaMinutes'] ?? 15) + extra;
-        order['extraEta']   = extra;
+        final rushEta       = _rushEtaMinutes();
+        order['etaMinutes'] = rushEta;
+        order['extraEta']   = rushEta - 15;
       }
       foodOrders.insert(0, order);
     });
@@ -1086,7 +1088,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                 ),
                 if (rushHourActive)
                   Text(
-                    "+${_rushExtraMinutes()} min ETA • ${_rushTimeLeftText()} left",
+                    "${_rushEtaMinutes()} min ETA • ${_rushTimeLeftText()} left",
                     style: TextStyle(
                         fontSize: 11,
                         color: AppColors.error.withOpacity(0.7)),
@@ -1608,7 +1610,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               return;
                             }
                             final initialExpires = DateTime.now().add(Duration(
-                                minutes: 15 + (rushHourActive ? _rushExtraMinutes() : 0)));
+                                minutes: rushHourActive ? _rushEtaMinutes() : 15));
                             setState(() {
                               _acceptingIndex = index;
                               order["status"] = FoodOrderStatus.preparing.label;
@@ -1617,10 +1619,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               order["etaTapCount"] = 0;
                               order["etaLocked"] = false;
                               if (rushHourActive) {
-                                final extra = _rushExtraMinutes();
-                                order['etaMinutes'] =
-                                    (order['etaMinutes'] ?? 15) + extra;
-                                order['extraEta'] = extra;
+                                final rushEta = _rushEtaMinutes();
+                                order['etaMinutes'] = rushEta;
+                                order['extraEta'] = rushEta - 15;
                               }
                             });
                             final result =

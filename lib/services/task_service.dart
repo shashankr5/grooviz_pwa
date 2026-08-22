@@ -392,9 +392,23 @@ class TaskService {
         final message = statusMap['message']?.toString() ?? 'Service request accepted successfully';
         if (flag == 'S') {
           dev.log("✅ acceptServiceRequest success: $message");
+          // RESULT2 is the assignment/audit result set returned by
+          // accept_service_request_mobile1. Keep it available for the UI.
+          final rawAssignment =
+              data['RESULT2'] ?? data['RESULT_2'] ?? data['ASSIGNMENT'];
+          final assignmentRows = rawAssignment is List
+              ? rawAssignment
+              : (rawAssignment is Map ? [rawAssignment] : const <dynamic>[]);
+          final assignment = assignmentRows.isNotEmpty && assignmentRows.first is Map
+              ? Map<String, dynamic>.from(assignmentRows.first as Map)
+              : <String, dynamic>{};
           return {
             'success': true,
             'message': message,
+            'assignment': assignment,
+            'accepted_at': assignment['accepted_at'],
+            'accepted_by_user_name': assignment['accepted_by_user_name'] ??
+                assignment['accepted_by_name'],
           };
         } else {
           return {
@@ -456,9 +470,21 @@ class TaskService {
         final message = statusMap['message']?.toString() ?? 'Task reassigned successfully';
         if (flag == 'S') {
           dev.log("✅ reassignService success: $message");
+          final rawUpdate = data['RESULT2'] ?? data['RESULT'] ?? data['ASSIGNMENT'];
+          final updateRows = rawUpdate is List
+              ? rawUpdate
+              : (rawUpdate is Map ? [rawUpdate] : const <dynamic>[]);
+          final updatedTask = updateRows.isNotEmpty && updateRows.first is Map
+              ? Map<String, dynamic>.from(updateRows.first as Map)
+              : <String, dynamic>{};
           return {
             'success': true,
             'message': message,
+            'updatedTask': updatedTask,
+            'assigned_by_name': updatedTask['assigned_by_name'] ??
+                updatedTask['recent_reassigned_by_user_name'],
+            'assigned_at': updatedTask['assigned_at'] ??
+                updatedTask['recent_reassigned_at'],
           };
         } else {
           return {
@@ -530,15 +556,17 @@ class TaskService {
     }
   }
 
-  /// Close a service request
+  /// Closes a service request through close_service_mobile1.
+  /// The server derives enterprise/department from the request and verifies
+  /// the signed-in user's current department assignment.
   Future<Map<String, dynamic>> closeService({
     required int serviceRequestId,
     String stage = AppConfig.stage,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {'success': false, 'message': 'User session not found', 'data': null};
+      if (userId == null || userId == 0) {
+        return {'success': false, 'message': 'User session not found'};
       }
 
       final response = await _dio.post(
@@ -549,32 +577,33 @@ class TaskService {
           'stage': stage,
         },
       );
-
-      final data = response.data;
-      List<dynamic> statusList = (data['STATUS'] ?? data['RESULT'] ?? []) as List;
-      List<dynamic> resultList = (data['RESULT'] ?? data['STATUS'] ?? []) as List;
-
-      if (statusList.isNotEmpty && (statusList[0]['status'] == 'S' || statusList[0]['status'] == '200')) {
-
-        return {
-          'success': true,
-          'message': statusList[0]['message'] ?? 'Service closed successfully',
-          'data': resultList.isNotEmpty ? resultList[0] : null,
-        };
-      } else {
-        return {
-          'success': false,
-          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to close service',
-          'data': null,
-        };
+      final data = response.data as Map? ?? const {};
+      final statusRows = data['STATUS'] is List ? data['STATUS'] as List : const <dynamic>[];
+      final resultRows = data['RESULT'] is List
+          ? data['RESULT'] as List
+          : (data['RESULT2'] is List ? data['RESULT2'] as List : const <dynamic>[]);
+      final status = statusRows.isNotEmpty && statusRows.first is Map
+          ? Map<String, dynamic>.from(statusRows.first as Map)
+          : <String, dynamic>{};
+      final details = resultRows.isNotEmpty && resultRows.first is Map
+          ? Map<String, dynamic>.from(resultRows.first as Map)
+          : <String, dynamic>{};
+      final flag = status['status']?.toString().toUpperCase();
+      if (flag != 'S' && flag != '200') {
+        return {'success': false, 'message': status['message'] ?? 'Failed to close service request'};
       }
-    } catch (e) {
-      dev.log("❌ ERROR (closeService): $e");
+
       return {
-        'success': false,
-        'message': ErrorHandler.friendlyMessage(e),
-        'data': null,
+        'success': true,
+        'message': status['message'] ?? 'Service request closed successfully',
+        'current_status': 'Closed',
+        'closed_at': details['closed_at'],
+        'closed_by_user_name': details['closed_by_user_name'],
+        'data': details,
       };
+    } catch (e) {
+      dev.log("Close service mobile1 failed: $e");
+      return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
     }
   }
 }

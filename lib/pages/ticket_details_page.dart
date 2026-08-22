@@ -79,6 +79,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   bool _isRefreshing = false;
 
+  // Live SLA ticker — fires every second to update countdown in the
+  // resolution SLA banner and status timeline on in-progress tasks.
+  Timer? _slaTicker;
+
   List<Map<String, dynamic>> _staffList         = [];
   List<Map<String, dynamic>> _escalationHistory = [];
   bool _isLoadingEscHist = false;
@@ -99,6 +103,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     // parent list are replaced with the current server state.
     _refreshFromServer();
 
+    // Tick every second so live countdowns (SLA banner, timeline) update.
+    _slaTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+
     _scrollController.addListener(() {
       final show = _scrollController.offset > 300;
       if (show != _showScrollTop) setState(() => _showScrollTop = show);
@@ -114,6 +123,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   @override
   void dispose() {
+    _slaTicker?.cancel();
     _noteController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -401,9 +411,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         serviceRequestId: _serviceRequestId,
       );
     } else {
-      result = await TaskService().updateServiceRequestStatus(
+      result = await TaskService().closeService(
         serviceRequestId: _serviceRequestId,
-        status:           newStatus,
       );
     }
 
@@ -423,6 +432,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
     final escStatus        = result['escalation_status'] as String?;
     final nextEscalationAt = result['next_escalation_at'] as String?;
+    // The close endpoint returns closed_at in RESULT. Preserve a local
+    // timestamp as a fallback so the Completed timeline step updates now.
+    final closedAt = isClose
+        ? (result['closed_at']?.toString().trim().isNotEmpty == true
+            ? result['closed_at'].toString()
+            : DateTime.now().toIso8601String())
+        : null;
 
     setState(() {
       _task['status'] = currentStatus;
@@ -431,6 +447,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         if (isClose) {
           raw['closed']              = 1;
           raw['status']              = 'CLOSED';
+          raw['closed_at']           = closedAt;
+          raw['closed_by_user_name'] = result['closed_by_user_name'] ?? raw['closed_by_user_name'];
           // Clear escalation — SP resolves it atomically
           raw['escalation_instance_id'] = null;
           raw['escalation_status']      = null;
@@ -438,6 +456,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         } else {
           raw['status']                 = 'IN_PROGRESS';
           raw['accepted_by_user_name']  = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          raw['accepted_at']             = result['accepted_at'] ?? raw['accepted_at'];
+          _task['accepted_at']             = result['accepted_at'] ?? _task['accepted_at'];
           raw['escalation_status']      = escStatus;
           raw['next_escalation_at']     = nextEscalationAt;
         }
@@ -448,6 +468,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         _task['alert_pending']   = 0;
       }
       if (isClose) {
+        _task['closed_at'] = closedAt;
+        _task['closed'] = 1;
         _task['escalation_instance_id'] = null;
         _task['escalation_status']      = null;
         _task['next_escalation_at']     = null;
@@ -795,8 +817,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                             raw['assigned_to_phone'] =
                                                 staff['phone'] ?? '';
                                             raw['assigned_by_name'] =
-                                                upd['assigned_by_name'] ??
-                                                    '';
+                                                upd['assigned_by_name'] ?? '';
+                                            raw['assigned_at'] =
+                                                upd['assigned_at'] ?? raw['assigned_at'];
                                             raw['is_escalated']  = 0;
                                             raw['alert_pending'] = 0;
                                           }
@@ -967,13 +990,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildResolutionSlaBanner(),
-
+                  _buildServiceSlaBanner(),
 
                   if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
                     const SizedBox(height: 12),
 
                   _buildInfoCard(),
+
+                  const SizedBox(height: 12),
+
+                  _buildStatusTimeline(),
 
                   const SizedBox(height: 12),
 
@@ -985,8 +1011,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                   ],
 
                   const SizedBox(height: 12),
-
-
 
                   if (!_isClosed) _buildActions(),
                 ],
@@ -1342,6 +1366,126 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
+  DateTime? _parseTaskTimestamp(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim();
+    if (text.isEmpty || text == 'null') return null;
+    return DateTime.tryParse(text.replaceFirst(' ', 'T'))?.toLocal();
+  }
+
+  int? _parseTaskInt(dynamic value) =>
+      value == null ? null : int.tryParse(value.toString());
+
+  /// Resolution SLA is based on accepted_at + escalation_time_minutes, so it
+  /// remains visible even before the escalation engine creates an alert.
+  Widget _buildServiceSlaBanner() {
+    final raw = _task['raw'] as Map? ?? const {};
+    final status = (_task['status'] ?? raw['status'] ?? '').toString().toLowerCase();
+    final acceptedAt = _parseTaskTimestamp(_task['accepted_at'] ?? raw['accepted_at']);
+    final totalMinutes = _parseTaskInt(
+        _task['escalation_time_minutes'] ?? raw['escalation_time_minutes']);
+    if (status != 'in progress' || acceptedAt == null || totalMinutes == null || totalMinutes <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    final remaining = acceptedAt.add(Duration(minutes: totalMinutes)).difference(DateTime.now());
+    final overdue = remaining.isNegative;
+    final seconds = remaining.abs().inSeconds;
+    final fraction = overdue ? 0.0 : (seconds / (totalMinutes * 60)).clamp(0.0, 1.0);
+    final color = overdue || fraction < 0.10
+        ? AppColors.error
+        : fraction <= 0.30 ? AppColors.warning : AppColors.success;
+    final label = overdue ? '${seconds ~/ 60} min overdue' : '${seconds ~/ 60} min remaining';
+    final state = overdue ? 'SLA breach' : fraction <= 0.30 ? 'Nearing SLA' : 'On track';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.30)),
+      ),
+      child: Row(children: [
+        SizedBox(height: 48, width: 48, child: Stack(alignment: Alignment.center, children: [
+          CircularProgressIndicator(value: fraction, strokeWidth: 5, color: color,
+              backgroundColor: color.withValues(alpha: 0.15)),
+          Icon(overdue ? Icons.timer_off_outlined : Icons.timer_outlined, color: color, size: 20),
+        ])),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 14)),
+          const SizedBox(height: 2),
+          Text(state, style: TextStyle(color: color.withValues(alpha: 0.85), fontSize: 12)),
+        ])),
+      ]),
+    );
+  }
+
+  Widget _buildStatusTimeline() {
+    final raw = _task['raw'] as Map? ?? const {};
+    final created = _parseTaskTimestamp(_task['created_at'] ?? raw['created_at'] ?? raw['timestamp']);
+    final accepted = _parseTaskTimestamp(_task['accepted_at'] ?? raw['accepted_at']);
+    final assigned = _parseTaskTimestamp(raw['assigned_at'] ?? raw['recent_reassigned_at']);
+    final closed = _parseTaskTimestamp(_task['closed_at'] ?? raw['closed_at'] ?? raw['completed_at']);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 3))],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Row(children: [
+          Icon(Icons.timeline_rounded, size: 18, color: AppColors.primary),
+          SizedBox(width: 8),
+          Text('Service Timeline', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.textPrimary)),
+        ]),
+        const SizedBox(height: 14),
+        _timelineEntry('Created', created, done: created != null, color: AppColors.primary),
+        _timelineEntry('Accepted', accepted, done: accepted != null,
+            detail: accepted != null && created != null ? 'took ${_timelineDuration(created, accepted)}' : null,
+            color: AppColors.success),
+        _timelineEntry('Assigned / Reassigned', assigned, done: assigned != null,
+            detail: assigned == null ? 'Not reassigned' : null, color: AppColors.info),
+        _timelineEntry('Completed', closed, done: _isClosed || closed != null,
+            detail: closed == null ? (_isClosed ? 'Closed' : 'Pending') : null,
+            color: AppColors.success, last: true),
+      ]),
+    );
+  }
+
+  String _timelineDuration(DateTime start, DateTime end) {
+    final minutes = end.difference(start).inMinutes;
+    return minutes < 1 ? 'under 1 min' : '$minutes min';
+  }
+
+  Widget _timelineEntry(String label, DateTime? time, {
+    required bool done, required Color color, String? detail, bool last = false,
+  }) {
+    final activeColor = done ? color : AppColors.textDisabled;
+    final stamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(width: 24, child: Column(children: [
+        Container(width: 14, height: 14, decoration: BoxDecoration(
+          shape: BoxShape.circle, color: done ? activeColor : Colors.white,
+          border: Border.all(color: activeColor, width: 2),
+        )),
+        if (!last) Container(width: 2, height: 30, color: activeColor.withValues(alpha: 0.35)),
+      ])),
+      const SizedBox(width: 10),
+      Expanded(child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+              color: done ? AppColors.textPrimary : AppColors.textSecondary)),
+          const SizedBox(height: 2),
+          Text(detail == null ? stamp : '$stamp  �  $detail',
+              style: TextStyle(fontSize: 12, color: done ? AppColors.textSecondary : AppColors.textDisabled)),
+        ]),
+      )),
+    ]);
+  }
   Widget _buildInfoCard() {
     final raw        = _task['raw'] as Map<String, dynamic>? ?? {};
 
@@ -1351,10 +1495,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final rawTitle   = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
     final title      = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
 
-    final assignedTo = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
-    final createdAt  = (raw['created_at'] ?? '').toString();
-    final acceptedAt = (raw['accepted_at'] ?? _task['accepted_at'] ?? '').toString();
-    final deptName   = (raw['department_name'] ?? '').toString();
+    final assignedTo     = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
+    final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
+    final acceptedByName = (raw['accepted_by_user_name'] ?? '').toString().trim();
+    final assignedAt     = (raw['assigned_at'] ?? raw['recent_reassigned_at'] ?? '').toString();
+    final isReassigned   = assignedByName.isNotEmpty &&
+        (acceptedByName.isEmpty || assignedByName.toLowerCase() != acceptedByName.toLowerCase());
+    final createdAt      = (raw['created_at'] ?? '').toString();
+    final acceptedAt     = (raw['accepted_at'] ?? _task['accepted_at'] ?? '').toString();
+    final deptName       = (raw['department_name'] ?? '').toString();
     final escalationMins = raw['escalation_time_minutes'];
 
     return Container(
@@ -1441,10 +1590,53 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               label:   'Assigned To',
               value:   assignedTo,
               phone:   _assignedPhone,
-              canCall: _isSupervisorOrAbove(widget.userRole)&& 
-                       _assignedToId != _loggedInUserId, 
+              canCall: _isSupervisorOrAbove(widget.userRole) &&
+                       _assignedToId != _loggedInUserId,
               loading: _phoneLoading,
             ),
+
+            // Reassignment audit pill — shown when a different staff
+            // member performed the reassignment (supervisor action)
+            if (isReassigned) ...[
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.infoLight,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.swap_horiz_rounded,
+                      size: 13, color: AppColors.info),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: RichText(
+                      text: TextSpan(
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textPrimary),
+                        children: [
+                          const TextSpan(
+                              text: 'Reassigned by ',
+                              style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontWeight: FontWeight.w500)),
+                          TextSpan(
+                              text: assignedByName,
+                              style: const TextStyle(
+                                  color: AppColors.info,
+                                  fontWeight: FontWeight.w700)),
+                          if (assignedAt.isNotEmpty)
+                            TextSpan(
+                              text: ' at ${DateFormatter.formatTimeOnlyAmPm(assignedAt)}',
+                              style: const TextStyle(color: AppColors.textSecondary),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+            ],
 
             if (createdAt.isNotEmpty) ...[
               const SizedBox(height: 8),

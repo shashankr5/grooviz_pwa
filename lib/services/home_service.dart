@@ -593,74 +593,13 @@ class HomeService {
     }
   }
 
-  // ── CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile) ──
+  // ── CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile1) ──
 
+  /// Compatibility entry point. The close_service_mobile1 contract is owned by
+  /// TaskService and derives enterprise/department from the service request.
   Future<Map<String, dynamic>> closeServiceRequest({
     required int serviceRequestId,
-    required int departmentId,
-    required int enterpriseId,
-  }) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {
-          "success": false,
-          "message": "User not logged in",
-          "data": null,
-        };
-      }
-
-      // Uses new endpoint: ScreenSync_close_service_mobile
-      // department_id and enterprise_id are forwarded so the SP can
-      // broadcast TASK_CLOSED via WebSocket to all department devices.
-      final payload = {
-        "user_id":            userId,
-        "service_request_id": serviceRequestId,
-        "department_id":      departmentId,
-        "enterprise_id":      enterpriseId,
-        "stage":              AppConfig.stage,
-      };
-
-      final response =
-          await _dio.post(ApiConstants.closeService, data: payload);
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error", "data": null};
-      }
-
-      final statusList = (response.data["STATUS"] ?? response.data["RESULT"]) as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {
-          "success": false,
-          "message": "Invalid response",
-          "data": null,
-        };
-      }
-
-      final flag = statusList[0]["status"]?.toString();
-      final msg  = statusList[0]["message"]?.toString();
-
-      if (flag != "S" && flag != "200") {
-        return {"success": false, "message": msg ?? "Failed", "data": null};
-      }
-
-
-      final resultList = response.data["RESULT"] as List?;
-      return {
-        "success": true,
-        "message": msg,
-        "data": resultList?.isNotEmpty == true ? resultList![0] : null,
-      };
-    } catch (e) {
-      dev.log("ERROR (closeServiceRequest): $e");
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-        "data": null,
-      };
-    }
-  }
-
+  }) => TaskService().closeService(serviceRequestId: serviceRequestId);
   Future<Map<String, dynamic>> getTaskDetails(task) async {
     return {"success": true, "task": task};
   }

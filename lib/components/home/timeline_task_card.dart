@@ -343,15 +343,103 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                         const Icon(Icons.badge_outlined,
                             color: AppColors.textSecondary, size: 14),
                         const SizedBox(width: 4),
-                        Text(
-                          'Assigned: $assignedTo',
-                          style: AppTypography.bodySecondary.copyWith(
-                            fontSize: 12,
-                            color: AppColors.textSecondary,
+                        Flexible(
+                          child: Text(
+                            'Assigned: $assignedTo',
+                            style: AppTypography.bodySecondary.copyWith(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
                     ),
+
+                  // SLA Countdown — visible only on in-progress tasks
+                  () {
+                    if (statusStr.toLowerCase() != 'in progress') {
+                      return const SizedBox.shrink();
+                    }
+                    final rawMap = task['raw'] as Map? ?? {};
+                    final acceptedAtStr = (task['accepted_at'] ??
+                            rawMap['accepted_at'] ??
+                            '')
+                        .toString();
+                    final escalationMinsVal =
+                        rawMap['escalation_time_minutes'] ??
+                            task['escalation_time_minutes'];
+                    final escalationMins = escalationMinsVal != null
+                        ? int.tryParse(escalationMinsVal.toString())
+                        : null;
+                    if (escalationMins == null || escalationMins <= 0) {
+                      return const SizedBox.shrink();
+                    }
+                    DateTime? acceptedAt;
+                    if (acceptedAtStr.isNotEmpty &&
+                        acceptedAtStr != 'null') {
+                      acceptedAt = DateTime.tryParse(
+                              acceptedAtStr.replaceAll(' ', 'T'))
+                          ?.toLocal();
+                    }
+                    if (acceptedAt == null) return const SizedBox.shrink();
+
+                    final deadline =
+                        acceptedAt.add(Duration(minutes: escalationMins));
+                    final remaining = deadline.difference(DateTime.now());
+                    final isOverdue = remaining.isNegative;
+                    final remSecs = remaining.abs().inSeconds;
+                    final totalSecs = escalationMins * 60;
+                    final pct = isOverdue
+                        ? 0.0
+                        : (remSecs / totalSecs).clamp(0.0, 1.0);
+                    final Color slaColor = isOverdue || pct < 0.10
+                        ? AppColors.error
+                        : pct < 0.30
+                            ? AppColors.warning
+                            : AppColors.success;
+                    final mm = (remSecs ~/ 60).toString().padLeft(2, '0');
+                    final ss = (remSecs % 60).toString().padLeft(2, '0');
+                    final label = isOverdue
+                        ? '+$mm:$ss overdue'
+                        : '$mm:$ss remaining';
+
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: slaColor.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: slaColor.withValues(alpha: 0.25)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isOverdue
+                                  ? Icons.timer_off_outlined
+                                  : Icons.timer_outlined,
+                              size: 12,
+                              color: slaColor,
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              'SLA  $label',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: slaColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }(),
 
                   // Row 5: Quick Action Buttons — ONLY shown when NOT assigned to anyone
                   if (!isAlreadyAssigned &&
