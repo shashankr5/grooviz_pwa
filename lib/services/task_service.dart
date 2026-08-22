@@ -1,6 +1,5 @@
 import 'dart:developer' as dev;
 import 'package:dio/dio.dart';
-import 'dart:convert';
 import '../utils/user_session_helper.dart';
 import '../utils/error_handler.dart';
 import '../constants/api_constants.dart';
@@ -55,109 +54,8 @@ class TaskService {
     }
   }
 
-  //  MAIN SUMMARY METHOD
-
-  Future<Map<String, dynamic>> fetchTaskSummary() async {
-    try {
-      final int? userId = await UserSessionHelper.getUserId();
-      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
-
-      if (userId == null || userId == 0) {
-        return {
-          "success": false,
-          "message": "User session missing (user_id)",
-        };
-      }
-
-      final payload = {
-        "user_id": userId,
-        "enterprise_id": enterpriseId,
-        "stage": AppConfig.stage,
-      };
-
-      dev.log("📤 Fetching task summary (TaskService)…");
-
-      final response = await _dio.post(ApiConstants.taskSummary, data: payload);
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error"};
-      }
-
-      final statusList = response.data["STATUS"];
-
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid server response"};
-      }
-
-      final rawResponse = statusList[0]["response"];
-
-      if (rawResponse == null) {
-        return {"success": false, "message": "Missing summary response"};
-      }
-
-      // 🔥 Decode the nested JSON string
-      final decoded = jsonDecode(rawResponse);
-
-      final summary = decoded["summary"];
-
-      final int totalTasks = summary["totalTasks"] ?? 0;
-      final int completedToday = summary["completedToday"] ?? 0;
-      final int inProgressTasks = summary["inProgressTasks"] ?? 0;
-
-      // Fetch real tasks from HomeService for recent activity
-      // Fetch real tasks from HomeService for recent activity
-      final homeRes = await HomeService().getTasks();
-
-      List<dynamic> recentTasks = [];
-
-      if (homeRes["success"]) {
-        List<dynamic> allTasks = homeRes["tasks"];
-
-        // 1️⃣ Keep only CLOSED
-        final closedTasks = allTasks
-            .where((t) => t["status"] == "Closed")
-            .toList();
-
-        // 2️⃣ Sort by time DESC (latest first)
-        closedTasks.sort((a, b) {
-          final aTime = a["raw"]?["timestamp"];
-          final bTime = b["raw"]?["timestamp"];
-
-          if (aTime == null || bTime == null) return 0;
-
-          return DateTime.parse(bTime)
-              .compareTo(DateTime.parse(aTime));
-        });
-
-        // Take only top 5
-        recentTasks = closedTasks.take(5).map((t) {
-          return {
-            "roomNumber": t["room"],
-            "question": t["title"],
-            "timeAgo": t["time"],
-            "status": t["status"],
-          };
-        }).toList();
-      }
-
-      return {
-        "success": true,
-        "message": decoded["message"] ?? "Success",
-        "totalTasks": totalTasks,
-        "completedToday": completedToday,
-        "inProgressTasks": inProgressTasks,
-        "tasks": recentTasks,
-      };
-    } catch (e) {
-      dev.log("❌ ERROR (fetchTaskSummary): $e");
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-      };
-    }
-  }
-
-  /// Fetches all service department requests using ScreenSync_get_all_services_mobile
+  /// Fetches all service department requests using
+  /// ScreenSync_get_all_services_mobile1.
   Future<Map<String, dynamic>> getAllServices({String stage = AppConfig.stage}) async {
     try {
       final userId = await UserSessionHelper.getUserId();
@@ -193,7 +91,7 @@ class TaskService {
         };
       }
     } catch (e) {
-      dev.log("❌ ERROR (getAllServices): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (getAllServices): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -245,7 +143,7 @@ class TaskService {
         };
       }
     } catch (e) {
-      dev.log("❌ ERROR (acceptServiceOrder): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (acceptServiceOrder): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -253,26 +151,26 @@ class TaskService {
     }
   }
 
-  // ── Update service request status (Accept / Close) ─────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Update service request status (Accept / Close) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   //
   // Canonical action method for ALL status transitions on a service request:
-  //   • status = "IN_PROGRESS" → Staff/Supervisor accepts the task
-  //   • status = "CLOSED"      → Any authorised user closes the task
+  //   Ã¢â‚¬Â¢ status = "IN_PROGRESS" Ã¢â€ â€™ Staff/Supervisor accepts the task
+  //   Ã¢â‚¬Â¢ status = "CLOSED"      Ã¢â€ â€™ Any authorised user closes the task
   //
   // SP: ScreenSync_update_service_request_status_mobile
-  // The SP handles escalation resolution atomically — do NOT call
+  // The SP handles escalation resolution atomically Ã¢â‚¬â€ do NOT call
   // EscalationService.resolveEscalation() after this method.
   //
   // Returns:
   //   success              bool
   //   message              String
   //   current_status       "In Progress" | "Closed"
-  //   escalation_status    String? — updated escalation state from SP
-  //   next_escalation_at   String? — null when task accepted/closed
+  //   escalation_status    String? Ã¢â‚¬â€ updated escalation state from SP
+  //   next_escalation_at   String? Ã¢â‚¬â€ null when task accepted/closed
   //   closed_by_user_name  String?
   //   current_assigned_to  String?
   //   accepted_by_user_name String?
-  //   status_data          Map    — full STATUS[0] row for any extra SP fields
+  //   status_data          Map    Ã¢â‚¬â€ full STATUS[0] row for any extra SP fields
   Future<Map<String, dynamic>> updateServiceRequestStatus({
     required int serviceRequestId,
     required String status,    // "IN_PROGRESS" | "CLOSED"
@@ -285,7 +183,7 @@ class TaskService {
         return {'success': false, 'message': 'User session not found'};
       }
 
-      dev.log("📤 updateServiceRequestStatus: sr=$serviceRequestId status=$status");
+      dev.log("Ã°Å¸â€œÂ¤ updateServiceRequestStatus: sr=$serviceRequestId status=$status");
 
       final response = await _dio.post(
         ApiConstants.updateServiceRequestStatus,
@@ -330,7 +228,7 @@ class TaskService {
           normalised = rawCurrentStatus;
       }
 
-      dev.log("✅ updateServiceRequestStatus: sr=$serviceRequestId → $normalised");
+      dev.log("Ã¢Å“â€¦ updateServiceRequestStatus: sr=$serviceRequestId Ã¢â€ â€™ $normalised");
 
       return {
         'success':               true,
@@ -344,7 +242,7 @@ class TaskService {
         'status_data':           sd, // full STATUS[0] row
       };
     } catch (e) {
-      dev.log("❌ ERROR (updateServiceRequestStatus): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (updateServiceRequestStatus): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -373,7 +271,7 @@ class TaskService {
         'service_request_id': serviceRequestId,
       };
 
-      dev.log("📤 acceptServiceRequest: $payload");
+      dev.log("Ã°Å¸â€œÂ¤ acceptServiceRequest: $payload");
 
       final response = await _dio.post(
         ApiConstants.acceptServiceRequest,
@@ -391,7 +289,7 @@ class TaskService {
         final flag = statusMap['status']?.toString().toUpperCase();
         final message = statusMap['message']?.toString() ?? 'Service request accepted successfully';
         if (flag == 'S') {
-          dev.log("✅ acceptServiceRequest success: $message");
+          dev.log("Ã¢Å“â€¦ acceptServiceRequest success: $message");
           // RESULT2 is the assignment/audit result set returned by
           // accept_service_request_mobile1. Keep it available for the UI.
           final rawAssignment =
@@ -423,7 +321,7 @@ class TaskService {
         'message': 'Invalid server response from accept endpoint',
       };
     } catch (e) {
-      dev.log("❌ ERROR (acceptServiceRequest): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (acceptServiceRequest): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -451,7 +349,7 @@ class TaskService {
         'reassign_to':        reassignTo,
       };
 
-      dev.log("📤 reassignService: $payload");
+      dev.log("Ã°Å¸â€œÂ¤ reassignService: $payload");
 
       final response = await _dio.post(
         ApiConstants.reassignService,
@@ -469,7 +367,7 @@ class TaskService {
         final flag = statusMap['status']?.toString().toUpperCase();
         final message = statusMap['message']?.toString() ?? 'Task reassigned successfully';
         if (flag == 'S') {
-          dev.log("✅ reassignService success: $message");
+          dev.log("Ã¢Å“â€¦ reassignService success: $message");
           final rawUpdate = data['RESULT2'] ?? data['RESULT'] ?? data['ASSIGNMENT'];
           final updateRows = rawUpdate is List
               ? rawUpdate
@@ -499,7 +397,7 @@ class TaskService {
         'message': 'Invalid server response from reassign endpoint',
       };
     } catch (e) {
-      dev.log("❌ ERROR (reassignService): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (reassignService): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -547,7 +445,7 @@ class TaskService {
         };
       }
     } catch (e) {
-      dev.log("❌ ERROR (addServiceNote): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (addServiceNote): $e");
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),

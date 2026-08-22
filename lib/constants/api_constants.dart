@@ -22,8 +22,10 @@ class ApiConstants {
   static const String userDeptDetails = "$baseUrl/ScreenSync_get_user_dept_details_mobile";
 
   // ── Home Page & Service Requests ──────────────────────────────
-  static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile";
-  static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile";
+  // Enterprise service request feed. Replaces the deprecated
+  // ScreenSync_get_all_services_mobile route.
+  static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile1";
+  static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile1";
   static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_request_mobile1";
   static const String acceptServiceRequest = "$baseUrl/ScreenSync_accept_service_request_mobile1";
   static const String acceptServiceOrder = "$baseUrl/ScreenSync_accept_service_order_mobile";
@@ -36,12 +38,11 @@ class ApiConstants {
   static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile1";
   static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
 
-  // ── Task Summary ──────────────────────────────────────────────
-  static const String taskSummary    = "$baseUrl/ScreenSync_get_tasks_summary_mobile";
-
-  // ── Tasks Management (role-based) ─────────────────────────────
-  static const String tasksByRole     = "$baseUrl/ScreenSync_get_tasks_by_role_mobile";
-  static const String teamPerformance = "$baseUrl/ScreenSync_get_team_performance_mobile";
+  // ── Task Operations Reporting ─────────────────────────────────
+  // Role-aware operations report. Replaces the retired task summary,
+  // tasks-by-role, and team-performance endpoints in the app.
+  static const String serviceOperationsReport =
+      "$baseUrl/ScreenSync_get_service_operations_report_mobile";
 
   // ── Food Orders — F&B (v1, enterprise-grade) ─────────────────
   // All v1 F&B endpoints use order_id (summary_id from order_status_summary)

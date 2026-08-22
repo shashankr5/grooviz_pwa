@@ -43,7 +43,7 @@ class HomeService {
   }
 
 
-  // ── GET TASKS ─────────────────────────────────────────────────────────────
+  // â”€â”€ GET TASKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getTasks() async {
     try {
@@ -90,7 +90,7 @@ class HomeService {
     }
   }
 
-  // ── FETCH TASKS FOR DATE RANGE ─────────────────────────────────────────────
+  // â”€â”€ FETCH TASKS FOR DATE RANGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> fetchTasksForRange(DateRange range) async {
     try {
@@ -139,7 +139,7 @@ class HomeService {
     }
   }
 
-  // ── GENERATE EXECUTIVE REPORT ──────────────────────────────────────────────
+  // â”€â”€ GENERATE EXECUTIVE REPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> generateExecutiveReport({
     required String startDate,
@@ -196,8 +196,8 @@ class HomeService {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
 
-      // ── Escalation derivation ────────────────────────────────────────────
-      // escalation_instance_id non-null → task is currently escalated.
+      // â”€â”€ Escalation derivation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // escalation_instance_id non-null â†’ task is currently escalated.
       // is_escalated flag is also checked for legacy rows that set it directly.
       final int? escalationInstanceId =
           m["escalation_instance_id"] as int?;
@@ -209,7 +209,7 @@ class HomeService {
       return {
         "service_request_id": m["service_request_id"],
         // room_number is the human-facing string (e.g. "101") from the SP.
-        // room_id is the integer FK — never show to the user.
+        // room_id is the integer FK â€” never show to the user.
         // Priority: room_number > requested_room > room_id fallback.
         "room": (m["room_number"] ?? m["requested_room"] ?? m["room_id"] ?? "-").toString(),
         "status":      _statusText(m["status"], m["closed"]),
@@ -232,7 +232,7 @@ class HomeService {
             .toString(),
         "accepted_by_user_id": m["accepted_by_user_id"],
         "note":         m["note_text"],
-        // ── Escalation fields (from get_all_services_mobile RESULT) ─────
+        // â”€â”€ Escalation fields (from get_all_services_mobile RESULT) â”€â”€â”€â”€â”€
         // These are read by EscalationBanner, SlaCountdownWidget, and the
         // urgency border system without any extra API call.
         "is_escalated":           isEscalated ? 1 : 0,
@@ -240,35 +240,35 @@ class HomeService {
         "escalation_instance_id": escalationInstanceId,
         "escalation_status":      m["escalation_status"],   // "Working" | null
         "current_stage_id":       m["current_stage_id"],
-        "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 – Supervisor"
-        "current_stage_level":    m["current_stage_level"],  // numeric 1,2,3…
-        "current_stage_users_json": m["current_stage_users_json"], // JSON — users being notified now
-        "next_escalation_at":     m["next_escalation_at"], // ISO-8601 — drives SLA countdown
+        "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 â€“ Supervisor"
+        "current_stage_level":    m["current_stage_level"],  // numeric 1,2,3â€¦
+        "current_stage_users_json": m["current_stage_users_json"], // JSON â€” users being notified now
+        "next_escalation_at":     m["next_escalation_at"], // ISO-8601 â€” drives SLA countdown
         "escalation_time_minutes": m["escalation_time_minutes"],
-        // ── Acceptance fields ────────────────────────────────────────────
+        // â”€â”€ Acceptance fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "accepted_stage_level":   m["accepted_stage_level"], // level at which task was accepted
-        "accepted_stage_name":    m["accepted_stage_name"],  // e.g. "Level 2 – Supervisor"
+        "accepted_stage_name":    m["accepted_stage_name"],  // e.g. "Level 2 â€“ Supervisor"
         "accepted_user_json":     m["accepted_user_json"],   // JSON user object of acceptor
-        // ── Closure fields ───────────────────────────────────────────────
+        // â”€â”€ Closure fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "closed_by_user_id":      m["closed_by_user_id"],
         "closed_by_user_name":    m["closed_by_user_name"],
-        // ── Recent escalated users ───────────────────────────────────────
+        // â”€â”€ Recent escalated users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "recent_escalation_level":  m["recent_escalation_level"],
         "recent_escalated_users_json": m["recent_escalated_users_json"],
-        // ── Reassignment fields ──────────────────────────────────────────
+        // â”€â”€ Reassignment fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "recent_reassigned_to_user_id":   m["recent_reassigned_to_user_id"],
         "recent_reassigned_to_user_name": m["recent_reassigned_to_user_name"],
         "recent_reassigned_by_user_id":   m["recent_reassigned_by_user_id"],
         "recent_reassigned_by_user_name": m["recent_reassigned_by_user_name"],
         "recent_reassigned_at":           m["recent_reassigned_at"],
-        // ── Timestamps ──────────────────────────────────────────────────
+        // â”€â”€ Timestamps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "accepted_at":   m["accepted_at"],
         "created_at":    m["created_at"],
         "timestamp":     m["timestamp"],
-        // ── Identifiers ─────────────────────────────────────────────────
+        // â”€â”€ Identifiers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "department_id": m["department_id"],
         "enterprise_id": m["enterprise_id"],
-        // Full raw row — any field not listed above is accessible via raw[key]
+        // Full raw row â€” any field not listed above is accessible via raw[key]
         "raw":           m,
       };
     }).toList();
@@ -309,7 +309,7 @@ class HomeService {
     return DateFormatter.formatDateTimeAmPm(timestamp);
   }
 
-  // ── GET ESCALATION HISTORY FOR TASK ─────────────────────────────────────────
+  // â”€â”€ GET ESCALATION HISTORY FOR TASK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getEscalationHistoryForTask(
       int serviceRequestId) async {
@@ -329,7 +329,7 @@ class HomeService {
         "stage":              AppConfig.stage,
       };
 
-      dev.log("📤 Fetching escalation history for sr=$serviceRequestId...");
+      dev.log("ðŸ“¤ Fetching escalation history for sr=$serviceRequestId...");
       final response = await _dio.post(
         ApiConstants.escalationHistoryForTask,
         data: payload,
@@ -375,7 +375,7 @@ class HomeService {
     }
   }
 
-  // ── GET STAFF LIST ────────────────────────────────────────────────────────
+  // â”€â”€ GET STAFF LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getStaffList({required int requestId}) async {
     try {
@@ -390,7 +390,7 @@ class HomeService {
         "stage":      AppConfig.stage,
       };
 
-      dev.log("📤 Fetching staff list...");
+      dev.log("ðŸ“¤ Fetching staff list...");
       final response = await _dio.post(ApiConstants.staffList, data: payload);
 
       if (response.statusCode != 200) {
@@ -419,8 +419,8 @@ class HomeService {
 
       final resultList = response.data["RESULT"] as List?;
       if (resultList != null && resultList.isNotEmpty) {
-        dev.log("📋 Staff item keys: ${resultList.first.keys.toList()}");
-        dev.log("📋 Staff item sample: ${resultList.first}");
+        dev.log("ðŸ“‹ Staff item keys: ${resultList.first.keys.toList()}");
+        dev.log("ðŸ“‹ Staff item sample: ${resultList.first}");
       }
 
       final staff = resultList?.map((item) {
@@ -444,7 +444,7 @@ class HomeService {
       return {"success": true, "message": statusMessage, "staff": staff ?? []};
     } catch (e) {
       dev.log("Staff API Error: $e");
-      // FIX-11/12 (Bugs 11-12): was "Error: $e" — raw exception shown to user
+      // FIX-11/12 (Bugs 11-12): was "Error: $e" â€” raw exception shown to user
       return {
         "success": false,
         "message": ErrorHandler.friendlyMessage(e),
@@ -453,7 +453,7 @@ class HomeService {
     }
   }
 
-  // ── REASSIGN TICKET ───────────────────────────────────────────────────────
+  // â”€â”€ REASSIGN TICKET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> reassignTicket({
     required int ticketId,
@@ -515,7 +515,7 @@ class HomeService {
     }
   }
 
-  // ── ACCEPT SERVICE REQUEST ────────────────────────────────────────────────
+  // â”€â”€ ACCEPT SERVICE REQUEST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<Map<String, dynamic>> acceptTask({
     required int taskId,
     int? departmentId,
@@ -531,7 +531,7 @@ class HomeService {
 
 
 
-  // ── ADD NOTE (routes to new endpoint: ScreenSync_add_service_note_mobile) ──
+  // â”€â”€ ADD NOTE (routes to new endpoint: ScreenSync_add_service_note_mobile) â”€â”€
 
   Future<Map<String, dynamic>> addNote({
     required int serviceRequestId,
@@ -593,7 +593,7 @@ class HomeService {
     }
   }
 
-  // ── CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile1) ──
+  // â”€â”€ CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile1) â”€â”€
 
   /// Compatibility entry point. The close_service_mobile1 contract is owned by
   /// TaskService and derives enterprise/department from the service request.
@@ -606,88 +606,150 @@ class HomeService {
 
 
 
-  // ── GET TEAM PERFORMANCE ──────────────────────────────────────────────────
+  // â”€â”€ GET TEAM PERFORMANCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  Future<Map<String, dynamic>> getTeamPerformance({
+  /// Role-aware, rolling six-month operations report used by the Tasks page.
+  Future<Map<String, dynamic>> getServiceOperationsReport() async {
+    try {
+      final userId = await UserSessionHelper.getUserId();
+      if (userId == null || userId == 0) {
+        return {'success': false, 'message': 'User not logged in'};
+      }
+
+      final response = await _dio.post(
+        ApiConstants.serviceOperationsReport,
+        data: {'user_id': userId, 'stage': AppConfig.stage},
+      );
+      if (response.statusCode != 200 || response.data is! Map) {
+        return {'success': false, 'message': 'Server error'};
+      }
+
+      final data = Map<String, dynamic>.from(response.data as Map);
+      final statuses = data['STATUS'] as List? ?? const [];
+      final status = statuses.isNotEmpty && statuses.first is Map
+          ? Map<String, dynamic>.from(statuses.first as Map)
+          : const <String, dynamic>{};
+      if (status['status'] != 'S') {
+        return {
+          'success': false,
+          'message': status['message'] ?? 'Failed to load operations report',
+        };
+      }
+
+      Map<String, dynamic> asMap(dynamic value) => value is Map
+          ? Map<String, dynamic>.from(value)
+          : <String, dynamic>{};
+      List<Map<String, dynamic>> asMapList(dynamic value) => value is List
+          ? value.whereType<Map>().map(asMap).toList()
+          : <Map<String, dynamic>>[];
+
+      final weekly = asMap(data['weekly']);
+      final monthly = asMap(data['monthly']);
+      return {
+        'success': true,
+        'message': status['message'] ?? 'Success',
+        'overall': asMap(data['overall_summary']),
+        'departments': asMapList(data['overall_department']),
+        'monthlyDepartments': asMapList(monthly['department']),
+        'weeklyDepartments': asMapList(weekly['department']),
+        'monthlyUsers': asMapList(monthly['user']),
+        'monthlyServices': asMapList(monthly['service_summary']),
+        'weeklyUsers': asMapList(weekly['user']),
+        'weeklyServices': asMapList(weekly['service_summary']),
+        'weeklyFood': asMapList(weekly['food_summary']),
+        'monthlyFood': asMapList(monthly['food_summary']),
+        'weeklyFoodUsers': asMapList(weekly['food_user_summary']),
+        'monthlyFoodUsers': asMapList(monthly['food_user_summary']),
+        'weeklyGuests': asMapList(weekly['guest_checkin_checkout']),
+        'monthlyGuests': asMapList(monthly['guest_checkin_checkout']),
+      };
+    } catch (e) {
+      dev.log('ERROR (getServiceOperationsReport): $e');
+      return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
+    }
+  }
+
+  /// Compatibility facade for the Tasks page. It deliberately uses the new
+  /// operations report rather than the deprecated team-performance API.
+  Future<Map<String, dynamic>> getOperationsPerformance({
     int? departmentId,
     int? targetUserId,
     required int month,
     required int year,
   }) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {"success": false, "message": "User not logged in", "team": []};
-      }
-
-      final payload = {
-        "user_id": userId,
-        if (departmentId != null) "department_id": departmentId,
-        if (targetUserId  != null) "target_user_id": targetUserId,
-        "month": month,
-        "year":  year,
-        "stage": AppConfig.stage,
-      };
-
-      dev.log("📤 Fetching team performance — $month/$year");
-      final response = await _dio.post(
-        ApiConstants.teamPerformance,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error", "team": []};
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response", "team": []};
-      }
-
-      final flag = statusList[0]["status"];
-      final msg  = statusList[0]["message"];
-
-      if (flag != "S") {
-        return {"success": false, "message": msg ?? "Failed", "team": []};
-      }
-
-      final rawTeam = response.data["RESULT"];
-      final rawDrillDown = response.data["RESULT2"];
-      final teamList = (rawTeam is List
-              ? rawTeam
-              : rawTeam is Map
-                  ? [rawTeam]
-                  : const <dynamic>[])
-          .whereType<Map>()
-          .map(_normaliseTeamPerformanceRow)
-          .toList();
-      final drillDownList = rawDrillDown is List
-          ? rawDrillDown
-          : rawDrillDown is Map
-              ? [rawDrillDown]
-              : const <dynamic>[];
-
+    final report = await getServiceOperationsReport();
+    if (report['success'] != true) {
       return {
-        "success":    true,
-        "message":    msg,
-        "team":       teamList,
-        "drillDown":  drillDownList,
-      };
-    } catch (e) {
-      dev.log("ERROR (getTeamPerformance): $e");
-      // FIX-10 (Bug 10): This is the exact call behind the Activity screen
-      // silently showing stale/wrong-month data — was returning generic
-      // "Network error" with no UI ever surfacing it. tasks_page.dart's
-      // failure branch must now render this message (see tasks_page.dart
-      // patch) instead of only clearing the loading flag.
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-        "team": [],
+        'success': false,
+        'message': report['message'] ?? 'Failed to load operations report',
+        'team': <Map<String, dynamic>>[],
+        'weeklyUsers': <Map<String, dynamic>>[],
+        'departments': <Map<String, dynamic>>[],
+        'monthlyDepartments': <Map<String, dynamic>>[],
+        'drillDown': <dynamic>[],
       };
     }
+
+    final period = '${year.toString().padLeft(4, '0')}-${month.toString().padLeft(2, '0')}';
+    Iterable<Map<String, dynamic>> rows =
+        (report['monthlyUsers'] as List<Map<String, dynamic>>)
+            .where((row) => row['report_month']?.toString() == period);
+    if (departmentId != null) {
+      rows = rows.where((row) => _asInt(row['department_id']) == departmentId);
+    }
+    if (targetUserId != null) {
+      rows = rows.where((row) => _asInt(row['user_id']) == targetUserId);
+    }
+
+    List<Map<String, dynamic>> targetWeeklyUsers = [];
+    if (targetUserId != null) {
+      targetWeeklyUsers = (report['weeklyUsers'] as List<Map<String, dynamic>>)
+          .where((row) => _asInt(row['user_id']) == targetUserId)
+          .toList();
+    }
+
+    return {
+      'success': true,
+      'message': report['message'] ?? 'Success',
+      'team': rows.map(_normaliseOperationsUserRow).toList(),
+      'weeklyUsers': targetWeeklyUsers,
+      'departments': report['departments'],
+      'monthlyDepartments': report['monthlyDepartments'],
+      'allMonthlyUsers': report['monthlyUsers'],
+      'allWeeklyUsers': report['weeklyUsers'],
+      'drillDown': <dynamic>[],
+    };
   }
 
+  /// Alias for backward compatibility
+  Future<Map<String, dynamic>> getTeamPerformance({
+    int? departmentId,
+    int? targetUserId,
+    required int month,
+    required int year,
+  }) => getOperationsPerformance(
+    departmentId: departmentId,
+    targetUserId: targetUserId,
+    month: month,
+    year: year,
+  );
+
+  static int _asInt(dynamic value) => value is num
+      ? value.toInt()
+      : int.tryParse(value?.toString() ?? '') ?? 0;
+
+  static Map<String, dynamic> _normaliseOperationsUserRow(Map row) =>
+      _normaliseTeamPerformanceRow({
+        ...row,
+        'total_assigned': row['total_tasks'],
+        'total_closed': row['closed_tasks'],
+        'total_escalated': row['escalation_count'],
+        'avg_resolution_minutes': row['average_time_taken'],
+        'escalation_rate_pct': _asInt(row['total_tasks']) == 0
+            ? 0
+            : (_asInt(row['escalation_count']) / _asInt(row['total_tasks'])) *
+                100,
+      });
   /// API Gateway can deserialize database numeric columns as either numbers or
   /// strings. Convert them once here so the activity/team UI always renders
   /// the actual server values rather than falling back to zeroes.
@@ -706,13 +768,16 @@ class HomeService {
           row['name'] ??
           row['username'] ??
           row['staff_name'] ??
-          '—',
+          'â€”',
       'department_name': row['department_name'] ??
           row['department'] ??
           row['dept_name'] ??
           '',
       'role_name': row['role_name'] ?? row['role'] ?? '',
       'department_id': asInt(row['department_id']),
+      'open_tasks': asInt(row['open_tasks']),
+      'in_progress_tasks': asInt(row['in_progress_tasks']),
+      'overdue_tasks': asInt(row['overdue_tasks']),
       'total_assigned': asInt(row['total_assigned']),
       'total_closed': asInt(row['total_closed']),
       'total_escalated': asInt(row['total_escalated']),
@@ -723,7 +788,7 @@ class HomeService {
 
 
 
-  // ── GET READY ORDERS ──────────────────────────────────────────────────────
+  // â”€â”€ GET READY ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getReadyOrdersForRoomService() async {
     try {
@@ -734,10 +799,10 @@ class HomeService {
 
       final payload = {"user_id": userId, "stage": AppConfig.stage};
 
-      dev.log("📤 Fetching READY Orders for Room Service");
+      dev.log("ðŸ“¤ Fetching READY Orders for Room Service");
       final response =
           await _dio.post(ApiConstants.getReadyOrders, data: payload);
-      dev.log("📥 Ready Orders Response: ${response.data}");
+      dev.log("ðŸ“¥ Ready Orders Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -751,7 +816,7 @@ class HomeService {
       final resultList = response.data["RESULT"] as List? ?? [];
       return {"success": true, "orders": _mapReadyOrders(resultList)};
     } catch (e) {
-      dev.log("❌ ERROR (getReadyOrdersForRoomService): $e");
+      dev.log("âŒ ERROR (getReadyOrdersForRoomService): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
@@ -775,7 +840,7 @@ class HomeService {
     }).toList();
   }
 
-  // ── UPDATE ROOM SERVICE STATUS ────────────────────────────────────────────
+  // â”€â”€ UPDATE ROOM SERVICE STATUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> updateRoomServiceStatus({
     required String orderNumber,
@@ -794,11 +859,11 @@ class HomeService {
         "stage":           AppConfig.stage,
       };
 
-      dev.log("📤 Updating Room Service Status — $action for $orderNumber");
+      dev.log("ðŸ“¤ Updating Room Service Status â€” $action for $orderNumber");
       final response = await _dio.post(
           ApiConstants.updateRoomServiceStatus,
           data: payload);
-      dev.log("📥 Update Response: ${response.data}");
+      dev.log("ðŸ“¥ Update Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -820,11 +885,11 @@ class HomeService {
              firstRow.containsKey("old_status") ||
              firstRow.containsKey("order_number"));
         if (hasNewStatus) {
-          dev.log("✅ updateRoomServiceStatus succeeded (notification-style response)");
+          dev.log("âœ… updateRoomServiceStatus succeeded (notification-style response)");
           return {"success": true, "message": "Status updated successfully"};
         }
 
-        dev.log("✅ updateRoomServiceStatus: non-empty STATUS on 200 → success");
+        dev.log("âœ… updateRoomServiceStatus: non-empty STATUS on 200 â†’ success");
         return {"success": true, "message": "Status updated"};
       }
 
@@ -835,15 +900,15 @@ class HomeService {
         return {"success": flag == "S", "message": message};
       }
 
-      dev.log("⚠️ updateRoomServiceStatus: empty body on 200 → treating as success");
+      dev.log("âš ï¸ updateRoomServiceStatus: empty body on 200 â†’ treating as success");
       return {"success": true, "message": "Status updated"};
     } catch (e) {
-      dev.log("❌ ERROR (updateRoomServiceStatus): $e");
+      dev.log("âŒ ERROR (updateRoomServiceStatus): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
-  // ── GET ACCEPTED ORDERS ───────────────────────────────────────────────────
+  // â”€â”€ GET ACCEPTED ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getAcceptedOrdersForRoomService() async {
     try {
@@ -854,10 +919,10 @@ class HomeService {
 
       final payload = {"user_id": userId, "stage": AppConfig.stage};
 
-      dev.log("📤 Fetching ACCEPTED Orders for Room Service");
+      dev.log("ðŸ“¤ Fetching ACCEPTED Orders for Room Service");
       final response =
           await _dio.post(ApiConstants.getAcceptedOrders, data: payload);
-      dev.log("📥 Accepted Orders Response: ${response.data}");
+      dev.log("ðŸ“¥ Accepted Orders Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -871,7 +936,7 @@ class HomeService {
       final resultList = response.data["RESULT"] as List? ?? [];
       return {"success": true, "orders": _mapAcceptedOrders(resultList)};
     } catch (e) {
-      dev.log("❌ ERROR (getAcceptedOrdersForRoomService): $e");
+      dev.log("âŒ ERROR (getAcceptedOrdersForRoomService): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
@@ -895,7 +960,7 @@ class HomeService {
     }).toList();
   }
 
-  // ── GET DELIVERED ORDERS ──────────────────────────────────────────────────
+  // â”€â”€ GET DELIVERED ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   Future<Map<String, dynamic>> getDeliveredOrdersForRoomService() async {
     try {
@@ -906,10 +971,10 @@ class HomeService {
 
       final payload = {"user_id": userId, "stage": AppConfig.stage};
 
-      dev.log("📤 Fetching DELIVERED Orders for Room Service");
+      dev.log("ðŸ“¤ Fetching DELIVERED Orders for Room Service");
       final response =
           await _dio.post(ApiConstants.getDeliveredOrders, data: payload);
-      dev.log("📥 Delivered Orders Response: ${response.data}");
+      dev.log("ðŸ“¥ Delivered Orders Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -923,7 +988,7 @@ class HomeService {
       final resultList = response.data["RESULT"] as List? ?? [];
       return {"success": true, "orders": _mapDeliveredOrders(resultList)};
     } catch (e) {
-      dev.log("❌ ERROR (getDeliveredOrdersForRoomService): $e");
+      dev.log("âŒ ERROR (getDeliveredOrdersForRoomService): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }

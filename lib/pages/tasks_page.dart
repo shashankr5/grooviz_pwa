@@ -28,8 +28,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
+import '../services/task_service.dart';
 import '../services/profile_service.dart';
-import '../services/task_alert_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/report_pdf_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -40,7 +40,7 @@ import 'package:dio/dio.dart';
 import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
 import '../components/skeleton_loader.dart';
-import 'ticket_details_page.dart';
+import '../pages/ticket_details_page.dart';
 
 // ── Role helpers ──────────────────────────────────────────────────────────────
 
@@ -388,10 +388,65 @@ class TasksPageState extends State<TasksPage> {
 
   List<Map<String, dynamic>> _applyDeptFilter(
       List<Map<String, dynamic>> rows) {
-    if (_selectedDept == null) return rows;
-    return rows.where((r) {
-      return (r['department_name'] ?? '').toString() == _selectedDept;
-    }).toList();
+    if (_selectedDept != null) {
+      return rows.where((r) {
+        return (r['department_name'] ?? '').toString() == _selectedDept;
+      }).toList();
+    }
+
+    // When _selectedDept is null (All Departments), group by user_id
+    // to deduplicate staff members across multiple departments:
+    final Map<int, Map<String, dynamic>> userMap = {};
+
+    for (final r in rows) {
+      final int userId = (r['user_id'] as int?) ?? 0;
+      if (userId == 0) continue;
+
+      final deptName = (r['department_name'] ?? '').toString().trim();
+      final assigned = (r['total_assigned'] as int?) ?? 0;
+      final closed   = (r['total_closed']   as int?) ?? 0;
+      final esc      = (r['total_escalated'] as int?) ?? 0;
+      final mins     = (r['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+
+      if (!userMap.containsKey(userId)) {
+        userMap[userId] = {
+          ...r,
+          'departments': <String>[],
+          'total_assigned': 0,
+          'total_closed': 0,
+          'total_escalated': 0,
+          '_total_mins_weighted': 0.0,
+          '_closed_with_mins': 0,
+        };
+      }
+
+      final u = userMap[userId]!;
+      final depts = u['departments'] as List<String>;
+      if (deptName.isNotEmpty && !depts.contains(deptName)) {
+        depts.add(deptName);
+      }
+
+      u['total_assigned'] = (u['total_assigned'] as int) + assigned;
+      u['total_closed']   = (u['total_closed']   as int) + closed;
+      u['total_escalated'] = (u['total_escalated'] as int) + esc;
+      if (closed > 0 && mins > 0) {
+        u['_total_mins_weighted'] = (u['_total_mins_weighted'] as double) + (mins * closed);
+        u['_closed_with_mins']    = (u['_closed_with_mins'] as int) + closed;
+      }
+    }
+
+    for (final u in userMap.values) {
+      final a = u['total_assigned'] as int;
+      final e = u['total_escalated'] as int;
+      final cwm = u['_closed_with_mins'] as int;
+      final mw  = u['_total_mins_weighted'] as double;
+      u['escalation_rate_pct'] = a > 0 ? (e / a * 100) : 0.0;
+      u['avg_resolution_minutes'] = cwm > 0 ? (mw / cwm) : 0.0;
+      final depts = u['departments'] as List<String>;
+      u['department_name'] = depts.isNotEmpty ? depts.join(', ') : (u['department_name'] ?? '');
+    }
+
+    return userMap.values.toList();
   }
 
   void _onDeptSelected(String? dept) {
@@ -2792,10 +2847,20 @@ class _StaffDrillDownPage extends StatefulWidget {
 
 class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   final HomeService _homeService = HomeService();
+  final TaskService _taskService = TaskService();
 
-  bool                       _isLoading  = true;
-  Map<String, dynamic>       _summaryRow = {};
-  List<Map<String, dynamic>> _tasks      = [];
+  bool                       _isLoading           = true;
+  List<Map<String, dynamic>> _monthlyUserRows     = [];
+  List<Map<String, dynamic>> _weeklyUserRows      = [];
+  List<Map<String, dynamic>> _monthlyDepts        = [];
+  List<Map<String, dynamic>> _allTasks            = [];
+  List<String>               _departments         = [];
+  String                     _selectedDept        = 'All';
+  String?                    _selectedWeekStart;
+  String?                    _selectedWeekEnd;
+  String                     _statusFilter        = 'All';
+  String                     _searchQuery         = '';
+  final TextEditingController _searchController   = TextEditingController();
 
   static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -2808,10 +2873,16 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     setState(() => _isLoading = true);
 
-    final result = await _homeService.getTeamPerformance(
+    final result = await _homeService.getOperationsPerformance(
       targetUserId: widget.userId,
       month:        widget.month,
       year:         widget.year,
@@ -2820,37 +2891,130 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     if (!mounted) return;
 
     if (result['success'] == true) {
-      final team      = (result['team']      as List? ?? []);
-      final drillDown = (result['drillDown'] as List? ?? []);
+      final team       = (result['team'] as List? ?? []).cast<Map<String, dynamic>>();
+      final weeklyList = (result['weeklyUsers'] as List? ?? []).cast<Map<String, dynamic>>();
+      final mDepts     = (result['monthlyDepartments'] as List? ?? []).cast<Map<String, dynamic>>();
 
-      List<Map<String, dynamic>> taskList = drillDown
-          .map((t) => Map<String, dynamic>.from(t as Map))
-          .toList();
+      final deptsSet = <String>{};
+      for (final r in team) {
+        final d = (r['department_name'] ?? '').toString().trim();
+        if (d.isNotEmpty) deptsSet.add(d);
+      }
 
-      if (taskList.isEmpty) {
-        final tasksResult = await _homeService.getTasks();
-        if (tasksResult['success'] == true) {
-          final all = (tasksResult['tasks'] as List? ?? [])
-              .cast<Map<String, dynamic>>();
-          taskList = all.where((t) {
-            final assignedRaw = t['raw'] as Map?;
-            if (assignedRaw == null) return false;
-            final assignedId = assignedRaw['assigned_to'];
-            return assignedId?.toString() == widget.userId.toString();
-          }).toList();
-        }
+      final deptList = deptsSet.toList()..sort();
+      if (deptList.length > 1) {
+        deptList.insert(0, 'All');
+      }
+
+      String initialDept = 'All';
+      if (widget.deptName.isNotEmpty && deptList.contains(widget.deptName)) {
+        initialDept = widget.deptName;
+      } else if (deptList.isNotEmpty) {
+        initialDept = deptList.first;
+      }
+
+      // Fetch task tickets assigned to or handled by this user
+      List<Map<String, dynamic>> taskList = [];
+      final tasksResult = await _homeService.getTasks();
+      if (tasksResult['success'] == true) {
+        final all = (tasksResult['tasks'] as List? ?? []).cast<Map<String, dynamic>>();
+        taskList = all.where((t) {
+          final raw = t['raw'] as Map? ?? t;
+          final assignedId = (raw['assigned_to'] ?? raw['assigned_user_id'])?.toString();
+          final acceptedId = raw['accepted_by_user_id']?.toString();
+          final closedId   = raw['closed_by_user_id']?.toString();
+          final targetStr  = widget.userId.toString();
+          return assignedId == targetStr || acceptedId == targetStr || closedId == targetStr;
+        }).toList();
       }
 
       setState(() {
-        _summaryRow = team.isNotEmpty
-            ? Map<String, dynamic>.from(team.first)
-            : {};
-        _tasks     = taskList;
-        _isLoading = false;
+        _monthlyUserRows = team;
+        _weeklyUserRows  = weeklyList;
+        _monthlyDepts    = mDepts;
+        _departments     = deptList;
+        _selectedDept    = initialDept;
+        _allTasks        = taskList;
+        _isLoading       = false;
       });
     } else {
       setState(() => _isLoading = false);
     }
+  }
+
+  // ── Metrics Helper ────────────────────────────────────────────────────────
+  Map<String, dynamic> _computeCurrentMetrics() {
+    int totalAssigned = 0;
+    int totalClosed = 0;
+    int inProgress = 0;
+    int open = 0;
+    int overdue = 0;
+    int escalated = 0;
+    double weightedMins = 0.0;
+    int closedWithMins = 0;
+
+    final targetRows = _selectedDept == 'All'
+        ? _monthlyUserRows
+        : _monthlyUserRows.where((r) => (r['department_name'] ?? '').toString() == _selectedDept);
+
+    for (final r in targetRows) {
+      final a = (r['total_assigned'] as num?)?.toInt() ?? 0;
+      final c = (r['total_closed']   as num?)?.toInt() ?? 0;
+      final p = (r['in_progress_tasks'] as num?)?.toInt() ?? 0;
+      final o = (r['open_tasks'] as num?)?.toInt() ?? 0;
+      final ov = (r['overdue_tasks'] as num?)?.toInt() ?? 0;
+      final e = (r['total_escalated'] as num?)?.toInt() ?? 0;
+      final m = (r['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+
+      totalAssigned += a;
+      totalClosed   += c;
+      inProgress    += p;
+      open          += o;
+      overdue       += ov;
+      escalated     += e;
+      if (c > 0 && m > 0) {
+        weightedMins += (m * c);
+        closedWithMins += c;
+      }
+    }
+
+    final avgMins = closedWithMins > 0 ? (weightedMins / closedWithMins) : 0.0;
+    final escRate = totalAssigned > 0 ? (escalated / totalAssigned * 100) : 0.0;
+
+    // Dept Benchmark average resolution time
+    double deptAvgMins = 0.0;
+    if (_monthlyDepts.isNotEmpty) {
+      if (_selectedDept != 'All') {
+        final dMatch = _monthlyDepts.firstWhere(
+          (d) => (d['department_name'] ?? '').toString() == _selectedDept,
+          orElse: () => <String, dynamic>{},
+        );
+        deptAvgMins = (dMatch['average_time_taken'] ?? dMatch['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+      } else {
+        double dTotalM = 0;
+        int dCount = 0;
+        for (final d in _monthlyDepts) {
+          final dm = (d['average_time_taken'] ?? d['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+          if (dm > 0) {
+            dTotalM += dm;
+            dCount++;
+          }
+        }
+        deptAvgMins = dCount > 0 ? (dTotalM / dCount) : 0.0;
+      }
+    }
+
+    return {
+      'totalAssigned': totalAssigned,
+      'totalClosed':   totalClosed,
+      'inProgress':    inProgress,
+      'open':          open,
+      'overdue':       overdue,
+      'escalated':     escalated,
+      'avgMins':       avgMins,
+      'escRate':       escRate,
+      'deptAvgMins':   deptAvgMins,
+    };
   }
 
   String _fmtDate(String? ts) {
@@ -2868,22 +3032,284 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     }
   }
 
+  // ── Quick Reassign Dialog ──────────────────────────────────────────────────
+  Future<void> _showQuickReassignDialog(Map<String, dynamic> task) async {
+    final raw = task['raw'] as Map? ?? task;
+    final int? requestId = raw['service_request_id'] is num
+        ? (raw['service_request_id'] as num).toInt()
+        : int.tryParse(raw['service_request_id']?.toString() ?? '');
+
+    if (requestId == null || requestId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid service request ID')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    final staffRes = await _homeService.getStaffList(requestId: requestId);
+    if (!mounted) return;
+    Navigator.pop(context); // Close loading indicator
+
+    if (staffRes['success'] != true || staffRes['staff'] == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(staffRes['message']?.toString() ?? 'Failed to load staff list')),
+      );
+      return;
+    }
+
+    final staffList = (staffRes['staff'] as List).cast<Map<String, dynamic>>();
+
+    if (staffList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No available staff in this department to reassign to.')),
+      );
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                const Icon(Icons.swap_horiz_rounded, color: AppColors.primary, size: 22),
+                const SizedBox(width: 8),
+                const Text(
+                  'Reassign Task',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  'SR #$requestId',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Select a staff member to take over this service request:',
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.45,
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: staffList.length,
+                separatorBuilder: (_, __) => const Divider(height: 1, color: AppColors.borderLight),
+                itemBuilder: (context, i) {
+                  final staff = staffList[i];
+                  final sName = staff['full_name'] ?? staff['name'] ?? 'Staff Member';
+                  final sRole = staff['role_name'] ?? staff['role'] ?? 'Staff';
+                  final int sId = (staff['user_id'] as num?)?.toInt() ?? 0;
+                  final isCurrent = sId == widget.userId;
+
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    leading: CircleAvatar(
+                      backgroundColor: isCurrent ? AppColors.errorLight : AppColors.primaryLight,
+                      child: Text(
+                        (sName.toString().isNotEmpty ? sName[0].toUpperCase() : '?'),
+                        style: TextStyle(
+                          color: isCurrent ? AppColors.error : AppColors.primary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      sName.toString(),
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      isCurrent ? '$sRole (Current Assignee)' : sRole.toString(),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isCurrent ? AppColors.error : AppColors.textSecondary,
+                      ),
+                    ),
+                    trailing: isCurrent
+                        ? null
+                        : const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
+                    onTap: isCurrent
+                        ? null
+                        : () async {
+                            Navigator.pop(ctx);
+                            final reassignRes = await _taskService.reassignService(
+                              taskId: requestId,
+                              reassignTo: sId,
+                            );
+                            if (!mounted) return;
+                            if (reassignRes['success'] == true) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  backgroundColor: AppColors.success,
+                                  content: Text('Task successfully reassigned to $sName!'),
+                                ),
+                              );
+                              _load();
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  backgroundColor: AppColors.error,
+                                  content: Text(reassignRes['message'] ?? 'Failed to reassign task'),
+                                ),
+                              );
+                            }
+                          },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Quick Note Dialog ──────────────────────────────────────────────────────
+  Future<void> _showQuickNoteDialog(Map<String, dynamic> task) async {
+    final raw = task['raw'] as Map? ?? task;
+    final int? requestId = raw['service_request_id'] is num
+        ? (raw['service_request_id'] as num).toInt()
+        : int.tryParse(raw['service_request_id']?.toString() ?? '');
+
+    if (requestId == null || requestId == 0) return;
+
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Row(
+          children: [
+            Icon(Icons.edit_note_rounded, color: AppColors.primary),
+            SizedBox(width: 8),
+            Text('Add Note', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          ],
+        ),
+        content: TextField(
+          controller: controller,
+          maxLines: 3,
+          autofocus: true,
+          decoration: InputDecoration(
+            hintText: 'Enter observation or progress update...',
+            hintStyle: const TextStyle(fontSize: 13, color: AppColors.textDisabled),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () async {
+              final text = controller.text.trim();
+              if (text.isEmpty) return;
+              Navigator.pop(ctx);
+
+              final res = await _homeService.addNote(
+                serviceRequestId: requestId,
+                noteText: text,
+              );
+              if (!mounted) return;
+
+              if (res['success'] == true) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: AppColors.success,
+                    content: Text('Note added successfully!'),
+                  ),
+                );
+                _load();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: AppColors.error,
+                    content: Text(res['message'] ?? 'Failed to add note'),
+                  ),
+                );
+              }
+            },
+            child: const Text('Save Note'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final month = _monthNames[widget.month];
+    final metrics = _computeCurrentMetrics();
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: AppColors.bgLight,
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
           onPressed: () => Navigator.pop(context),
         ),
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(widget.userName, style: AppTypography.appBarTitle),
-          Text('${widget.deptName} — $month ${widget.year}',
-              style: AppTypography.appBarSubtitle),
-        ]),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.userName, style: AppTypography.appBarTitle),
+            Text('${widget.deptName} · $month ${widget.year}', style: AppTypography.appBarSubtitle),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: AppColors.primary),
+            onPressed: _load,
+            tooltip: 'Refresh',
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -2891,13 +3317,32 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
               onRefresh: _load,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildSummaryCards(),
-                    const SizedBox(height: 20),
-                    _buildTaskList(),
+                    // 1. Profile Header & Department Filter
+                    _buildProfileHeaderCard(),
+                    const SizedBox(height: 14),
+
+                    // 2. Department Selector Bar (if multi-department)
+                    if (_departments.length > 1) ...[
+                      _buildDepartmentScopeSelector(),
+                      const SizedBox(height: 14),
+                    ],
+
+                    // 3. 6-KPI Performance Grid with Benchmarks
+                    _buildPerformanceKpiGrid(metrics),
+                    const SizedBox(height: 16),
+
+                    // 4. Weekly Breakdown Chart (Interactive)
+                    if (_weeklyUserRows.isNotEmpty) ...[
+                      _buildWeeklyBreakdownSection(),
+                      const SizedBox(height: 16),
+                    ],
+
+                    // 5. Filterable Task List with Instant Search
+                    _buildTaskListSection(),
                   ],
                 ),
               ),
@@ -2905,246 +3350,1126 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
     );
   }
 
-  Widget _buildSummaryCards() {
-    final total   = (_summaryRow['total_assigned']        as int?) ?? 0;
-    final closed  = (_summaryRow['total_closed']          as int?) ?? 0;
-    final esc     = (_summaryRow['total_escalated']       as int?) ?? 0;
-    final avgMins = (_summaryRow['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
-    final avgStr  = avgMins <= 0
-        ? '—'
-        : avgMins < 60
-            ? '${avgMins.toStringAsFixed(0)} min'
-            : '${(avgMins / 60).toStringAsFixed(1)} hrs';
+  // ── 1. Profile Header ──────────────────────────────────────────────────────
+  Widget _buildProfileHeaderCard() {
+    final initials = widget.userName
+        .trim()
+        .split(' ')
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s[0].toUpperCase())
+        .join();
 
-    final escRate = total > 0 ? (esc / total * 100) : 0.0;
-    final escSubtext = total > 0 ? '${escRate.toStringAsFixed(1)}% rate' : '0%';
+    String userRoleTitle = widget.userRole.isNotEmpty ? widget.userRole : 'Staff';
+    if (_monthlyUserRows.isNotEmpty) {
+      final r = _monthlyUserRows.first;
+      final dynamicRole = (r['role_name'] ?? '').toString();
+      if (dynamicRole.isNotEmpty) userRoleTitle = dynamicRole;
+    }
 
-    final cards = [
-      _DrillCard(value: '$total',  label: 'Assigned',
-          color: AppColors.primary, icon: Icons.assignment_outlined),
-      _DrillCard(value: '$closed', label: 'Closed',
-          color: AppColors.success, icon: Icons.check_circle_outline),
-      _DrillCard(value: '$esc',    label: 'Escalated\n($escSubtext)',
-          color:     esc > 0 ? AppColors.error : AppColors.textDisabled,
-          icon:      Icons.warning_amber_outlined,
-          highlight: esc > 0),
-      _DrillCard(value: avgStr,    label: 'Avg Time',
-          color: AppColors.info, icon: Icons.timer_outlined),
-    ];
-
-    return Row(
-      children: cards.asMap().entries.map((e) {
-        return Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(left: e.key == 0 ? 0 : 8),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-              decoration: BoxDecoration(
-                color: e.value.highlight ? AppColors.errorLight : Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: e.value.highlight
-                    ? Border.all(color: AppColors.error.withValues(alpha: 0.3))
-                    : null,
-                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 8, offset: const Offset(0, 3))],
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.borderLight),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Avatar
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF052D50), Color(0xFF1A5A90)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Icon(e.value.icon, size: 18, color: e.value.color),
-                const SizedBox(height: 5),
-                Text(e.value.value,
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                        color: e.value.color)),
-                const SizedBox(height: 2),
-                Text(e.value.label,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 10,
-                        color: AppColors.textSecondary),
-                    maxLines: 2, overflow: TextOverflow.ellipsis),
-              ]),
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.25),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              initials.isNotEmpty ? initials : '?',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 18,
+              ),
             ),
           ),
-        );
-      }).toList(),
+          const SizedBox(width: 14),
+          // Info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.userName,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textPrimary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        userRoleTitle,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Live Status Pill
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: AppColors.success,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.success.withValues(alpha: 0.4),
+                                blurRadius: 4,
+                                spreadRadius: 1,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'Active Now',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.success,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildTaskList() {
-    if (_tasks.isEmpty) {
-      return Container(
-        width:   double.infinity,
-        padding: const EdgeInsets.all(32),
-        decoration: BoxDecoration(color: Colors.white,
-            borderRadius: BorderRadius.circular(16)),
-        child: const Column(children: [
-          Icon(Icons.task_alt, size: 40, color: AppColors.textDisabled),
-          SizedBox(height: 8),
-          Text('No tasks in this period',
-              style: AppTypography.bodySecondary),
-        ]),
-      );
-    }
+  // ── 2. Department Scope Selector ───────────────────────────────────────────
+  Widget _buildDepartmentScopeSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 2, bottom: 6),
+          child: Text(
+            'DEPARTMENT SCOPE',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: _departments.map((dept) {
+              final isSelected = _selectedDept == dept;
 
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('${_tasks.length} Tasks',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
-              color: AppColors.textPrimary)),
-      const SizedBox(height: 10),
-      ...(_tasks.map(_buildTaskRow)),
-    ]);
+              // Task count for this dept
+              int count = 0;
+              if (dept == 'All') {
+                for (final r in _monthlyUserRows) {
+                  count += (r['total_assigned'] as num?)?.toInt() ?? 0;
+                }
+              } else {
+                final match = _monthlyUserRows.firstWhere(
+                  (r) => (r['department_name'] ?? '').toString() == dept,
+                  orElse: () => <String, dynamic>{},
+                );
+                count = (match['total_assigned'] as num?)?.toInt() ?? 0;
+              }
+
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => setState(() => _selectedDept = dept),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isSelected ? AppColors.primary : Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSelected ? AppColors.primary : AppColors.border,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: isSelected ? 0.1 : 0.03),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          dept == 'All' ? Icons.dashboard_outlined : Icons.business_outlined,
+                          size: 14,
+                          color: isSelected ? Colors.white : AppColors.textSecondary,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          dept,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                            color: isSelected ? Colors.white : AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? Colors.white.withValues(alpha: 0.2)
+                                : AppColors.primaryLight,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '$count',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: isSelected ? Colors.white : AppColors.primary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+      ],
+    );
   }
 
-  Widget _buildTaskRow(Map<String, dynamic> task) {
+  // ── 3. 6-KPI Performance Grid with Benchmarks ─────────────────────────────
+  Widget _buildPerformanceKpiGrid(Map<String, dynamic> m) {
+    final int total = m['totalAssigned'] as int;
+    final int closed = m['totalClosed'] as int;
+    final int inProg = m['inProgress'] as int;
+    final int open = m['open'] as int;
+    final int overdue = m['overdue'] as int;
+    final double avgM = m['avgMins'] as double;
+    final double deptAvg = m['deptAvgMins'] as double;
+
+    final closurePct = total > 0 ? (closed / total * 100).toStringAsFixed(0) : '0';
+    final avgStr = avgM <= 0
+        ? '—'
+        : avgM < 60
+            ? '${avgM.toStringAsFixed(0)} min'
+            : '${(avgM / 60).toStringAsFixed(1)} hrs';
+
+    // Benchmark comparison
+    String? benchmarkText;
+    Color? benchmarkColor;
+    if (avgM > 0 && deptAvg > 0) {
+      final delta = avgM - deptAvg;
+      if (delta <= 0) {
+        benchmarkText = '📉 ${( -delta ).toStringAsFixed(0)}m vs Dept Avg (${deptAvg.toStringAsFixed(0)}m)';
+        benchmarkColor = AppColors.success;
+      } else {
+        benchmarkText = '📈 +${delta.toStringAsFixed(0)}m vs Dept Avg (${deptAvg.toStringAsFixed(0)}m)';
+        benchmarkColor = AppColors.warning;
+      }
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.borderLight),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.analytics_outlined, color: AppColors.primary, size: 18),
+              SizedBox(width: 6),
+              Text(
+                'PERFORMANCE KPIS & BENCHMARK',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // 3x2 Grid
+          GridView.count(
+            crossAxisCount: 3,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 1.15,
+            children: [
+              // 1. Total
+              _buildKpiTile(
+                label: 'Assigned',
+                value: '$total',
+                icon: Icons.assignment_outlined,
+                color: AppColors.primary,
+                subtext: 'Total load',
+              ),
+              // 2. Closed
+              _buildKpiTile(
+                label: 'Closed',
+                value: '$closed',
+                icon: Icons.check_circle_outline,
+                color: AppColors.success,
+                subtext: '$closurePct% rate',
+              ),
+              // 3. In Progress
+              _buildKpiTile(
+                label: 'In Progress',
+                value: '$inProg',
+                icon: Icons.timelapse_outlined,
+                color: AppColors.orange,
+                subtext: 'Active tasks',
+              ),
+              // 4. Open
+              _buildKpiTile(
+                label: 'Open',
+                value: '$open',
+                icon: Icons.markunread_mailbox_outlined,
+                color: AppColors.info,
+                subtext: 'Pending start',
+              ),
+              // 5. Overdue
+              _buildKpiTile(
+                label: 'Overdue',
+                value: '$overdue',
+                icon: Icons.warning_amber_rounded,
+                color: overdue > 0 ? AppColors.error : AppColors.success,
+                subtext: overdue > 0 ? 'SLA breach' : '0 Breaches ✅',
+                highlight: overdue > 0,
+              ),
+              // 6. Avg Time
+              _buildKpiTile(
+                label: 'Avg Time',
+                value: avgStr,
+                icon: Icons.timer_outlined,
+                color: const Color(0xFF6366F1),
+                subtext: 'Turnaround',
+              ),
+            ],
+          ),
+          if (benchmarkText != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: benchmarkColor!.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.compare_arrows_rounded, size: 14, color: benchmarkColor),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      benchmarkText,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: benchmarkColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKpiTile({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+    required String subtext,
+    bool highlight = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: highlight ? AppColors.errorLight : AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: highlight ? AppColors.error.withValues(alpha: 0.3) : AppColors.borderLight,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary.withValues(alpha: 0.9),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: color,
+              height: 1.1,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtext,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w500,
+              color: color.withValues(alpha: 0.8),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── 4. Weekly Breakdown Chart ──────────────────────────────────────────────
+  Widget _buildWeeklyBreakdownSection() {
+    final filteredWeeks = _selectedDept == 'All'
+        ? _weeklyUserRows
+        : _weeklyUserRows.where((r) => (r['department_name'] ?? '').toString() == _selectedDept).toList();
+
+    if (filteredWeeks.isEmpty) return const SizedBox.shrink();
+
+    // Deduplicate by week_start
+    final Map<String, Map<String, dynamic>> byWeek = {};
+    for (final w in filteredWeeks) {
+      final ws = (w['week_start'] ?? '').toString();
+      if (ws.isEmpty) continue;
+      if (!byWeek.containsKey(ws)) {
+        byWeek[ws] = {
+          'week_start': ws,
+          'week_end':   w['week_end'] ?? '',
+          'total':      0,
+          'closed':     0,
+          'inProg':     0,
+          'open':       0,
+        };
+      }
+      byWeek[ws]!['total']  = (byWeek[ws]!['total']  as int) + ((w['total_tasks'] as num?)?.toInt() ?? 0);
+      byWeek[ws]!['closed'] = (byWeek[ws]!['closed'] as int) + ((w['closed_tasks'] as num?)?.toInt() ?? 0);
+      byWeek[ws]!['inProg'] = (byWeek[ws]!['inProg'] as int) + ((w['in_progress_tasks'] as num?)?.toInt() ?? 0);
+      byWeek[ws]!['open']   = (byWeek[ws]!['open']   as int) + ((w['open_tasks'] as num?)?.toInt() ?? 0);
+    }
+
+    final weekList = byWeek.values.toList()
+      ..sort((a, b) => a['week_start'].toString().compareTo(b['week_start'].toString()));
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.borderLight),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.bar_chart_rounded, color: AppColors.primary, size: 18),
+                  SizedBox(width: 6),
+                  Text(
+                    'WEEKLY ACTIVITY TRENDS',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.5,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              if (_selectedWeekStart != null)
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _selectedWeekStart = null;
+                    _selectedWeekEnd   = null;
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.errorLight,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.close_rounded, size: 12, color: AppColors.error),
+                        SizedBox(width: 2),
+                        Text(
+                          'Clear Filter',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.error),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Stacked Bars per week
+          ...weekList.map((week) {
+            final ws = week['week_start'].toString();
+            final we = week['week_end'].toString();
+            final total = week['total'] as int;
+            final closed = week['closed'] as int;
+            final inProg = week['inProg'] as int;
+            final open = week['open'] as int;
+
+            final isSelected = _selectedWeekStart == ws;
+
+            final closedRatio = total > 0 ? (closed / total).clamp(0.0, 1.0) : 0.0;
+            final inProgRatio = total > 0 ? (inProg / total).clamp(0.0, 1.0) : 0.0;
+            final openRatio   = total > 0 ? (open / total).clamp(0.0, 1.0) : 0.0;
+
+            final label = '${_fmtDate(ws)} – ${_fmtDate(we)}';
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () {
+                  setState(() {
+                    if (_selectedWeekStart == ws) {
+                      _selectedWeekStart = null;
+                      _selectedWeekEnd   = null;
+                    } else {
+                      _selectedWeekStart = ws;
+                      _selectedWeekEnd   = we;
+                    }
+                  });
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: isSelected ? AppColors.primary.withValues(alpha: 0.06) : AppColors.surfaceAlt,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isSelected ? AppColors.primary : AppColors.borderLight,
+                      width: isSelected ? 1.5 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                              color: isSelected ? AppColors.primary : AppColors.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            '$total tasks ($closed closed)',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: isSelected ? AppColors.primary : AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      // Segmented Bar
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: SizedBox(
+                          height: 8,
+                          child: total == 0
+                              ? Container(color: AppColors.borderLight)
+                              : Row(
+                                  children: [
+                                    if (closedRatio > 0)
+                                      Expanded(
+                                        flex: (closedRatio * 100).toInt(),
+                                        child: Container(color: AppColors.success),
+                                      ),
+                                    if (inProgRatio > 0)
+                                      Expanded(
+                                        flex: (inProgRatio * 100).toInt(),
+                                        child: Container(color: AppColors.orange),
+                                      ),
+                                    if (openRatio > 0)
+                                      Expanded(
+                                        flex: (openRatio * 100).toInt(),
+                                        child: Container(color: AppColors.info),
+                                      ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ── 5. Filterable Task List with Instant Search ────────────────────────────
+  Widget _buildTaskListSection() {
+    // Filter tasks
+    final filtered = _allTasks.where((task) {
+      final raw = task['raw'] as Map? ?? task;
+
+      // Status filter
+      final isEsc = (task['is_escalated'] == 1 ||
+          task['is_escalated'] == true ||
+          task['task_flag'] == 'Escalated' ||
+          task['escalation_instance_id'] != null ||
+          task['escalation_status'] != null);
+      final status = (task['task_flag'] ?? task['status'] ?? 'Open').toString();
+
+      if (_statusFilter == 'Closed' && status != 'Closed') return false;
+      if (_statusFilter == 'In Progress' && status != 'In Progress') return false;
+      if (_statusFilter == 'Open' && (status != 'Open' && status != 'Pending')) return false;
+      if (_statusFilter == 'Escalated' && !isEsc) return false;
+
+      // Search filter
+      if (_searchQuery.isNotEmpty) {
+        final q = _searchQuery.toLowerCase();
+        final title = _resolveTitle(task).toLowerCase();
+        final room = (task['room_number'] ?? task['room_id'] ?? task['room'] ?? '').toString().toLowerCase();
+        final guest = (task['guest_name'] ?? '').toString().toLowerCase();
+        final srId = (raw['service_request_id'] ?? '').toString().toLowerCase();
+
+        if (!title.contains(q) && !room.contains(q) && !guest.contains(q) && !srId.contains(q)) {
+          return false;
+        }
+      }
+
+      // Week filter
+      if (_selectedWeekStart != null) {
+        final createdAtStr = (task['created_at'] ?? task['timestamp'] ?? '').toString();
+        if (createdAtStr.isNotEmpty) {
+          try {
+            final taskDate = DateTime.parse(createdAtStr.replaceFirst(' ', 'T'));
+            final start = DateTime.parse(_selectedWeekStart!);
+            final end   = _selectedWeekEnd != null ? DateTime.parse(_selectedWeekEnd!).add(const Duration(days: 1)) : start.add(const Duration(days: 7));
+            if (taskDate.isBefore(start) || taskDate.isAfter(end)) return false;
+          } catch (_) {}
+        }
+      }
+
+      return true;
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.list_alt_rounded, color: AppColors.primary, size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  'TASKS & SERVICE REQUESTS (${filtered.length})',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // Search Bar
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.borderLight),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              const Icon(Icons.search_rounded, size: 18, color: AppColors.textDisabled),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (val) => setState(() => _searchQuery = val.trim()),
+                  style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
+                  decoration: const InputDecoration(
+                    hintText: 'Search room, task title, ID...',
+                    hintStyle: TextStyle(fontSize: 12.5, color: AppColors.textDisabled),
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 10),
+                  ),
+                ),
+              ),
+              if (_searchQuery.isNotEmpty)
+                GestureDetector(
+                  onTap: () {
+                    _searchController.clear();
+                    setState(() => _searchQuery = '');
+                  },
+                  child: const Icon(Icons.close_rounded, size: 16, color: AppColors.textDisabled),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Status Filter Chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: ['All', 'Closed', 'In Progress', 'Open', 'Escalated'].map((st) {
+              final isSel = _statusFilter == st;
+              return Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ChoiceChip(
+                  label: Text(st),
+                  labelStyle: TextStyle(
+                    fontSize: 11,
+                    fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
+                    color: isSel ? Colors.white : AppColors.textSecondary,
+                  ),
+                  selected: isSel,
+                  selectedColor: AppColors.primary,
+                  backgroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  side: BorderSide(
+                    color: isSel ? AppColors.primary : AppColors.borderLight,
+                  ),
+                  onSelected: (selected) {
+                    if (selected) setState(() => _statusFilter = st);
+                  },
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Task Cards
+        if (filtered.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.borderLight),
+            ),
+            child: const Column(
+              children: [
+                Icon(Icons.task_alt, size: 36, color: AppColors.textDisabled),
+                SizedBox(height: 8),
+                Text('No tasks match the active filters', style: AppTypography.bodySecondary),
+              ],
+            ),
+          )
+        else
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: filtered.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, i) => _buildEnhancedTaskCard(filtered[i]),
+          ),
+      ],
+    );
+  }
+
+  // ── Enhanced Task Card with Inline Quick Actions ───────────────────────────
+  Widget _buildEnhancedTaskCard(Map<String, dynamic> task) {
+    final raw = task['raw'] as Map? ?? task;
     final isEsc = (task['is_escalated'] == 1 ||
         task['is_escalated'] == true ||
         task['task_flag'] == 'Escalated' ||
         task['escalation_instance_id'] != null ||
         task['escalation_status'] != null);
-    final status =
-        (task['task_flag'] ?? task['status'] ?? 'Open').toString();
-    final rawRoom = (task['room_number'] ??
-            task['room_id'] ??
-            task['room'] ??
-            '—')
-        .toString();
+    final status = (task['task_flag'] ?? task['status'] ?? 'Open').toString();
+
+    final rawRoom = (task['room_number'] ?? task['room_id'] ?? task['room'] ?? '—').toString();
     final room = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom.isEmpty) ? 'General' : rawRoom;
 
-    // FIX 1: Use _resolveTitle() in drill-down rows too and strip order prefix
     final rawTitle = _resolveTitle(task);
     final title = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
-    final created = _fmtDate((task['created_at'] ?? '').toString());
+    final created = _fmtDate((task['created_at'] ?? task['timestamp'] ?? '').toString());
     final stageName = (task['current_stage_name'] ?? task['stage_name'] ?? '').toString();
     final escLevel = task['escalation_level_reached'] ?? task['escalation_level'];
 
-    final statusColor =
-        isEsc ? AppColors.error : AppColors.statusColor(status);
+    final statusColor = isEsc ? AppColors.error : AppColors.statusColor(status);
+    final canManage = _isSupervisorOrAboveByName(widget.userRole);
 
-    final canTap = _isSupervisorOrAboveByName(widget.userRole);
-
-    final card = Container(
-      margin:  const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(13),
+    return Container(
       decoration: BoxDecoration(
-        color:        Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: isEsc
-            ? Border.all(color: AppColors.error.withValues(alpha: 0.35), width: 1.3)
-            : null,
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 7, offset: const Offset(0, 2))],
-      ),
-      child: Row(children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color:        isEsc ? AppColors.errorLight : AppColors.warningLight,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(room,
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13,
-                  color: isEsc ? AppColors.error : AppColors.warning)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isEsc ? AppColors.error.withValues(alpha: 0.35) : AppColors.borderLight,
+          width: isEsc ? 1.5 : 1.0,
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 3),
-            Row(children: [
-              Text(created,
-                  style: const TextStyle(fontSize: 11, color: AppColors.textDisabled)),
-              if (stageName.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(color: AppColors.errorLight,
-                      borderRadius: BorderRadius.circular(6)),
-                  child: Text(stageName,
-                      style: const TextStyle(color: AppColors.error, fontSize: 10,
-                          fontWeight: FontWeight.bold)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(13),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Row 1: Room, Title, Status
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isEsc ? AppColors.errorLight : AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ] else if (escLevel != null) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(color: AppColors.errorLight,
-                      borderRadius: BorderRadius.circular(6)),
-                  child: Text('L$escLevel',
-                      style: const TextStyle(color: AppColors.error, fontSize: 10,
-                          fontWeight: FontWeight.bold)),
+                child: Text(
+                  room,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                    color: isEsc ? AppColors.error : AppColors.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Text(
+                          created,
+                          style: const TextStyle(fontSize: 11, color: AppColors.textDisabled),
+                        ),
+                        if (stageName.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: AppColors.errorLight,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              stageName,
+                              style: const TextStyle(
+                                color: AppColors.error,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ] else if (escLevel != null) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: AppColors.errorLight,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'L$escLevel',
+                              style: const TextStyle(
+                                color: AppColors.error,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  isEsc ? 'Escalated' : status,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // Inline Note text if present
+          if (task['note'] != null && task['note'].toString().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceAlt,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.comment_outlined, size: 13, color: AppColors.textSecondary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      task['note'].toString(),
+                      style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          // Inline Quick Action Buttons for Managers
+          if (canManage) ...[
+            const SizedBox(height: 10),
+            const Divider(height: 1, color: AppColors.borderLight),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                // 1. Reassign button
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _showQuickReassignDialog(task),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.swap_horiz_rounded, size: 14, color: AppColors.primary),
+                        SizedBox(width: 4),
+                        Text(
+                          'Reassign',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 2. Add Note button
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _showQuickNoteDialog(task),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceAlt,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.borderLight),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.edit_note_rounded, size: 14, color: AppColors.textSecondary),
+                        SizedBox(width: 4),
+                        Text(
+                          'Add Note',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 3. View Full Ticket
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => TicketDetailPage(
+                          task:       task,
+                          userRole:   widget.userRole,
+                          onClose:    () => _load(),
+                          onReassign: (_) => _load(),
+                          onNoteAdded: (_) => _load(),
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'View',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(width: 2),
+                        Icon(Icons.chevron_right_rounded, size: 14, color: Colors.white),
+                      ],
+                    ),
+                  ),
                 ),
               ],
-            ]),
-          ]),
-        ),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8)),
-          child: Text(isEsc ? 'Escalated' : status,
-              style: TextStyle(color: statusColor, fontWeight: FontWeight.w700,
-                  fontSize: 11)),
-        ),
-        if (canTap) ...[
-          const SizedBox(width: 4),
-          const Icon(Icons.chevron_right_rounded,
-              size: 16, color: AppColors.textDisabled),
+            ),
+          ],
         ],
-      ]),
-    );
-
-    if (!canTap) return card;
-
-    return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => TicketDetailPage(
-            task:     task,
-            userRole: widget.userRole,
-            onClose:  () => setState(() {}),
-            onReassign: (_) => setState(() {}),
-            onNoteAdded: (note) {
-              setState(() {
-                final srId = task["service_request_id"] ??
-                    (task["raw"] is Map ? task["raw"]["service_request_id"] : null);
-                final idx = _tasks.indexWhere((t) {
-                  final tid = t["service_request_id"] ??
-                      (t["raw"] is Map ? t["raw"]["service_request_id"] : null);
-                  return tid != null && tid == srId;
-                });
-                if (idx != -1) {
-                  _tasks[idx]["note"] = note;
-                  if (_tasks[idx]["raw"] is Map) {
-                    (_tasks[idx]["raw"] as Map)["note"] = note;
-                  }
-                }
-              });
-            },
-          ),
-        ),
       ),
-      child: card,
     );
   }
-}
-
-class _DrillCard {
-  final String   value;
-  final String   label;
-  final Color    color;
-  final IconData icon;
-  final bool     highlight;
-
-  const _DrillCard({
-    required this.value,
-    required this.label,
-    required this.color,
-    required this.icon,
-    this.highlight = false,
-  });
 }
 
 class _ExportReportBottomSheet extends StatefulWidget {
