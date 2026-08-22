@@ -711,12 +711,36 @@ class HomeService {
     return {
       'success': true,
       'message': report['message'] ?? 'Success',
+      // ── Team & user rows ─────────────────────────────────────────────────
       'team': rows.map(_normaliseOperationsUserRow).toList(),
       'weeklyUsers': targetWeeklyUsers,
-      'departments': report['departments'],
-      'monthlyDepartments': report['monthlyDepartments'],
       'allMonthlyUsers': report['monthlyUsers'],
       'allWeeklyUsers': report['weeklyUsers'],
+      // ── RS3: Department overall benchmark ────────────────────────────────
+      'departments': report['departments'],
+      // ── RS7: Monthly department trends ───────────────────────────────────
+      'monthlyDepartments': report['monthlyDepartments'],
+      // ── RS6: Weekly department trends ────────────────────────────────────
+      'weeklyDepartments': report['weeklyDepartments'],
+      // ── RS4/RS10: Weekly enterprise service counts ───────────────────────
+      'weeklyServices': report['weeklyServices'],
+      // ── RS5/RS11: Monthly enterprise service counts ──────────────────────
+      'monthlyServices': report['monthlyServices'],
+      // ── RS12: Weekly food summary ────────────────────────────────────────
+      'weeklyFood': report['weeklyFood'],
+      // ── RS13: Monthly food summary ───────────────────────────────────────
+      'monthlyFood': report['monthlyFood'],
+      // ── RS14: Weekly food user (per-staff food stats) ────────────────────
+      'weeklyFoodUsers': report['weeklyFoodUsers'],
+      // ── RS15: Monthly food user (per-staff food stats) ───────────────────
+      'monthlyFoodUsers': report['monthlyFoodUsers'],
+      // ── RS16: Weekly guest check-in / check-out ──────────────────────────
+      'weeklyGuests': report['weeklyGuests'],
+      // ── RS17: Monthly guest check-in / check-out ─────────────────────────
+      'monthlyGuests': report['monthlyGuests'],
+      // ── RS1/RS2: Overall enterprise summary ──────────────────────────────
+      'overallSummary': report['overall'],
+      // Legacy drill-down placeholder (not populated from this API)
       'drillDown': <dynamic>[],
     };
   }

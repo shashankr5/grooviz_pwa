@@ -131,6 +131,34 @@ class TasksPageState extends State<TasksPage> {
   double                            _escalationRatePct     = 0.0;
   Map<String, Map<String, dynamic>> _deptPerformance      = {};
 
+  // ── RS3: Dept overall benchmark (from getOperationsPerformance) ────────────
+  // These supplement the per-user _deptPerformance map with the server-computed
+  // overall_department rows (richer data — includes open / overdue fields).
+  List<Map<String, dynamic>> _overallDepartments = [];
+
+  // ── RS4/RS5/RS6/RS7: Operations Velocity (enterprise + dept weekly/monthly) ─
+  List<Map<String, dynamic>> _weeklyServices      = [];
+  List<Map<String, dynamic>> _monthlyServices     = [];
+  List<Map<String, dynamic>> _weeklyDepartments   = [];
+  List<Map<String, dynamic>> _monthlyDepartments  = [];
+
+  // ── RS12–RS15: F&B Order Analytics ────────────────────────────────────────
+  List<Map<String, dynamic>> _weeklyFood          = [];
+  List<Map<String, dynamic>> _monthlyFood         = [];
+  List<Map<String, dynamic>> _weeklyFoodUsers     = [];
+  List<Map<String, dynamic>> _monthlyFoodUsers    = [];
+
+  // ── RS16/RS17: Guest Occupancy ────────────────────────────────────────────
+  List<Map<String, dynamic>> _weeklyGuests        = [];
+  List<Map<String, dynamic>> _monthlyGuests       = [];
+
+  // ── UI toggle state ───────────────────────────────────────────────────────
+  bool _isVelocityExpanded   = true;
+  bool _isOccupancyExpanded  = false;
+  bool _velocityWeekly       = true; // true = weekly, false = monthly
+  bool _isFbUser             = false; // derived after dept load
+
+
   static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -378,6 +406,30 @@ class TasksPageState extends State<TasksPage> {
         _avgResolutionMinutes = curAvgMins;
         _escalationRatePct    = curEscRate;
         _teamLoading          = false;
+        // ── RS3: Overall department benchmark ──────────────────────────────
+        _overallDepartments = (result['departments']
+                as List<Map<String, dynamic>>? ??
+            []);
+        // ── RS4/RS5/RS6/RS7: Operations velocity ───────────────────────────
+        _weeklyServices     = (result['weeklyServices']    as List<Map<String, dynamic>>? ?? []);
+        _monthlyServices    = (result['monthlyServices']   as List<Map<String, dynamic>>? ?? []);
+        _weeklyDepartments  = (result['weeklyDepartments'] as List<Map<String, dynamic>>? ?? []);
+        _monthlyDepartments = (result['monthlyDepartments']as List<Map<String, dynamic>>? ?? []);
+        // ── RS12–RS15: F&B analytics ───────────────────────────────────────
+        _weeklyFood         = (result['weeklyFood']        as List<Map<String, dynamic>>? ?? []);
+        _monthlyFood        = (result['monthlyFood']       as List<Map<String, dynamic>>? ?? []);
+        _weeklyFoodUsers    = (result['weeklyFoodUsers']   as List<Map<String, dynamic>>? ?? []);
+        _monthlyFoodUsers   = (result['monthlyFoodUsers']  as List<Map<String, dynamic>>? ?? []);
+        // ── RS16/RS17: Guest occupancy ─────────────────────────────────────
+        _weeklyGuests       = (result['weeklyGuests']      as List<Map<String, dynamic>>? ?? []);
+        _monthlyGuests      = (result['monthlyGuests']     as List<Map<String, dynamic>>? ?? []);
+        // ── F&B dept detection ─────────────────────────────────────────────
+        // Detect if the user's departments list contains any F&B-style dept.
+        // This is used to gate the F&B analytics card visibility.
+        final fbKeywords = ['f&b', 'food', 'beverage', 'restaurant', 'kitchen', 'dining'];
+        _isFbUser = _isGmOrAdmin(_userRoleId) ||
+            _availableFilterDepts.any((d) =>
+                fbKeywords.any((kw) => d.toLowerCase().contains(kw)));
       });
     } else {
       if (mounted) setState(() => _teamLoading = false);
@@ -388,8 +440,17 @@ class TasksPageState extends State<TasksPage> {
 
   List<Map<String, dynamic>> _applyDeptFilter(
       List<Map<String, dynamic>> rows) {
+    // If logged-in user is Supervisor or Dept Head, only show staff subordinates
+    final baseRows = _isDeptScopedRole(_userRoleId)
+        ? rows.where((r) {
+            final role = (r['role_name'] ?? '').toString().toLowerCase();
+            final roleId = r['role_id'] as int?;
+            return (roleId == 6 || role == 'staff');
+          }).toList()
+        : rows;
+
     if (_selectedDept != null) {
-      return rows.where((r) {
+      return baseRows.where((r) {
         return (r['department_name'] ?? '').toString() == _selectedDept;
       }).toList();
     }
@@ -398,7 +459,7 @@ class TasksPageState extends State<TasksPage> {
     // to deduplicate staff members across multiple departments:
     final Map<int, Map<String, dynamic>> userMap = {};
 
-    for (final r in rows) {
+    for (final r in baseRows) {
       final int userId = (r['user_id'] as int?) ?? 0;
       if (userId == 0) continue;
 
@@ -861,18 +922,28 @@ class TasksPageState extends State<TasksPage> {
                     // ── Efficiency strip — Supervisor+ only ─────────────────
                     if (_isSupervisorOrAbove(_userRoleId))
                       _buildEfficiencyMetricsStrip(),
-                    // ── Staff personal summary (instead of efficiency strip) ─
+                     // ── Staff personal summary (instead of efficiency strip) ─
                     if (_isStaff(_userRoleId))
                       _buildStaffPersonalSummary(),
                     // ── Department benchmark — multi-dept roles ──────────────
                     if (_isSupervisorOrAbove(_userRoleId) && _deptPerformance.length > 1) ...[
                       _buildDepartmentPerformanceSection(),
                     ],
+                    // ── Operations velocity chart — Supervisor+ (RS4/RS5/RS6/RS7)
+                    if (_isSupervisorOrAbove(_userRoleId) &&
+                        (_weeklyServices.isNotEmpty || _weeklyDepartments.isNotEmpty))
+                      _buildOperationsVelocitySection(),
+                    // ── F&B analytics — F&B users & GM/Admin (RS12–RS15) ─────
+                    if (_isFbUser && (_weeklyFood.isNotEmpty || _weeklyFoodUsers.isNotEmpty))
+                      _buildFoodAnalyticsSection(),
                     // ── Team list — Supervisor+ ──────────────────────────────
                     if (_isSupervisorOrAbove(_userRoleId)) ...[
                       _buildTeamSectionHeader(),
                       _buildTeamList(),
                     ],
+                    // ── Occupancy vs. workload — GM/Admin (RS16/RS17) ─────────
+                    if (_isGmOrAdmin(_userRoleId) && _weeklyGuests.isNotEmpty)
+                      _buildOccupancyCorrelationSection(),
                     // ── Recent activity — non-management roles ───────────────
                     if (!_isManagementOnly(_userRoleId))
                       _buildRecentActivity(),
@@ -1818,7 +1889,7 @@ class TasksPageState extends State<TasksPage> {
     );
   }
 
-  // ── Team List ─────────────────────────────────────────────────────────────
+  // ── Team List (Hierarchical & Multi-Department Grouping) ───────────────────
 
   Widget _buildTeamList() {
     if (_teamLoading && _teamRows.isEmpty) {
@@ -1834,8 +1905,11 @@ class TasksPageState extends State<TasksPage> {
         child: Container(
           width:   double.infinity,
           padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(color: Colors.white,
-              borderRadius: BorderRadius.circular(16)),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.borderLight),
+          ),
           child: const Column(children: [
             Icon(Icons.people_outline, size: 36, color: AppColors.textDisabled),
             SizedBox(height: 8),
@@ -1846,24 +1920,288 @@ class TasksPageState extends State<TasksPage> {
       );
     }
 
+    // 1. If logged-in user is Supervisor or Dept Head -> Only show staff subordinates
+    if (_isDeptScopedRole(_userRoleId)) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHierarchySectionHeader(
+              title: 'Department Staff Subordinates',
+              count: _teamRows.length,
+              icon: Icons.people_alt_outlined,
+              color: AppColors.primary,
+            ),
+            const SizedBox(height: 8),
+            ..._teamRows.map((row) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildTeamRow(row, isLeader: false),
+            )),
+          ],
+        ),
+      );
+    }
+
+    // 2. If Manager / GM / Admin in "All Departments" mode -> Group by Department Hierarchy
+    if (_selectedDept == null) {
+      final deptNames = _availableFilterDepts.isNotEmpty
+          ? _availableFilterDepts
+          : _deptPerformance.keys.toList();
+
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: deptNames.map((deptName) {
+            final deptRows = _teamRowsAll.where((r) {
+              return (r['department_name'] ?? '').toString() == deptName;
+            }).toList();
+
+            if (deptRows.isEmpty) return const SizedBox.shrink();
+
+            final deptSupervisors = deptRows.where((r) {
+              final role = (r['role_name'] ?? '').toString().toLowerCase();
+              return role.contains('supervisor') ||
+                  role.contains('dept head') ||
+                  role.contains('department head') ||
+                  role.contains('manager') ||
+                  role.contains('general manager');
+            }).toList();
+
+            final deptStaff = deptRows.where((r) {
+              final role = (r['role_name'] ?? '').toString().toLowerCase();
+              return !role.contains('supervisor') &&
+                  !role.contains('dept head') &&
+                  !role.contains('department head') &&
+                  !role.contains('manager') &&
+                  !role.contains('general manager');
+            }).toList();
+
+            final dPerf = _deptPerformance[deptName] ?? {};
+            final dAssigned = (dPerf['total_assigned'] as int?) ?? 0;
+            final dClosed   = (dPerf['total_closed']   as int?) ?? 0;
+            final dEsc      = (dPerf['total_escalated'] as int?) ?? 0;
+            final dAvgMins  = (dPerf['avg_resolution_minutes'] as num?)?.toDouble() ?? 0.0;
+            final dAvgStr   = dAvgMins <= 0 ? '—' : '${dAvgMins.toStringAsFixed(0)}m';
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: AppColors.borderLight),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Department Header + KPI pill summary
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.business_rounded, color: AppColors.primary, size: 18),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              deptName,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                            Text(
+                              '$dAssigned tasks · $dClosed closed · ⏱️ $dAvgStr${dEsc > 0 ? " · ⚠️ $dEsc SLA" : ""}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  const Divider(height: 1, color: AppColors.borderLight),
+                  const SizedBox(height: 10),
+
+                  // A. Supervisors / Dept Head in this Department
+                  if (deptSupervisors.isNotEmpty) ...[
+                    Row(
+                      children: [
+                        const Icon(Icons.shield_outlined, size: 13, color: Color(0xFF6366F1)),
+                        const SizedBox(width: 4),
+                        Text(
+                          'DEPARTMENT HEAD & SUPERVISOR (${deptSupervisors.length})',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: Color(0xFF6366F1),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    ...deptSupervisors.map((row) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _buildTeamRow(row, isLeader: true),
+                    )),
+                    const SizedBox(height: 6),
+                  ],
+
+                  // B. Staff Members in this Department
+                  if (deptStaff.isNotEmpty) ...[
+                    Row(
+                      children: [
+                        const Icon(Icons.people_alt_outlined, size: 13, color: AppColors.primary),
+                        const SizedBox(width: 4),
+                        Text(
+                          'DEPARTMENT STAFF (${deptStaff.length})',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    ...deptStaff.map((row) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _buildTeamRow(row, isLeader: false),
+                    )),
+                  ],
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      );
+    }
+
+    // 3. If Manager / GM with a specific Department selected
+    final supervisors = _teamRows.where((r) {
+      final role = (r['role_name'] ?? '').toString().toLowerCase();
+      return role.contains('supervisor') ||
+          role.contains('dept head') ||
+          role.contains('department head') ||
+          role.contains('manager') ||
+          role.contains('general manager');
+    }).toList();
+
+    final staffMembers = _teamRows.where((r) {
+      final role = (r['role_name'] ?? '').toString().toLowerCase();
+      return !role.contains('supervisor') &&
+          !role.contains('dept head') &&
+          !role.contains('department head') &&
+          !role.contains('manager') &&
+          !role.contains('general manager');
+    }).toList();
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
-        children: _teamRows.asMap().entries.map((e) {
-          return Padding(
-            padding: EdgeInsets.only(bottom: e.key < _teamRows.length - 1 ? 8 : 0),
-            child: _buildTeamRow(e.value),
-          );
-        }).toList(),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. Supervisors & Department Heads Section
+          if (supervisors.isNotEmpty) ...[
+            _buildHierarchySectionHeader(
+              title: 'Supervisors & Department Heads',
+              count: supervisors.length,
+              icon: Icons.shield_outlined,
+              color: const Color(0xFF6366F1),
+            ),
+            const SizedBox(height: 8),
+            ...supervisors.map((row) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildTeamRow(row, isLeader: true),
+            )),
+            const SizedBox(height: 12),
+          ],
+
+          // 2. Staff Members Section
+          if (staffMembers.isNotEmpty) ...[
+            _buildHierarchySectionHeader(
+              title: 'Staff Members',
+              count: staffMembers.length,
+              icon: Icons.people_alt_outlined,
+              color: AppColors.primary,
+            ),
+            const SizedBox(height: 8),
+            ...staffMembers.map((row) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildTeamRow(row, isLeader: false),
+            )),
+          ],
+        ],
       ),
     );
   }
 
+  Widget _buildHierarchySectionHeader({
+    required String title,
+    required int count,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 6),
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w800,
+            color: color,
+            letterSpacing: 0.3,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            '$count',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
-  Widget _buildTeamRow(Map<String, dynamic> row) {
+  Widget _buildTeamRow(Map<String, dynamic> row, {bool isLeader = false}) {
     final name      = (row['full_name']          ?? '—').toString();
     final dept      = (row['department_name']    ?? '').toString();
-    final roleName  = (row['role_name']          ?? '').toString();
+    final roleName  = (row['role_name']          ?? (isLeader ? 'Supervisor' : 'Staff')).toString();
     final assigned  = (row['total_assigned']     as int?) ?? 0;
     final closed    = (row['total_closed']       as int?) ?? 0;
     final escalated = (row['total_escalated']    as int?) ?? 0;
@@ -1882,9 +2220,21 @@ class TasksPageState extends State<TasksPage> {
     final hasEsc    = escalated > 0;
     final escColor  = hasEsc ? AppColors.error : AppColors.success;
 
-    final subtitle  = _isManagementOnly(_userRoleId)
-        ? (dept.isNotEmpty ? dept : roleName)
-        : (dept.isNotEmpty && roleName.isNotEmpty ? '$roleName · $dept' : roleName);
+    // Parse list of departments for this user
+    final List<String> deptsList = [];
+    if (row['departments'] is List) {
+      for (final d in (row['departments'] as List)) {
+        final s = d.toString().trim();
+        if (s.isNotEmpty && !deptsList.contains(s)) deptsList.add(s);
+      }
+    } else if (dept.contains(',')) {
+      for (final d in dept.split(',')) {
+        final s = d.trim();
+        if (s.isNotEmpty && !deptsList.contains(s)) deptsList.add(s);
+      }
+    } else if (dept.isNotEmpty) {
+      deptsList.add(dept);
+    }
 
     final initials = name.trim().split(' ')
         .where((s) => s.isNotEmpty)
@@ -1892,15 +2242,17 @@ class TasksPageState extends State<TasksPage> {
         .map((s) => s[0].toUpperCase())
         .join();
 
+    final cardAccentColor = isLeader ? const Color(0xFF6366F1) : AppColors.primary;
+
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(16),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => _StaffDrillDownPage(
             userId:   userId,
             userName: name,
-            deptName: dept,
+            deptName: deptsList.isNotEmpty ? deptsList.first : dept,
             month:    _selectedMonth,
             year:     _selectedYear,
             userRole: _userRole,
@@ -1910,18 +2262,18 @@ class TasksPageState extends State<TasksPage> {
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: hasEsc
-              ? Border.all(
-                  color: AppColors.error.withValues(alpha: 0.25),
-                  width: 1.0,
-                )
-              : Border.all(color: AppColors.borderLight),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: hasEsc
+                ? AppColors.error.withValues(alpha: 0.35)
+                : (isLeader ? cardAccentColor.withValues(alpha: 0.25) : AppColors.borderLight),
+            width: hasEsc || isLeader ? 1.2 : 1.0,
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
+              color: Colors.black.withValues(alpha: 0.03),
               blurRadius: 8,
-              offset: const Offset(0, 3),
+              offset: const Offset(0, 2),
             ),
           ],
         ),
@@ -1929,25 +2281,25 @@ class TasksPageState extends State<TasksPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Top row: avatar + name + chevron ──────────────────────────
+            // ── Top row: avatar + name + role pill + chevron ──────────────
             Row(
               children: [
                 Container(
-                  width: 38,
-                  height: 38,
+                  width: 40,
+                  height: 40,
                   decoration: BoxDecoration(
                     color: hasEsc
                         ? AppColors.error.withValues(alpha: 0.1)
-                        : AppColors.primary.withValues(alpha: 0.1),
+                        : cardAccentColor.withValues(alpha: 0.1),
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
                   child: Text(
                     initials.isNotEmpty ? initials : '?',
                     style: TextStyle(
-                      color: hasEsc ? AppColors.error : AppColors.primary,
+                      color: hasEsc ? AppColors.error : cardAccentColor,
                       fontWeight: FontWeight.w800,
-                      fontSize: 13,
+                      fontSize: 14,
                     ),
                   ),
                 ),
@@ -1956,34 +2308,85 @@ class TasksPageState extends State<TasksPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        name,
-                        style: const TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (subtitle.isNotEmpty)
-                        Text(
-                          subtitle,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textSecondary
-                                .withValues(alpha: 0.8),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textPrimary,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: cardAccentColor.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              roleName,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: cardAccentColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      // Multi-department badges
+                      if (deptsList.isNotEmpty)
+                        Wrap(
+                          spacing: 4,
+                          runSpacing: 4,
+                          children: [
+                            ...deptsList.take(2).map((d) => Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: AppColors.surfaceAlt,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: AppColors.borderLight),
+                              ),
+                              child: Text(
+                                d,
+                                style: const TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            )),
+                            if (deptsList.length > 2)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primaryLight,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '+${deptsList.length - 2} more',
+                                  style: const TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                     ],
                   ),
                 ),
                 if (hasEsc)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: AppColors.error.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(6),
@@ -2521,7 +2924,775 @@ class TasksPageState extends State<TasksPage> {
       ),
     );
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ANALYTICS WIDGETS — Powered by Unused Result Sets RS4–RS17
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Helper: section header with colored accent bar ────────────────────────
+  Widget _buildSectionHeader({
+    required String title,
+    required IconData icon,
+    required Color iconColor,
+    Widget? trailing,
+  }) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 4,
+              height: 18,
+              decoration: BoxDecoration(
+                color: iconColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(icon, size: 18, color: iconColor),
+            const SizedBox(width: 6),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ],
+        ),
+        if (trailing != null) trailing,
+      ],
+    );
+  }
+
+  // ── Helper: collapse/expand chevron button ────────────────────────────────
+  Widget _buildCollapseToggle(bool isExpanded, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          isExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+          size: 18,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  // ── Helper: format a week_start/week_end pair into "May 15–21" ─────────────
+  String _formatWeekLabel(Map<String, dynamic> row) {
+    final ws = row['week_start']?.toString() ?? '';
+    final we = row['week_end']?.toString() ?? '';
+    try {
+      final start = DateTime.parse(ws);
+      final end   = we.isNotEmpty ? DateTime.parse(we) : start.add(const Duration(days: 6));
+      final months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return '${months[start.month]} ${start.day}–${end.day}';
+    } catch (_) {
+      return ws.isEmpty ? '—' : ws.substring(0, ws.length.clamp(0, 10));
+    }
+  }
+
+  // ── Helper: format minutes into "32m" or "1.5h" ──────────────────────────
+  String _fmtMins(dynamic value) {
+    final m = (value as num?)?.toDouble() ?? 0.0;
+    if (m <= 0) return '—';
+    if (m < 60) return '${m.toStringAsFixed(0)}m';
+    return '${(m / 60).toStringAsFixed(1)}h';
+  }
+
+  // ── Helper: format currency (Indian lakh system) ──────────────────────────
+  String _fmtRevenue(dynamic value) {
+    final v = (value as num?)?.toDouble() ?? 0.0;
+    if (v >= 100000) return '₹${(v / 100000).toStringAsFixed(2)}L';
+    if (v >= 1000)   return '₹${(v / 1000).toStringAsFixed(1)}K';
+    return '₹${v.toStringAsFixed(0)}';
+  }
+
+  // ── Helper: closure rate → color ─────────────────────────────────────────
+  Color _closureColor(double pct) {
+    if (pct >= 85) return AppColors.success;
+    if (pct >= 70) return AppColors.warning;
+    return AppColors.error;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 1. OPERATIONS VELOCITY SECTION (RS4/RS5 enterprise + RS6/RS7 dept-scoped)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildOperationsVelocitySection() {
+    // Choose data source: dept-scoped when a filter is active, enterprise-wide otherwise.
+    final weeklyData  = _selectedDept != null
+        ? _weeklyDepartments .where((r) => (r['department_name']?.toString() ?? '') == _selectedDept).toList()
+        : _weeklyServices;
+    final monthlyData = _selectedDept != null
+        ? _monthlyDepartments.where((r) => (r['department_name']?.toString() ?? '') == _selectedDept).toList()
+        : _monthlyServices;
+
+    final source = _velocityWeekly ? weeklyData : monthlyData;
+
+    // Aggregate by period (week_start or report_month) — deduplicate across
+    // multiple rows for the same period (can occur with dept scoping).
+    final Map<String, Map<String, dynamic>> byPeriod = {};
+    for (final r in source) {
+      final key = (_velocityWeekly
+              ? r['week_start']?.toString()
+              : r['report_month']?.toString()) ??
+          '';
+      if (key.isEmpty) continue;
+      if (!byPeriod.containsKey(key)) {
+        byPeriod[key] = {'_key': key, 'total': 0, 'closed': 0, ...r};
+      }
+      byPeriod[key]!['total']  = (byPeriod[key]!['total']  as int) +
+          ((r['total_tasks']  as num?)?.toInt() ?? (r['total_requests'] as num?)?.toInt() ?? 0);
+      byPeriod[key]!['closed'] = (byPeriod[key]!['closed'] as int) +
+          ((r['closed_tasks'] as num?)?.toInt() ?? (r['closed_requests'] as num?)?.toInt() ?? 0);
+    }
+
+    // Sort descending (latest first) and take the last 6 periods.
+    final periods = byPeriod.values.toList()
+      ..sort((a, b) => b['_key'].toString().compareTo(a['_key'].toString()));
+    final displayPeriods = periods.take(6).toList().reversed.toList();
+
+    final maxTotal = displayPeriods.fold<int>(
+        0, (m, r) => (r['total'] as int) > m ? (r['total'] as int) : m);
+
+    final scopeLabel = _selectedDept != null ? _selectedDept! : 'Enterprise';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Header ────────────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildSectionHeader(
+                    title: '$scopeLabel Velocity',
+                    icon: Icons.trending_up_rounded,
+                    iconColor: AppColors.primary,
+                  ),
+                  Row(
+                    children: [
+                      // Weekly / Monthly toggle
+                      _buildTogglePill('Weekly', _velocityWeekly, () {
+                        setState(() => _velocityWeekly = true);
+                      }),
+                      const SizedBox(width: 6),
+                      _buildTogglePill('Monthly', !_velocityWeekly, () {
+                        setState(() => _velocityWeekly = false);
+                      }),
+                      const SizedBox(width: 8),
+                      _buildCollapseToggle(_isVelocityExpanded,
+                          () => setState(() => _isVelocityExpanded = !_isVelocityExpanded)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            // ── Body ──────────────────────────────────────────────────────────
+            if (_isVelocityExpanded) ...[
+              const SizedBox(height: 12),
+              if (displayPeriods.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: Text('No trend data for this period.',
+                      style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    children: displayPeriods.map((row) {
+                      final total  = row['total']  as int;
+                      final closed = row['closed'] as int;
+                      final pct    = total > 0 ? (closed / total * 100) : 0.0;
+                      final barFraction = maxTotal > 0 ? (total / maxTotal) : 0.0;
+                      final closedFraction = total > 0 ? (closed / total) : 0.0;
+                      final label = _velocityWeekly
+                          ? _formatWeekLabel(row)
+                          : (row['_key']?.toString() ?? '');
+                      final color = _closureColor(pct);
+
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                SizedBox(
+                                  width: 80,
+                                  child: Text(label,
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppColors.textSecondary)),
+                                ),
+                                Expanded(
+                                  child: LayoutBuilder(
+                                    builder: (ctx, constraints) {
+                                      final fullWidth = constraints.maxWidth;
+                                      return Stack(
+                                        children: [
+                                          // Background (total)
+                                          Container(
+                                            height: 18,
+                                            width: fullWidth * barFraction,
+                                            decoration: BoxDecoration(
+                                              color: AppColors.primaryLight,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                          ),
+                                          // Foreground (closed)
+                                          Container(
+                                            height: 18,
+                                            width: fullWidth * barFraction * closedFraction,
+                                            decoration: BoxDecoration(
+                                              color: color.withValues(alpha: 0.85),
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                // Closure badge
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.10),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    '${pct.toStringAsFixed(0)}%',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      color: color,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '$closed/$total',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              // Legend
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                child: Row(
+                  children: [
+                    _buildLegendDot(AppColors.primaryLight, 'Total Tasks'),
+                    const SizedBox(width: 12),
+                    _buildLegendDot(AppColors.success.withValues(alpha: 0.85), 'Closed'),
+                    const SizedBox(width: 12),
+                    _buildLegendDot(AppColors.warning.withValues(alpha: 0.85), '70–84%'),
+                    const SizedBox(width: 12),
+                    _buildLegendDot(AppColors.error.withValues(alpha: 0.85), '<70%'),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTogglePill(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? AppColors.primary : AppColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: active ? Colors.white : AppColors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegendDot(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10, height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 9.5, color: AppColors.textSecondary)),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2. F&B ORDER ANALYTICS SECTION (RS12/RS13 weekly/monthly food summary +
+  //    RS14/RS15 per-staff food performance)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildFoodAnalyticsSection() {
+    // Use weekly data (most operationally relevant); pick the most recent week.
+    final foodRows = _weeklyFood.isNotEmpty ? _weeklyFood : _monthlyFood;
+    final staffRows = _weeklyFoodUsers.isNotEmpty ? _weeklyFoodUsers : _monthlyFoodUsers;
+
+    // Aggregate across rows (there may be multiple rows per period for different depts).
+    int totalOrders  = 0;
+    double totalRevenue   = 0.0;
+    double totalAcceptMin = 0.0;
+    int acceptCount  = 0;
+
+    // Take the most recent period's rows.
+    String? latestPeriod;
+    for (final r in foodRows) {
+      final periodKey = r['week_start']?.toString() ?? r['report_month']?.toString() ?? '';
+      if (latestPeriod == null || periodKey.compareTo(latestPeriod) > 0) {
+        latestPeriod = periodKey;
+      }
+    }
+    final latestRows = latestPeriod == null ? foodRows : foodRows.where((r) {
+      final pk = r['week_start']?.toString() ?? r['report_month']?.toString() ?? '';
+      return pk == latestPeriod;
+    }).toList();
+
+    for (final r in latestRows) {
+      totalOrders  += (r['total_orders'] as num?)?.toInt() ?? 0;
+      totalRevenue += (r['total_revenue'] as num?)?.toDouble() ?? 0.0;
+      final acceptM = (r['avg_accept_time_minutes'] as num?)?.toDouble() ??
+                      (r['avg_acceptance_time'] as num?)?.toDouble() ?? 0.0;
+      if (acceptM > 0) { totalAcceptMin += acceptM; acceptCount++; }
+    }
+
+    final avgAcceptMins = acceptCount > 0 ? (totalAcceptMin / acceptCount) : 0.0;
+
+    // Top 3 food staff sorted by total orders descending.
+    final sortedStaff = [...staffRows]
+      ..sort((a, b) => ((b['total_orders'] as num?)?.toInt() ?? 0)
+          .compareTo((a['total_orders'] as num?)?.toInt() ?? 0));
+    final topStaff = sortedStaff.take(3).toList();
+
+    final periodLabel = latestPeriod != null
+        ? (_weeklyFood.isNotEmpty ? _formatWeekLabel({'week_start': latestPeriod, 'week_end': ''}) : latestPeriod)
+        : 'Latest';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 3)),
+          ],
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            _buildSectionHeader(
+              title: 'F&B Operations',
+              icon: Icons.restaurant_menu_rounded,
+              iconColor: const Color(0xFFF59E0B),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  periodLabel,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFFD97706),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            // KPI Row: Orders | Revenue | Avg Accept Time
+            Row(
+              children: [
+                _buildFoodKpi(
+                  label: 'Orders',
+                  value: '$totalOrders',
+                  icon: Icons.receipt_long_rounded,
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 10),
+                _buildFoodKpi(
+                  label: 'Revenue',
+                  value: _fmtRevenue(totalRevenue),
+                  icon: Icons.currency_rupee_rounded,
+                  color: AppColors.success,
+                ),
+                const SizedBox(width: 10),
+                _buildFoodKpi(
+                  label: 'Avg Accept',
+                  value: _fmtMins(avgAcceptMins),
+                  icon: Icons.timer_outlined,
+                  color: const Color(0xFFF59E0B),
+                ),
+              ],
+            ),
+            // Staff leaderboard
+            if (topStaff.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              const Text(
+                'TOP RUNNERS THIS WEEK',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...topStaff.asMap().entries.map((e) {
+                final idx  = e.key;
+                final s    = e.value;
+                final name = s['full_name']?.toString() ?? s['name']?.toString() ?? '—';
+                final orders = (s['total_orders'] as num?)?.toInt() ?? 0;
+                final acceptM = (s['avg_accept_time_minutes'] as num?)?.toDouble() ??
+                                (s['avg_acceptance_time'] as num?)?.toDouble() ?? 0.0;
+                final rankIcons = ['🥇', '🥈', '🥉'];
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Text(rankIcons[idx], style: const TextStyle(fontSize: 18)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          name,
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Text(
+                        '$orders orders',
+                        style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w700),
+                      ),
+                      if (acceptM > 0) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.successLight,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            _fmtMins(acceptM),
+                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.success),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFoodKpi({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.15)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color),
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 10, color: AppColors.textSecondary, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 3. OCCUPANCY vs. WORKLOAD CORRELATION SECTION (RS16 weekly + RS4 overlay)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildOccupancyCorrelationSection() {
+    // Take the last 4 weeks of guest data, sorted ascending for display.
+    final sorted = [..._weeklyGuests]
+      ..sort((a, b) => (a['week_start']?.toString() ?? '').compareTo(b['week_start']?.toString() ?? ''));
+    final weeks = sorted.take(4).toList();
+
+    if (weeks.isEmpty) return const SizedBox.shrink();
+
+    // Compute max values for bar scaling
+    int maxCheckIn  = 1;
+    int maxRequests = 1;
+    for (final w in weeks) {
+      final ci  = (w['total_checkins']  as num?)?.toInt() ?? (w['checkin_count'] as num?)?.toInt() ?? 0;
+      final req = (w['total_requests'] as num?)?.toInt() ?? (w['service_requests'] as num?)?.toInt() ?? 0;
+      if (ci  > maxCheckIn)  maxCheckIn  = ci;
+      if (req > maxRequests) maxRequests = req;
+    }
+
+    // Derive an insight from the most recent week's trend.
+    String insightText = '';
+    if (weeks.length >= 2) {
+      final latest = weeks.last;
+      final prev   = weeks[weeks.length - 2];
+      final latestReq = (latest['total_requests'] as num?)?.toInt() ?? (latest['service_requests'] as num?)?.toInt() ?? 0;
+      final prevReq   = (prev['total_requests']   as num?)?.toInt() ?? (prev['service_requests']   as num?)?.toInt() ?? 0;
+      final latestCI  = (latest['total_checkins'] as num?)?.toInt() ?? (latest['checkin_count']  as num?)?.toInt() ?? 0;
+      if (prevReq > 0) {
+        final pctChange = ((latestReq - prevReq) / prevReq * 100).round();
+        if (pctChange > 15) {
+          insightText = 'Service demand up $pctChange% vs last week ($latestCI check-ins). Consider +1–2 Housekeeping associates on peak shifts.';
+        } else if (pctChange < -15) {
+          insightText = 'Lighter load expected (service demand down ${pctChange.abs()}%). Good window for preventive maintenance.';
+        } else {
+          insightText = 'Service load steady (${pctChange >= 0 ? '+' : ''}$pctChange% vs last week). Maintain current staffing levels.';
+        }
+      }
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.borderLight),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 3)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildSectionHeader(
+                    title: 'Occupancy & Workload',
+                    icon: Icons.hotel_rounded,
+                    iconColor: const Color(0xFF6366F1),
+                  ),
+                  _buildCollapseToggle(_isOccupancyExpanded,
+                      () => setState(() => _isOccupancyExpanded = !_isOccupancyExpanded)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            // Summary row: most recent week
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+              child: _buildOccupancyQuickStat(weeks.last),
+            ),
+            if (_isOccupancyExpanded) ...[
+              const SizedBox(height: 12),
+              // Week-by-week comparison table
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                child: Column(
+                  children: [
+                    // Column headers
+                    Row(
+                      children: const [
+                        SizedBox(width: 80, child: Text('Week', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textSecondary))),
+                        Expanded(child: Text('Check-ins', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textSecondary))),
+                        Expanded(child: Text('Check-outs', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textSecondary))),
+                        SizedBox(width: 56, child: Text('Requests', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textSecondary), textAlign: TextAlign.right)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    ...weeks.reversed.map((w) {
+                      final label = _formatWeekLabel(w);
+                      final ci  = (w['total_checkins']  as num?)?.toInt() ?? (w['checkin_count'] as num?)?.toInt() ?? 0;
+                      final co  = (w['total_checkouts'] as num?)?.toInt() ?? (w['checkout_count'] as num?)?.toInt() ?? 0;
+                      final req = (w['total_requests'] as num?)?.toInt() ?? (w['service_requests'] as num?)?.toInt() ?? 0;
+                      final isLatest = w == weeks.last;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: isLatest ? const Color(0xFF6366F1).withValues(alpha: 0.05) : AppColors.surfaceAlt,
+                          borderRadius: BorderRadius.circular(10),
+                          border: isLatest ? Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.2)) : null,
+                        ),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 80,
+                              child: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+                            ),
+                            Expanded(child: Text('$ci', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary))),
+                            Expanded(child: Text('$co', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textSecondary))),
+                            SizedBox(
+                              width: 56,
+                              child: Text(
+                                '$req',
+                                textAlign: TextAlign.right,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: req > 0 ? AppColors.primary : AppColors.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+            // Insight banner
+            if (insightText.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.18)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('💡', style: TextStyle(fontSize: 16)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        insightText,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4F46E5),
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else
+              const SizedBox(height: 14),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOccupancyQuickStat(Map<String, dynamic> week) {
+    final ci  = (week['total_checkins']  as num?)?.toInt() ?? (week['checkin_count'] as num?)?.toInt() ?? 0;
+    final co  = (week['total_checkouts'] as num?)?.toInt() ?? (week['checkout_count'] as num?)?.toInt() ?? 0;
+    final req = (week['total_requests'] as num?)?.toInt() ?? (week['service_requests'] as num?)?.toInt() ?? 0;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF6366F1).withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildOccupancyStat('Check-ins', '$ci', Icons.login_rounded, AppColors.success),
+          Container(width: 1, height: 32, color: AppColors.borderLight),
+          _buildOccupancyStat('Check-outs', '$co', Icons.logout_rounded, AppColors.warning),
+          Container(width: 1, height: 32, color: AppColors.borderLight),
+          _buildOccupancyStat('Requests', '$req', Icons.room_service_rounded, AppColors.primary),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOccupancyStat(String label, String value, IconData icon, Color color) {
+    return Column(
+      children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(height: 2),
+        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color)),
+        Text(label, style: const TextStyle(fontSize: 9.5, color: AppColors.textSecondary, fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Month Picker Bottom Sheet
@@ -3823,7 +4994,7 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
 
     if (filteredWeeks.isEmpty) return const SizedBox.shrink();
 
-    // Deduplicate by week_start
+    // Deduplicate by week_start and filter out empty weeks
     final Map<String, Map<String, dynamic>> byWeek = {};
     for (final w in filteredWeeks) {
       final ws = (w['week_start'] ?? '').toString();
@@ -3844,7 +5015,13 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
       byWeek[ws]!['open']   = (byWeek[ws]!['open']   as int) + ((w['open_tasks'] as num?)?.toInt() ?? 0);
     }
 
-    final weekList = byWeek.values.toList()
+    // Only non-empty weeks (where total > 0)
+    final activeWeeks = byWeek.values.where((w) => (w['total'] as int) > 0).toList();
+    if (activeWeeks.isEmpty) return const SizedBox.shrink();
+
+    // Sort descending to grab latest 4 weeks, then sort ascending for chart display
+    activeWeeks.sort((a, b) => b['week_start'].toString().compareTo(a['week_start'].toString()));
+    final weekList = activeWeeks.take(4).toList()
       ..sort((a, b) => a['week_start'].toString().compareTo(b['week_start'].toString()));
 
     return Container(
