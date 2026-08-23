@@ -1,20 +1,4 @@
 // home_page.dart
-//
-// ESCALATION ARCHITECTURE:
-//  • Escalation is driven entirely server-side via SQS self-enqueue.
-//    The client-side 60s polling timer and
-//    ScreenSync_sp_check_and_escalate_mobile have been removed.
-//  • Escalation state (is_escalated, escalation_instance_id, current_stage_name,
-//    next_escalation_at) is embedded in every get_all_services_mobile RESULT
-//    row — no separate escalation API call is required.
-//  • Live updates arrive via WebSocket ESCALATION_ALERT events, which fan out
-//    to EscalationService.onBadgeUpdate and onListRefresh streams.
-//  • _roleLoaded guard — Manager/GM/Admin default to the "Escalated" filter
-//    and the loading gate waits for both dept and role to resolve.
-//  • Escalated tasks sort to top in the "All" filter view.
-//  • onClose / onReassign clears escalation flags instantly in local state
-//    so the red border disappears without waiting for a reload.
-
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
@@ -23,9 +7,15 @@ import '../services/session_change_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/order_alert_service.dart';
 import '../services/escalation_service.dart';
+import '../services/profile_service.dart';
+import '../services/food_order_service.dart';
+import '../services/notification_handler.dart';
+import '../services/notification_constants.dart';
 import '../utils/date_formatter.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/app_snackbar.dart';
+import '../utils/order_grouping.dart';
+import '../utils/escalation_helpers.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import '../components/app_badge.dart';
@@ -38,10 +28,6 @@ import 'delivery_page.dart';
 import 'guest_checkout_page.dart';
 import 'ticket_details_page.dart';
 import 'profile_page.dart';
-import '../services/profile_service.dart';
-import '../services/notification_handler.dart';
-import '../services/notification_constants.dart';
-import '../utils/escalation_helpers.dart';
 
 // ── Role helpers — delegate to EscalationRole from escalation_helpers.dart ───
 
@@ -73,7 +59,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String userRole       = "";
   String enterpriseName = "";
   int?   loggedInUserId;
-
   String _monthName(int month) {
     const months = [
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -383,6 +368,33 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
+    final foodSummaryId = request['food_order_summary_id'];
+    if (foodSummaryId != null &&
+        foodSummaryId.toString().trim().isNotEmpty &&
+        foodSummaryId.toString() != '0') {
+      return true;
+    }
+
+    if (request['is_from_order'] == 1 || request['is_from_order'] == true) {
+      return true;
+    }
+
+    final serviceOrderId = request['service_order_id'];
+    if (serviceOrderId != null &&
+        serviceOrderId.toString().trim().isNotEmpty &&
+        serviceOrderId.toString() != '0') {
+      return true;
+    }
+
+    final question = (request['question'] ?? '').toString().toLowerCase();
+    if (question.contains('food order') || question.contains('ready for delivery')) {
+      return true;
+    }
+
+    return false;
+  }
+
   Future<void> _loadTasks() async {
     final bool isRecoveringFromError = _errorMessage != null;
 
@@ -411,6 +423,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    // Service requests shown AS IS
     final List<Map<String, dynamic>> rawList =
         List<Map<String, dynamic>>.from(result["tasks"]);
 
@@ -459,87 +472,56 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     TaskAlertService.resetServiceCount(openCount);
   }
 
-  // ── Delivery order grouping (mirrors DeliveryPage._groupOrders) ──────────
-  // Groups raw per-item rows by orderNumber and parses the timestamp.
-  // Returns null for _orderTimeDt when the timestamp is absent/malformed
-  // so we never mistake a missing timestamp for a very old order.
-
-  DateTime? _parseOrderTime(String? ts) {
-    if (ts == null || ts.trim().isEmpty) return null;
-    try {
-      String fixed = ts.trim();
-      if (fixed.contains(' ') && !fixed.contains('T')) {
-        fixed = fixed.replaceFirst(' ', 'T');
-      }
-      return DateTime.tryParse(fixed);
-    } catch (_) {
-      return null;
-    }
-  }
+  // ── Delivery order grouping ──────────────────────────────────────────────
 
   Future<void> _loadDeliveryCounts() async {
     if (!mounted) return;
-    // Only show skeleton on the very first load — subsequent live updates
-    // should update counts silently without flashing the skeleton.
     if (_readyOrderCount == 0 && _acceptedOrderCount == 0 && _deliveredOrderCount == 0) {
       setState(() => _deliveryCountsLoading = true);
     }
 
-    final deliveryResult = await TaskService().getAllServices();
-
+    final foodResult = await FoodOrderService().getFoodOrders();
     if (!mounted) return;
 
-    final requests = (deliveryResult['services'] as List? ?? const <dynamic>[])
-        .whereType<Map>()
-        .map((row) => Map<String, dynamic>.from(row))
-        .where((row) {
-          final summaryId = row['food_order_summary_id'];
-          return summaryId != null && summaryId.toString().isNotEmpty &&
-              summaryId.toString() != '0';
-        })
-        .toList();
+    if (foodResult['success'] == true) {
+      final List rawOrders = (foodResult['orders'] as List? ?? []);
+      final grouped = groupFoodOrderRows(rawOrders);
+      final ready = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'READY').toList();
+      final accepted = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'PREPARING' || (o['status'] ?? '').toString().toUpperCase() == 'IN PROGRESS').toList();
+      final List deliveredRaw = (foodResult['delivered'] as List? ?? []);
+      final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
 
-    // Group before counting — each group = one order, not one line-item.
-    bool isClosed(Map<String, dynamic> row) => row['closed'] == 1 ||
-        row['closed'] == true || row['status']?.toString().toLowerCase() == 'closed';
-    bool isAccepted(Map<String, dynamic> row) => row['accepted_at'] != null ||
-        row['status']?.toString().toLowerCase() == 'in progress' ||
-        row['status']?.toString().toLowerCase() == 'in_progress';
-    Map<String, dynamic> preview(Map<String, dynamic> row) {
-      final readyAt = row['food_order_ready_time'] ?? row['created_at'];
-      return {
-        'orderNumber': row['food_order_number'] ?? 'SR-${row['service_request_id']}',
-        'roomNumber': row['room_number'] ?? row['room_id'] ?? '—',
-        'guestName': row['guest_name'] ?? '',
-        'orderTime': readyAt?.toString(),
-        '_orderTimeDt': _parseOrderTime(readyAt?.toString()),
-        'raw': row,
-      };
-    }
-    final groupedReady = requests.where((row) => !isClosed(row) && !isAccepted(row)).map(preview).toList();
-    final groupedAccepted = requests.where((row) => !isClosed(row) && isAccepted(row)).map(preview).toList();
-    final groupedDelivered = requests.where(isClosed).map(preview).toList();
+      final ordersWithTime = List<Map<String, dynamic>>.from(ready)
+        ..sort((a, b) {
+          final da = a['orderDate'] as DateTime? ?? a['etaExpiresAt'] as DateTime? ?? DateTime.now();
+          final db = b['orderDate'] as DateTime? ?? b['etaExpiresAt'] as DateTime? ?? DateTime.now();
+          return da.compareTo(db); // oldest first
+        });
 
-    // Oldest ready order: sort ascending by timestamp, skip orders whose
-    // timestamp could not be parsed (null) to avoid surfacing stale data.
-    final ordersWithTime = groupedReady
-        .where((o) => (o['_orderTimeDt'] as DateTime?) != null)
-        .toList()
-      ..sort((a, b) {
-        final da = a['_orderTimeDt'] as DateTime;
-        final db = b['_orderTimeDt'] as DateTime;
-        return da.compareTo(db); // oldest first
+      Map<String, dynamic>? oldestPreview;
+      if (ordersWithTime.isNotEmpty) {
+        final first = ordersWithTime.first;
+        oldestPreview = {
+          'orderNumber': first['orderNo'] ?? first['orderNumber'],
+          'roomNumber': first['roomNo'] ?? first['roomNumber'] ?? first['room'] ?? '—',
+          'guestName': first['customerName'] ?? first['guestName'] ?? '',
+          'orderTime': first['orderTime'] ?? first['time'],
+          '_orderTimeDt': first['orderDate'] ?? first['etaExpiresAt'],
+        };
+      }
+
+      setState(() {
+        _readyOrderCount       = ready.length;
+        _acceptedOrderCount    = accepted.length;
+        _deliveredOrderCount   = deliveredGrouped.length;
+        _oldestReadyOrder      = oldestPreview;
+        _deliveryCountsLoading = false;
       });
 
-    setState(() {
-      _readyOrderCount        = groupedReady.length;
-      _acceptedOrderCount     = groupedAccepted.length;
-      _deliveredOrderCount    = groupedDelivered.length;
-      _oldestReadyOrder       = ordersWithTime.isNotEmpty ? ordersWithTime.first : null;
-      _deliveryCountsLoading  = false;
-    });
-
-    TaskAlertService.resetDeliveryCount(_readyOrderCount);
+      TaskAlertService.resetDeliveryCount(_readyOrderCount);
+    } else {
+      setState(() => _deliveryCountsLoading = false);
+    }
   }
 
   // ── Accept task ───────────────────────────────────────────────────────────

@@ -192,14 +192,23 @@ Future<void> _showNotification(RemoteMessage message) async {
     return;
   }
 
-  // Load user departments to filter out irrelevant notifications
+  // Load user departments & role to filter out irrelevant notifications
   final depts = await UserSessionHelper.getDepartments();
+  final role = await UserSessionHelper.getRole();
   final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
-  final isRoomService = normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice"));
-  final isFoodBeverage = normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb"));
+  final isManagerOrAdmin = role != null && (
+    role.toLowerCase().contains("manager") ||
+    role.toLowerCase().contains("admin") ||
+    role.toLowerCase().contains("supervisor") ||
+    role.toLowerCase().contains("gm") ||
+    role.toLowerCase().contains("executive") ||
+    role.toLowerCase().contains("director")
+  );
+  final isRoomService = isManagerOrAdmin || normalized.isEmpty || normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice") || d.contains("delivery"));
+  final isFoodBeverage = isManagerOrAdmin || normalized.isEmpty || normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb") || d.contains("kitchen"));
   final isRoomServiceOrFnB = isRoomService || isFoodBeverage;
 
-  print('🎯 Foreground FCM | type=$type | depts=$normalized');
+  print('🎯 Foreground FCM | type=$type | role=$role | depts=$normalized | isRoomService=$isRoomService | isFnB=$isFoodBeverage');
 
   // ESCALATION_PULSE is a scheduler reminder, not a new escalation. Alerts
   // are event-driven: notify once for the escalation event and ignore later
@@ -277,8 +286,9 @@ Future<void> _showNotification(RemoteMessage message) async {
 
     case 'ACCEPTED':
     case 'SERVICE_TASK_ACCEPTED':
-      // Optimistically decrement and stop if count hits zero, keep looping if > 0
-      await TaskAlertService.stopOneServiceAlert();
+      // Cross-device hard stop: reset count to 0 so the foreground service
+      // stops on ALL devices the moment any device accepts the task.
+      TaskAlertService.resetServiceCount(0, reconcileAlert: true);
       TaskAlertService.notifyNewTask();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
@@ -322,47 +332,19 @@ Future<void> _showNotification(RemoteMessage message) async {
       break;
 
     case 'DELIVERY_ACCEPTED':
-      if (!isRoomService) return;
-      TaskAlertService.notifyNewDelivery();
-      break;
-
     case 'DELIVERY_DELIVERED':
       if (!isRoomService) return;
+      TaskAlertService.resetDeliveryCount(0, reconcileAlert: true);
       TaskAlertService.notifyNewDelivery();
       break;
 
     case 'PULSE':
-      final alertType = (data['alert_type'] ?? 'service').toString();
-      switch (alertType) {
-        case 'food':
-          if (!isRoomServiceOrFnB) return;
-          await OrderAlertService.ensureRunning();
-          OrderAlertService.notifyNewOrder();
-          break;
-        case 'delivery':
-          if (!isRoomService) return;
-          await TaskAlertService.ensureDeliveryRunning();
-          TaskAlertService.notifyNewDelivery();
-          break;
-        case 'service':
-        default:
-          await TaskAlertService.ensureServiceRunning();
-          TaskAlertService.notifyNewTask();
-          // Pulse means the task is still unaccepted — keep list fresh.
-          await AlertReloadCoordinator.instance.reloadTasks();
-          break;
-      }
-      break;
+      // Pulse concept safely removed: alerts are self-contained native loops until actioned.
+      return;
 
     case 'PENDING_ACCEPTANCE':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
-      break;
-
-    case 'ACCEPTED':
-      TaskAlertService.resetServiceCount(0);
-      TaskAlertService.notifyNewTask();
-      await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     default:

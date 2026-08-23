@@ -70,20 +70,38 @@ class HomeService {
         return {"success": false, "message": "Server error"};
       }
 
-      final status = response.data["STATUS"];
-      if (status == null || status.isEmpty || status[0]["status"] != "S") {
-        return {
-          "success": false,
-          "message": status?[0]["message"] ?? "Failed",
-        };
+      final rawData = response.data;
+      if (rawData == null) {
+        return {"success": false, "message": "Empty response"};
       }
 
-      final resultList = response.data["RESULT"];
-      if (resultList == null) {
+      // ScreenSync_get_all_services_mobile1 returns STATUS[] as the task rows
+      // (no separate sentinel object — STATUS IS the data).
+      // Fallback: if RESULT key exists and STATUS is a sentinel, use RESULT.
+      final dynamic statusRaw  = rawData["STATUS"];
+      final dynamic resultRaw  = rawData["RESULT"];
+
+      List taskList;
+      if (resultRaw != null && resultRaw is List) {
+        // Standard sentinel format: STATUS[0].status == "S", RESULT[] = data
+        final status = statusRaw as List?;
+        if (status != null && status.isNotEmpty &&
+            status[0] is Map && status[0]["status"] == "S") {
+          taskList = resultRaw;
+        } else {
+          final msg = (status != null && status.isNotEmpty && status[0] is Map)
+              ? (status[0]["message"] ?? "Failed")
+              : "Failed";
+          return {"success": false, "message": msg};
+        }
+      } else if (statusRaw != null && statusRaw is List && statusRaw.isNotEmpty) {
+        // Data-in-STATUS format: STATUS[] contains service request rows directly
+        taskList = statusRaw;
+      } else {
         return {"success": false, "message": "No tasks returned"};
       }
 
-      return {"success": true, "tasks": _mapTasks(resultList)};
+      return {"success": true, "tasks": _mapTasks(taskList)};
     } catch (e) {
       dev.log("ERROR (getTasks): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
@@ -119,20 +137,33 @@ class HomeService {
         return {"success": false, "message": "Server error"};
       }
 
-      final status = response.data["STATUS"];
-      if (status == null || status.isEmpty || status[0]["status"] != "S") {
-        return {
-          "success": false,
-          "message": status?[0]["message"] ?? "Failed",
-        };
+      final rawData = response.data;
+      if (rawData == null) {
+        return {"success": false, "message": "Empty response"};
       }
 
-      final resultList = response.data["RESULT"];
-      if (resultList == null) {
+      final dynamic statusRaw  = rawData["STATUS"];
+      final dynamic resultRaw  = rawData["RESULT"];
+
+      List taskList;
+      if (resultRaw != null && resultRaw is List) {
+        final status = statusRaw as List?;
+        if (status != null && status.isNotEmpty &&
+            status[0] is Map && status[0]["status"] == "S") {
+          taskList = resultRaw;
+        } else {
+          final msg = (status != null && status.isNotEmpty && status[0] is Map)
+              ? (status[0]["message"] ?? "Failed")
+              : "Failed";
+          return {"success": false, "message": msg};
+        }
+      } else if (statusRaw != null && statusRaw is List && statusRaw.isNotEmpty) {
+        taskList = statusRaw;
+      } else {
         return {"success": false, "message": "No tasks returned"};
       }
 
-      return {"success": true, "tasks": _mapTasks(resultList)};
+      return {"success": true, "tasks": _mapTasks(taskList)};
     } catch (e) {
       dev.log("ERROR (fetchTasksForRange): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};

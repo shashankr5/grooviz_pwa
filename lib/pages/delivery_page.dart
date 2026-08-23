@@ -13,6 +13,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../services/task_service.dart';
 import '../services/task_alert_service.dart';
+import '../services/food_order_service.dart';
+import '../utils/order_grouping.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/date_formatter.dart';
 import '../theme/app_colors.dart';
@@ -140,9 +142,6 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  /// Loads delivery work from the unified service-request API. A food order
-  /// becomes a Room Service request when Kitchen marks it Ready, so
-  /// [food_order_summary_id] is the reliable discriminator (not is_from_order).
   Future<void> _loadAllOrders() async {
     if (mounted) {
       setState(() {
@@ -152,7 +151,7 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     try {
-      final result = await TaskService().getAllServices();
+      final result = await FoodOrderService().getFoodOrders();
       if (!mounted) return;
       if (result['success'] != true) {
         setState(() {
@@ -161,11 +160,15 @@ class _DeliveryPageState extends State<DeliveryPage>
         return;
       }
 
-      final allRequests = (result['services'] as List? ?? const <dynamic>[])
-          .whereType<Map>()
-          .map((row) => Map<String, dynamic>.from(row))
-          .where(_isFoodDeliveryRequest)
-          .map(_toDeliveryOrder)
+      final List rawOrders = (result['orders'] as List? ?? []);
+      final grouped = groupFoodOrderRows(rawOrders);
+
+      final List deliveredRaw = (result['delivered'] as List? ?? []);
+      final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
+
+      final ready = grouped
+          .where((o) => (o['status'] ?? '').toString().toUpperCase() == 'READY')
+          .map(_fromFoodGroupedOrder)
           .toList()
         ..sort((a, b) {
           final aTime = a['_orderTimeDt'] as DateTime?;
@@ -176,9 +179,32 @@ class _DeliveryPageState extends State<DeliveryPage>
           return bTime.compareTo(aTime);
         });
 
-      final ready = allRequests.where((o) => o['uiStatus'] == 'Ready').toList();
-      final accepted = allRequests.where((o) => o['uiStatus'] == 'Accepted').toList();
-      final delivered = allRequests.where((o) => o['uiStatus'] == 'Delivered').toList();
+      final accepted = grouped
+          .where((o) =>
+              (o['status'] ?? '').toString().toUpperCase() == 'PREPARING' ||
+              (o['status'] ?? '').toString().toUpperCase() == 'IN PROGRESS')
+          .map(_fromFoodGroupedOrder)
+          .toList()
+        ..sort((a, b) {
+          final aTime = a['_orderTimeDt'] as DateTime?;
+          final bTime = b['_orderTimeDt'] as DateTime?;
+          if (aTime == null && bTime == null) return 0;
+          if (aTime == null) return 1;
+          if (bTime == null) return -1;
+          return bTime.compareTo(aTime);
+        });
+
+      final delivered = deliveredGrouped
+          .map(_fromFoodGroupedOrder)
+          .toList()
+        ..sort((a, b) {
+          final aTime = a['_orderTimeDt'] as DateTime?;
+          final bTime = b['_orderTimeDt'] as DateTime?;
+          if (aTime == null && bTime == null) return 0;
+          if (aTime == null) return 1;
+          if (bTime == null) return -1;
+          return bTime.compareTo(aTime);
+        });
 
       setState(() {
         readyOrders
@@ -200,8 +226,6 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   // ── Grouping & parsing ────────────────────────────────────────────────────
 
-  /// Parse order timestamp. Returns null (not DateTime(2000)) so callers can
-  /// distinguish "no timestamp" from "very old order".
   DateTime? _parseOrderTime(String? ts) {
     if (ts == null || ts.trim().isEmpty) return null;
     try {
@@ -216,62 +240,47 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
   }
 
-  bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
-    final foodSummaryId = request['food_order_summary_id'];
-    return foodSummaryId != null &&
-        foodSummaryId.toString().trim().isNotEmpty &&
-        foodSummaryId.toString() != '0';
-  }
-
-  List<Map<String, dynamic>> _parseOrderItems(dynamic value) {
-    try {
-      final decoded = value is String ? jsonDecode(value) : value;
-      if (decoded is! List) return const <Map<String, dynamic>>[];
-      return decoded.whereType<Map>().map((item) {
-        final row = Map<String, dynamic>.from(item);
+  Map<String, dynamic> _fromFoodGroupedOrder(Map<String, dynamic> grouped) {
+    final raw = grouped['raw'] is Map ? Map<String, dynamic>.from(grouped['raw']) : grouped;
+    final orderNo = (grouped['orderNo'] ?? grouped['orderNumber'] ?? '').toString();
+    final summaryId = grouped['summaryId'] ?? grouped['orderId'] ?? raw['summary_id'] ?? raw['order_id'];
+    final roomNo = (grouped['roomNo'] ?? grouped['roomNumber'] ?? grouped['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
+    final guestName = (grouped['customerName'] ?? grouped['guestName'] ?? raw['guest_name'] ?? '').toString();
+    final guestPhone = (grouped['customerNumber'] ?? raw['guest_phone'] ?? raw['customer_number'] ?? '').toString();
+    final status = (grouped['status'] ?? raw['order_status'] ?? '').toString();
+    final items = (grouped['items'] as List? ?? []).map((it) {
+      if (it is Map) {
         return {
-          'name': row['food_name'] ?? row['item_name'] ?? 'Food item',
-          'qty': row['quantity'] ?? 1,
-          // The current API does not expose dietary type. Do not incorrectly
-          // label every item non-vegetarian until the backend provides it.
-          'isVegKnown': row.containsKey('is_veg'),
-          'is_veg': row['is_veg'],
+          'name': (it['name'] ?? it['food_name'] ?? 'Item').toString(),
+          'qty': it['qty'] ?? it['quantity'] ?? 1,
+          'price': it['price'] ?? it['total_price'] ?? 0,
+          'is_veg': it['is_veg'],
+          'isVegKnown': it.containsKey('is_veg'),
         };
-      }).toList();
-    } catch (_) {
-      return const <Map<String, dynamic>>[];
-    }
-  }
+      }
+      return {'name': it.toString(), 'qty': 1, 'price': 0, 'is_veg': null, 'isVegKnown': false};
+    }).toList();
 
-  Map<String, dynamic> _toDeliveryOrder(Map<String, dynamic> raw) {
-    final status = (raw['status'] ?? '').toString().toLowerCase();
-    final isClosed = raw['closed'] == 1 || raw['closed'] == true || status == 'closed';
-    final isAccepted = status == 'in progress' || status == 'in_progress' ||
-        raw['accepted_at'] != null;
-    final uiStatus = isClosed ? 'Delivered' : (isAccepted ? 'Accepted' : 'Ready');
-    final createdAt = raw['food_order_created_at'] ?? raw['created_at'];
-    final readyAt = raw['food_order_ready_time'];
-    final displayTime = uiStatus == 'Ready' ? readyAt :
-        (uiStatus == 'Accepted' ? raw['accepted_at'] : raw['closed_at']);
-    final requestId = raw['service_request_id'];
+    final readyTime = raw['summary_ready_time'] ?? raw['ready_time'] ?? grouped['orderTime'] ?? raw['created_at'];
 
     return {
-      'serviceRequestId': requestId,
-      'orderNumber': raw['food_order_number'] ?? 'SR-$requestId',
-      'roomNumber': raw['room_number'] ?? raw['room_id'] ?? '—',
-      'guestName': raw['guest_name'] ?? '',
-      'items': _parseOrderItems(raw['order_items_json']),
-      'uiStatus': uiStatus,
-      'status': raw['status'],
-      'orderTime': displayTime?.toString(),
-      '_orderTimeDt': _parseOrderTime(displayTime?.toString() ?? createdAt?.toString()),
+      'summaryId': summaryId,
+      'serviceRequestId': raw['service_request_id'] ?? summaryId,
+      'orderNumber': orderNo,
+      'roomNumber': roomNo,
+      'guestName': guestName,
+      'guestPhone': guestPhone,
+      'items': items,
+      'totalAmount': grouped['totalAmount'] ?? raw['grand_total'] ?? raw['total_price'],
+      'uiStatus': status.toUpperCase() == 'DELIVERED' ? 'Delivered' : (status.toUpperCase() == 'READY' ? 'Ready' : 'Accepted'),
+      'status': status,
+      'orderTime': readyTime?.toString(),
+      '_orderTimeDt': _parseOrderTime(readyTime?.toString()),
       'raw': raw,
     };
   }
 
   // ── Derived lists ─────────────────────────────────────────────────────────
-  // Note: filteredOrders is kept for any future callers; _buildTabContent
-  // resolves its own list independently so TabBarView children are always correct.
 
   List<Map<String, dynamic>> get filteredOrders {
     switch (selectedFilter) {
@@ -290,16 +299,18 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   String? _actionLoadingOrderNo;
 
-  void _showGenericError() {
+  void _showGenericError([String? message]) {
     if (!mounted) return;
     AppSnackBar.show(
-        context, 'Something went wrong. Please try again.', isError: true);
+        context, message ?? 'Something went wrong. Please try again.', isError: true);
   }
 
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
     final orderNo = (order['orderNumber'] ?? '').toString();
+    final summaryId = order['summaryId'] ?? order['raw']?['summary_id'] ?? order['raw']?['order_id'];
     final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
-    if (_actionLoadingOrderNo != null || orderNo.isEmpty || serviceRequestId == null) {
+
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty) {
       _showGenericError();
       return;
     }
@@ -307,14 +318,33 @@ class _DeliveryPageState extends State<DeliveryPage>
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      final res = await TaskService().acceptServiceRequest(
-        serviceRequestId: serviceRequestId,
-      );
+      bool success = false;
+      String? errMsg;
+
+      if (summaryId != null) {
+        final parsedSummaryId = int.tryParse(summaryId.toString()) ?? 0;
+        final res = await FoodOrderService().acceptFoodOrder(summaryId: parsedSummaryId);
+        if (res['success'] == true || res['success'] == 1) {
+          success = true;
+        } else {
+          errMsg = res['message']?.toString();
+        }
+      }
+
+      if (!success && serviceRequestId != null) {
+        var res = await TaskService().acceptServiceRequest(serviceRequestId: serviceRequestId);
+        if (res['success'] != true && res['success'] != 1) {
+          res = await TaskService().updateServiceRequestStatus(serviceRequestId: serviceRequestId, status: 'IN_PROGRESS');
+        }
+        if (res['success'] == true || res['success'] == 1) {
+          success = true;
+        }
+      }
 
       if (!mounted) return;
 
-      if (res['success'] != true && res['success'] != 1) {
-        _showGenericError();
+      if (!success) {
+        _showGenericError(errMsg);
         return;
       }
 
@@ -323,7 +353,6 @@ class _DeliveryPageState extends State<DeliveryPage>
 
       if (!mounted) return;
 
-      // Switch tab ONLY AFTER API call succeeds and data reloads
       setState(() {
         selectedFilter = 'Accepted';
         _tabController.animateTo(1);
@@ -340,8 +369,10 @@ class _DeliveryPageState extends State<DeliveryPage>
     if (confirm != true) return;
 
     final orderNo = (order['orderNumber'] ?? '').toString();
+    final summaryId = order['summaryId'] ?? order['raw']?['summary_id'] ?? order['raw']?['order_id'];
     final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
-    if (_actionLoadingOrderNo != null || orderNo.isEmpty || serviceRequestId == null) {
+
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty) {
       _showGenericError();
       return;
     }
@@ -349,14 +380,36 @@ class _DeliveryPageState extends State<DeliveryPage>
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      final res = await TaskService().closeService(
-        serviceRequestId: serviceRequestId,
-      );
+      bool success = false;
+      String? errMsg;
+
+      if (summaryId != null) {
+        final parsedSummaryId = int.tryParse(summaryId.toString()) ?? 0;
+        final res = await FoodOrderService().updateFoodOrderStatus(
+          summaryId: parsedSummaryId,
+          status: 'Delivered',
+        );
+        if (res['success'] == true || res['success'] == 1) {
+          success = true;
+        } else {
+          errMsg = res['message']?.toString();
+        }
+      }
+
+      if (!success && serviceRequestId != null) {
+        var res = await TaskService().closeService(serviceRequestId: serviceRequestId);
+        if (res['success'] != true && res['success'] != 1) {
+          res = await TaskService().updateServiceRequestStatus(serviceRequestId: serviceRequestId, status: 'CLOSED');
+        }
+        if (res['success'] == true || res['success'] == 1) {
+          success = true;
+        }
+      }
 
       if (!mounted) return;
 
-      if (res['success'] != true && res['success'] != 1) {
-        _showGenericError();
+      if (!success) {
+        _showGenericError(errMsg);
         return;
       }
 
@@ -364,7 +417,6 @@ class _DeliveryPageState extends State<DeliveryPage>
 
       if (!mounted) return;
 
-      // Switch tab ONLY AFTER API call succeeds and data reloads
       setState(() {
         selectedFilter = 'Delivered';
         _tabController.animateTo(2);
@@ -916,7 +968,6 @@ class _DeliveryPageState extends State<DeliveryPage>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Circle icon — same 48px icon size as home_page empty states
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(color: circleBg, shape: BoxShape.circle),
@@ -940,8 +991,7 @@ class _DeliveryPageState extends State<DeliveryPage>
     );
   }
 
-  /// Premium order card — Room number as visual anchor, receipt-style items,
-  /// graduated urgency colors, confident action buttons
+  /// Order card — visually and structurally identical to FoodOrdersPage._buildOrderCard()
   Widget _buildPremiumOrderCard(Map<String, dynamic> order) {
     final items = order['items'] as List;
     final uiStatus = order['uiStatus'] as String;
@@ -949,314 +999,350 @@ class _DeliveryPageState extends State<DeliveryPage>
     final roomNo = (order['roomNumber'] ?? '—').toString();
     final orderNo = (order['orderNumber'] ?? '—').toString();
     final orderTime = order['orderTime'] as String?;
-    final orderTimeDt = order['_orderTimeDt'] as DateTime?;
+    final isTimelineExpanded = _expandedTimelineOrders.contains(orderNo);
 
-    // Color scheme per status
+    // Color scheme per status matching FoodOrdersPage
     Color statusColor;
-    Color roomBgColor;
-    Color roomTextColor;
-
     switch (uiStatus) {
       case 'Ready':
         statusColor = AppColors.orange;
-        roomBgColor = AppColors.orangeLight;
-        roomTextColor = AppColors.orange;
         break;
       case 'Accepted':
         statusColor = AppColors.info;
-        roomBgColor = AppColors.infoLight;
-        roomTextColor = AppColors.info;
         break;
       case 'Delivered':
         statusColor = AppColors.success;
-        roomBgColor = AppColors.successLight;
-        roomTextColor = AppColors.success;
         break;
       default:
         statusColor = AppColors.textDisabled;
-        roomBgColor = AppColors.surfaceAlt;
-        roomTextColor = AppColors.textSecondary;
     }
 
-    // Graduated urgency for Ready orders
-    final urgency = _elapsedWithUrgency(orderTimeDt);
-
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.borderLight, width: 1.5),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: AppColors.shadow,
-            blurRadius: 6,
-            offset: const Offset(0, 2),
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Header row: Room badge + Status + Order# + Time ──────────
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Compact Room badge matching HomePage style
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: roomBgColor,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text('Room ',
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Header Row: Room badge on left, Status + #ORD + Date on right ──
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          "Room ",
                           style: TextStyle(
-                              fontSize: 12,
-                              color: roomTextColor.withOpacity(0.8),
-                              fontWeight: FontWeight.w600)),
-                      Text(
-                        roomNo,
-                        style: TextStyle(
+                            fontSize: 15,
+                            color: Colors.indigo,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          roomNo,
+                          style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
-                            color: roomTextColor),
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                // Status + Order# + Time column
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    _statusPill(uiStatus, statusColor),
-                    const SizedBox(height: 4),
-                    Text(
-                      '#$orderNo',
-                      style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textPrimary),
+                            color: Colors.indigo,
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 2),
-                    // Formatted timestamp (DD/MM/YYYY • H:MM AM/PM)
-                    if (orderTime != null && orderTime.isNotEmpty)
-                      Row(
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _buildStatusChip(uiStatus, statusColor),
+                        const SizedBox(height: 6),
+                        Text(
+                          '#$orderNo',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (orderTime != null && orderTime.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              const Icon(Icons.calendar_today_rounded,
+                                  size: 11, color: AppColors.textDisabled),
+                              const SizedBox(width: 3),
+                              Text(
+                                DateFormatter.formatDateTimeAmPm(orderTime),
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // ── Guest name + Timeline toggle ──
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: const BoxDecoration(
+                      color: AppColors.surfaceAlt,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.person_rounded,
+                        size: 13, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      guestName.isNotEmpty ? guestName : "Guest",
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () {
+                      setState(() {
+                        if (_expandedTimelineOrders.contains(orderNo)) {
+                          _expandedTimelineOrders.remove(orderNo);
+                        } else {
+                          _expandedTimelineOrders.add(orderNo);
+                        }
+                      });
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: isTimelineExpanded ? AppColors.primaryLight : AppColors.surfaceAlt,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isTimelineExpanded
+                              ? AppColors.primary.withValues(alpha: 0.3)
+                              : AppColors.borderLight,
+                        ),
+                      ),
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.access_time_rounded,
-                              size: 11, color: AppColors.textSecondary),
-                          const SizedBox(width: 3),
+                          Icon(
+                            Icons.timeline_rounded,
+                            size: 13,
+                            color: isTimelineExpanded ? AppColors.primary : AppColors.textSecondary,
+                          ),
+                          const SizedBox(width: 4),
                           Text(
-                            DateFormatter.formatDateTimeAmPm(orderTime),
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppColors.textSecondary),
+                            "Timeline",
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: isTimelineExpanded ? AppColors.primary : AppColors.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            isTimelineExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                            size: 14,
+                            color: isTimelineExpanded ? AppColors.primary : AppColors.textSecondary,
                           ),
                         ],
                       ),
-                  ],
+                    ),
+                  ),
+                ],
+              ),
+
+              if (isTimelineExpanded) ...[
+                const SizedBox(height: 8),
+                _buildDeliveryLifecycleStepper(order),
+              ],
+
+              const Divider(height: 16, color: AppColors.borderLight),
+
+              // ── Order Items Header ──
+              const Row(
+                children: [
+                  Icon(Icons.restaurant_menu_rounded,
+                      size: 13, color: AppColors.textDisabled),
+                  SizedBox(width: 5),
+                  Text("Order Items",
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textDisabled,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+              const SizedBox(height: 7),
+
+              // ── Order Items List ──
+              ...items.map<Widget>((item) {
+                final isVegKnown = item['isVegKnown'] == true;
+                final isVeg = resolveIsVeg(item['is_veg']);
+                final name = (item['name'] ?? '').toString();
+                final qty = item['qty'];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 5),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      if (isVegKnown) ...[
+                        vegIndicator(isVeg),
+                        const SizedBox(width: 7),
+                      ],
+                      Expanded(
+                        child: Text(
+                          name,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceAlt,
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                        child: Text(
+                          '$qty',
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+
+              // ── Action Buttons ──
+              if (uiStatus == 'Ready') ...[
+                const SizedBox(height: 12),
+                _actionButton(
+                  text: 'Accept Order',
+                  icon: Icons.check_circle_rounded,
+                  color: AppColors.success,
+                  isLoading: _actionLoadingOrderNo == orderNo,
+                  onTap: () => _acceptOrder(order),
+                ),
+              ] else if (uiStatus == 'Accepted') ...[
+                const SizedBox(height: 12),
+                _actionButton(
+                  text: 'Mark as Delivered',
+                  icon: Icons.task_alt_rounded,
+                  color: AppColors.primary,
+                  isLoading: _actionLoadingOrderNo == orderNo,
+                  onTap: () => _deliverOrder(order),
                 ),
               ],
-            ),
-
-            // ── Guest name (if present) ───────────────────────────────────
-            if (guestName.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Row(children: [
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                      color: AppColors.surfaceAlt, shape: BoxShape.circle),
-                  child: const Icon(Icons.person_rounded,
-                      size: 12, color: AppColors.textSecondary),
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    guestName,
-                    style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textSecondary),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ]),
             ],
-
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Divider(height: 1, color: AppColors.borderLight),
-            ),
-
-            // ── Items header ──────────────────────────────────────────────
-            const Row(children: [
-              Icon(Icons.receipt_long_rounded,
-                  size: 12, color: AppColors.textSecondary),
-              SizedBox(width: 4),
-              Text('Order Items',
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: AppColors.textSecondary,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5)),
-            ]),
-            const SizedBox(height: 6),
-
-            // ── Receipt-style items list ──────────────────────────────────
-            ...items.map<Widget>((item) {
-              final isVegKnown = item['isVegKnown'] == true;
-              final isVeg = resolveIsVeg(item['is_veg']);
-              final name = (item['name'] ?? '').toString();
-              final qty = item['qty'];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (isVegKnown) ...[
-                      vegIndicator(isVeg),
-                      const SizedBox(width: 8),
-                    ],
-                    Expanded(
-                      child: Text(
-                        name,
-                        style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary,
-                            height: 1.2),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                          color: AppColors.surfaceAlt,
-                          borderRadius: BorderRadius.circular(6)),
-                      child: Text('×$qty',
-                          style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textPrimary)),
-                    ),
-                  ],
-                ),
-              );
-            }),
-
-            const SizedBox(height: 4),
-            _buildTimelineToggle(order),
-            if (_expandedTimelineOrders.contains(orderNo))
-              _buildDeliveryLifecycleStepper(order),
-
-            // ── Action buttons ───────────────────────────────────────────
-            const SizedBox(height: 8),
-            if (uiStatus == 'Ready')
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed:
-                      _actionLoadingOrderNo == orderNo ? null : () => _acceptOrder(order),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.success,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 11),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: _actionLoadingOrderNo == orderNo
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.check_circle_rounded, size: 16),
-                            SizedBox(width: 6),
-                            Text('Accept Order',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w700, fontSize: 13)),
-                          ],
-                        ),
-                ),
-              ),
-            if (uiStatus == 'Accepted')
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed:
-                      _actionLoadingOrderNo == orderNo ? null : () => _deliverOrder(order),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 11),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: _actionLoadingOrderNo == orderNo
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.task_alt_rounded, size: 16),
-                            SizedBox(width: 6),
-                            Text('Mark as Delivered',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w700, fontSize: 13)),
-                          ],
-                        ),
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildTimelineToggle(Map<String, dynamic> order) {
-    final orderNo = (order['orderNumber'] ?? '').toString();
-    final expanded = _expandedTimelineOrders.contains(orderNo);
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: TextButton.icon(
-        onPressed: () => setState(() {
-          if (expanded) {
-            _expandedTimelineOrders.remove(orderNo);
-          } else {
-            _expandedTimelineOrders.add(orderNo);
-          }
-        }),
-        icon: Icon(
-          Icons.timeline_rounded,
-          size: 16,
-          color: expanded ? AppColors.primary : AppColors.textSecondary,
+  Widget _buildStatusChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.3), width: 1),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
         ),
-        label: Text(expanded ? 'Hide timeline' : 'View timeline'),
-        style: TextButton.styleFrom(
-          foregroundColor: expanded ? AppColors.primary : AppColors.textSecondary,
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  Widget _actionButton({
+    required String text,
+    required IconData icon,
+    required Color color,
+    VoidCallback? onTap,
+    bool isLoading = false,
+  }) {
+    return GestureDetector(
+      onTap: isLoading ? null : onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(13),
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (isLoading)
+              const SizedBox(
+                width: 15,
+                height: 15,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            else ...[
+              Icon(icon, color: Colors.white, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

@@ -56,12 +56,17 @@ class TaskService {
 
   /// Fetches all service department requests using
   /// ScreenSync_get_all_services_mobile1.
+  ///
+  /// Response format: STATUS[] contains service request rows directly
+  /// (no RESULT key, no sentinel object).  Also handles the sentinel
+  /// format (STATUS[0].status == 'S', RESULT[] = data rows) as a
+  /// fallback so any future backend change is handled gracefully.
   Future<Map<String, dynamic>> getAllServices({String stage = AppConfig.stage}) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       final enterpriseId = await UserSessionHelper.getEnterpriseId();
       if (userId == null) {
-        return {'success': false, 'message': 'User session not found'};
+        return {'success': false, 'message': 'User session not found', 'services': []};
       }
 
       final response = await _dio.post(
@@ -73,25 +78,38 @@ class TaskService {
         },
       );
 
-      final data = response.data;
-      List<dynamic> statusList = data['STATUS'] ?? [];
-      List<dynamic> resultList = data['RESULT'] ?? [];
+      final data = response.data as Map? ?? const {};
 
-      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
-        return {
-          'success': true,
-          'message': statusList[0]['message'] ?? 'Success',
-          'services': resultList,
-        };
+      // ScreenSync_get_all_services_mobile1 has two response formats:
+      //  1. Data-in-STATUS: STATUS[] contains service rows directly (no RESULT, no sentinel)
+      //  2. Sentinel format: STATUS[0].status == 'S', RESULT[] contains rows
+      final dynamic statusRaw = data['STATUS'];
+      final dynamic resultRaw = data['RESULT'];
+
+      List<dynamic> serviceRows;
+      if (resultRaw is List) {
+        // Sentinel format: check STATUS[0].status == 'S', then use RESULT
+        final statusList = statusRaw is List ? statusRaw : const <dynamic>[];
+        if (statusList.isNotEmpty &&
+            statusList[0] is Map &&
+            statusList[0]['status'] == 'S') {
+          serviceRows = resultRaw;
+        } else {
+          final msg = (statusList.isNotEmpty && statusList[0] is Map)
+              ? (statusList[0]['message'] ?? 'Failed to fetch services')
+              : 'Failed to fetch services';
+          return {'success': false, 'message': msg, 'services': []};
+        }
+      } else if (statusRaw is List && statusRaw.isNotEmpty) {
+        // Data-in-STATUS format: STATUS rows ARE the service requests
+        serviceRows = statusRaw;
       } else {
-        return {
-          'success': false,
-          'message': statusList.isNotEmpty ? statusList[0]['message'] : 'Failed to fetch services',
-          'services': [],
-        };
+        return {'success': false, 'message': 'Failed to fetch services', 'services': []};
       }
+
+      return {'success': true, 'message': 'Success', 'services': serviceRows};
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (getAllServices): $e");
+      dev.log('ERROR (getAllServices): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -130,7 +148,7 @@ class TaskService {
 
       final data = response.data;
       List<dynamic> statusList = data['STATUS'] ?? [];
-      
+
       if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
         return {
           'success': true,
@@ -143,7 +161,7 @@ class TaskService {
         };
       }
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (acceptServiceOrder): $e");
+      dev.log('ERROR (acceptServiceOrder): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -151,26 +169,26 @@ class TaskService {
     }
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Update service request status (Accept / Close) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ── Update service request status (Accept / Close) ─────────────────────────
   //
   // Canonical action method for ALL status transitions on a service request:
-  //   Ã¢â‚¬Â¢ status = "IN_PROGRESS" Ã¢â€ â€™ Staff/Supervisor accepts the task
-  //   Ã¢â‚¬Â¢ status = "CLOSED"      Ã¢â€ â€™ Any authorised user closes the task
+  //   • status = "IN_PROGRESS" → Staff/Supervisor accepts the task
+  //   • status = "CLOSED"      → Any authorised user closes the task
   //
   // SP: ScreenSync_update_service_request_status_mobile
-  // The SP handles escalation resolution atomically Ã¢â‚¬â€ do NOT call
+  // The SP handles escalation resolution atomically — do NOT call
   // EscalationService.resolveEscalation() after this method.
   //
   // Returns:
   //   success              bool
   //   message              String
   //   current_status       "In Progress" | "Closed"
-  //   escalation_status    String? Ã¢â‚¬â€ updated escalation state from SP
-  //   next_escalation_at   String? Ã¢â‚¬â€ null when task accepted/closed
+  //   escalation_status    String? — updated escalation state from SP
+  //   next_escalation_at   String? — null when task accepted/closed
   //   closed_by_user_name  String?
   //   current_assigned_to  String?
   //   accepted_by_user_name String?
-  //   status_data          Map    Ã¢â‚¬â€ full STATUS[0] row for any extra SP fields
+  //   status_data          Map    — full STATUS[0] row for any extra SP fields
   Future<Map<String, dynamic>> updateServiceRequestStatus({
     required int serviceRequestId,
     required String status,    // "IN_PROGRESS" | "CLOSED"
@@ -183,7 +201,7 @@ class TaskService {
         return {'success': false, 'message': 'User session not found'};
       }
 
-      dev.log("Ã°Å¸â€œÂ¤ updateServiceRequestStatus: sr=$serviceRequestId status=$status");
+      dev.log('📤 updateServiceRequestStatus: sr=$serviceRequestId status=$status');
 
       final response = await _dio.post(
         ApiConstants.updateServiceRequestStatus,
@@ -228,7 +246,7 @@ class TaskService {
           normalised = rawCurrentStatus;
       }
 
-      dev.log("Ã¢Å“â€¦ updateServiceRequestStatus: sr=$serviceRequestId Ã¢â€ â€™ $normalised");
+      dev.log('✅ updateServiceRequestStatus: sr=$serviceRequestId → $normalised');
 
       return {
         'success':               true,
@@ -242,7 +260,7 @@ class TaskService {
         'status_data':           sd, // full STATUS[0] row
       };
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (updateServiceRequestStatus): $e");
+      dev.log('ERROR (updateServiceRequestStatus): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -271,7 +289,7 @@ class TaskService {
         'service_request_id': serviceRequestId,
       };
 
-      dev.log("Ã°Å¸â€œÂ¤ acceptServiceRequest: $payload");
+      dev.log('📤 acceptServiceRequest: $payload');
 
       final response = await _dio.post(
         ApiConstants.acceptServiceRequest,
@@ -289,7 +307,7 @@ class TaskService {
         final flag = statusMap['status']?.toString().toUpperCase();
         final message = statusMap['message']?.toString() ?? 'Service request accepted successfully';
         if (flag == 'S') {
-          dev.log("Ã¢Å“â€¦ acceptServiceRequest success: $message");
+          dev.log('✅ acceptServiceRequest success: $message');
           // RESULT2 is the assignment/audit result set returned by
           // accept_service_request_mobile1. Keep it available for the UI.
           final rawAssignment =
@@ -321,7 +339,7 @@ class TaskService {
         'message': 'Invalid server response from accept endpoint',
       };
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (acceptServiceRequest): $e");
+      dev.log('ERROR (acceptServiceRequest): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -349,7 +367,7 @@ class TaskService {
         'reassign_to':        reassignTo,
       };
 
-      dev.log("Ã°Å¸â€œÂ¤ reassignService: $payload");
+      dev.log('📤 reassignService: $payload');
 
       final response = await _dio.post(
         ApiConstants.reassignService,
@@ -367,7 +385,7 @@ class TaskService {
         final flag = statusMap['status']?.toString().toUpperCase();
         final message = statusMap['message']?.toString() ?? 'Task reassigned successfully';
         if (flag == 'S') {
-          dev.log("Ã¢Å“â€¦ reassignService success: $message");
+          dev.log('✅ reassignService success: $message');
           final rawUpdate = data['RESULT2'] ?? data['RESULT'] ?? data['ASSIGNMENT'];
           final updateRows = rawUpdate is List
               ? rawUpdate
@@ -397,7 +415,7 @@ class TaskService {
         'message': 'Invalid server response from reassign endpoint',
       };
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (reassignService): $e");
+      dev.log('ERROR (reassignService): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -445,7 +463,7 @@ class TaskService {
         };
       }
     } catch (e) {
-      dev.log("Ã¢ÂÅ’ ERROR (addServiceNote): $e");
+      dev.log('ERROR (addServiceNote): $e');
       return {
         'success': false,
         'message': ErrorHandler.friendlyMessage(e),
@@ -500,9 +518,8 @@ class TaskService {
         'data': details,
       };
     } catch (e) {
-      dev.log("Close service mobile1 failed: $e");
+      dev.log('Close service mobile1 failed: $e');
       return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
     }
   }
 }
-

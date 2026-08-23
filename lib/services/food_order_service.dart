@@ -1,20 +1,18 @@
 // services/food_order_service.dart
 //
-// CHANGES IN THIS VERSION (v1 migration):
+// All methods are now on v1 endpoints:
 //  • getFoodOrders()        → getFoodOrdersV1() using ScreenSync_get_food_orders_mobile1
-//  • acceptFoodOrder()      → NEW, using ScreenSync_accept_food_order_mobile1 (uses order_id/summary_id)
-//  • updateFoodOrderStatus()→ updateFoodOrderStatusV1() using ScreenSync_update_food_order_mobile1
-//  • tapEta()               → NEW, using ScreenSync_update_food_tap_count (uses order_id/summary_id)
-//  • setRushHour()          → setRushHourV1() using ScreenSync_set_rush_hour_state_mobile (no duration)
+//  • acceptFoodOrder()      → ScreenSync_accept_food_order_mobile1 (uses order_id/summary_id)
+//  • updateFoodOrderStatus()→ ScreenSync_update_food_order_mobile1
+//  • tapEta()               → ScreenSync_update_food_tap_count (uses order_id/summary_id)
+//  • setRushHour()          → ScreenSync_set_rush_hour_state_mobile
 //  • getRushHourState()     → reads from SharedPreferences; server only on cache-miss
-//  • getOrderSummary()      → unchanged (not yet migrated, still uses old endpoint)
+//  • getOrderSummary()      → ScreenSync_get_food_orders_mobile1 (date filter applied client-side)
 //
-// KEY CONTRACT CHANGES vs. old service:
+// KEY CONTRACT:
 //  • get_food_orders_mobile1 only needs user_id (enterprise derived server-side)
 //  • accept / update / tap all use order_id (summary_id), NOT order_number
-//  • accept Lambda returns STATUS only — no RESULT row is returned
-//  • update Lambda returns STATUS only — no RESULT row is returned
-//  • set_rush_hour Lambda returns STATUS only with response JSON body
+//  • accept / update Lambdas return STATUS only — no RESULT row
 //  • stage is MANDATORY in every payload — Lambda fails if missing
 
 import 'dart:developer' as dev;
@@ -178,18 +176,41 @@ class FoodOrderService {
 
       dev.log("📥 Raw Accept Response: ${response.data}");
 
-      // Lambda returns { STATUS: results[0] } only
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
+      // ScreenSync_accept_food_order_mobile1 returns:
+      //   { "RESULT": [{ "status": "S", "message": "...", ... }] }
+      // NOT a STATUS key — check RESULT first, then fall back to STATUS.
+      final rawResult = response.data["RESULT"];
+      final rawStatus = response.data["STATUS"];
+
+      List? sentinelList;
+      if (rawResult is List && rawResult.isNotEmpty) {
+        sentinelList = rawResult; // normal: RESULT contains the sentinel
+      } else if (rawStatus is List && rawStatus.isNotEmpty) {
+        sentinelList = rawStatus; // fallback: STATUS contains the sentinel
+      }
+
+      if (sentinelList == null || sentinelList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final flag    = (statusList[0]["status"] ?? "F").toString();
-      final message = (statusList[0]["message"] ?? "Unknown error").toString();
+      final flag    = (sentinelList[0]["status"] ?? "F").toString();
+      final message = (sentinelList[0]["message"] ?? "Unknown error").toString();
+
+      if (flag != "S") {
+        return {"success": false, "message": message};
+      }
+
+      // Extract enriched accept data for the UI (ETA, accepted_user_id, etc.)
+      final resultRow = rawResult is List && rawResult.isNotEmpty
+          ? Map<String, dynamic>.from(rawResult[0] as Map)
+          : <String, dynamic>{};
 
       return {
-        "success": flag == "S",
-        "message": message,
+        "success":     true,
+        "message":     message,
+        "summaryId":   resultRow["summary_id"],
+        "orderStatus": resultRow["order_status"],
+        "etaTime":     resultRow["eta_time"],
       };
     } catch (e, stack) {
       dev.log("❌ ERROR (acceptFoodOrder v1): $e");
@@ -239,13 +260,22 @@ class FoodOrderService {
 
       dev.log("📥 Raw Update Response: ${response.data}");
 
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
+      final rawResult = response.data["RESULT"];
+      final rawStatus = response.data["STATUS"];
+
+      List? sentinelList;
+      if (rawResult is List && rawResult.isNotEmpty) {
+        sentinelList = rawResult;
+      } else if (rawStatus is List && rawStatus.isNotEmpty) {
+        sentinelList = rawStatus;
+      }
+
+      if (sentinelList == null || sentinelList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final flag    = (statusList[0]["status"] ?? "F").toString();
-      final message = (statusList[0]["message"] ?? "Unknown error").toString();
+      final flag    = (sentinelList[0]["status"] ?? "F").toString();
+      final message = (sentinelList[0]["message"] ?? "Unknown error").toString();
 
       return {
         "success": flag == "S",
@@ -298,22 +328,31 @@ class FoodOrderService {
 
       dev.log("📥 Raw Tap ETA Response: ${response.data}");
 
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
+      final rawResult = response.data["RESULT"];
+      final rawStatus = response.data["STATUS"];
+
+      List? sentinelList;
+      if (rawResult is List && rawResult.isNotEmpty) {
+        sentinelList = rawResult;
+      } else if (rawStatus is List && rawStatus.isNotEmpty) {
+        sentinelList = rawStatus;
+      }
+
+      if (sentinelList == null || sentinelList.isEmpty) {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final flag    = (statusList[0]["status"] ?? "F").toString();
-      final message = (statusList[0]["message"] ?? "Unknown error").toString();
+      final flag    = (sentinelList[0]["status"] ?? "F").toString();
+      final message = (sentinelList[0]["message"] ?? "Unknown error").toString();
 
       if (flag != "S") {
         return {"success": false, "message": message};
       }
 
       // RESULT[0] has the updated tap state
-      final resultList = response.data["RESULT"] as List?;
-      final result     = resultList != null && resultList.isNotEmpty
-          ? Map<String, dynamic>.from(resultList.first)
+      final resultList = rawResult is List ? rawResult : rawStatus as List;
+      final result     = resultList.isNotEmpty
+          ? Map<String, dynamic>.from(resultList.first as Map)
           : <String, dynamic>{};
 
       return {
@@ -441,34 +480,34 @@ class FoodOrderService {
     }
   }
 
-  // ── GET ORDER SUMMARY (unchanged — not yet migrated) ─────────────────────
+  // ── GET ORDER SUMMARY (v1 — migrated from ScreenSync_get_order_summary_mobile) ──
+  // Uses getFoodOrdersV1 (ScreenSync_get_food_orders_mobile1) which returns all
+  // historical orders including Delivered and Cancelled rows.
+  //
+  // When [date] is provided, the returned orders are filtered client-side to
+  // that calendar day (daily view). When [date] is null the full result set is
+  // returned for weekly-aggregate calculation in the caller.
+  //
+  // Summary aggregates (weeklyTotal, weeklyCancelled) are derived from the RESULT
+  // rows rather than a separate server-side summary object.
 
   Future<Map<String, dynamic>> getOrderSummary({DateTime? date}) async {
     try {
-      final int? enterpriseId = await UserSessionHelper.getEnterpriseId();
-      final int? userId       = await UserSessionHelper.getUserId();
-
-      if (enterpriseId == null || enterpriseId == 0) {
-        return {"success": false, "message": "Enterprise ID missing"};
-      }
+      final int? userId = await UserSessionHelper.getUserId();
       if (userId == null || userId == 0) {
         return {"success": false, "message": "User ID missing"};
       }
 
       final payload = {
-        "enterprise_id": enterpriseId,
-        "user_id":       userId,
-        if (date != null)
-          "date": "${date.year}-${date.month.toString().padLeft(2, '0')}"
-                  "-${date.day.toString().padLeft(2, '0')}",
-        "stage": AppConfig.stage,
+        "user_id": userId,
+        "stage":   AppConfig.stage,
       };
 
-      dev.log("📤 Fetching Order Summary");
+      dev.log("📤 Fetching Order Summary (v1)");
+      dev.log("Payload: $payload");
 
-      // Uses old endpoint — not yet v1 migrated
       final response = await _dio.post(
-        "$baseUrl/ScreenSync_get_order_summary_mobile",
+        ApiConstants.getFoodOrdersV1,
         data: payload,
       );
 
@@ -483,39 +522,82 @@ class FoodOrderService {
         return {"success": false, "message": "Invalid server response"};
       }
 
-      final statusFlag     = statusList[0]["status"];
-      final responseString = statusList[0]["response"];
-
-      if (statusFlag != "S" || responseString == null) {
-        return {"success": false, "message": "Failed to fetch order summary"};
+      final statusFlag = (statusList[0]["status"] ?? "F").toString();
+      if (statusFlag != "S") {
+        return {
+          "success": false,
+          "message": statusList[0]["message"] ?? "Failed to fetch order summary",
+        };
       }
 
-      final decoded   = jsonDecode(responseString);
-      final summary   = decoded["summary"] ?? {};
-      final ordersRaw = decoded["orders"]  as List? ?? [];
+      final resultList = (response.data["RESULT"] ?? []) as List;
+
+      // Map every row from the v1 flat structure into the shape the Order
+      // History page and its widgets expect.
+      final allMapped = resultList.map<Map<String, dynamic>>((o) {
+        final m            = Map<String, dynamic>.from(o);
+        final foodItemName = m["food_name"] ?? m["food_item"] ?? "-";
+        final statusVal    = m["order_status"] ?? m["status"] ?? "Pending";
+        final orderTimeVal = m["created_at"] ?? m["order_time"];
+
+        return {
+          "summaryId":      _safeInt(m["summary_id"]),
+          "orderRequestId": m["order_request_id"],
+          "orderNumber":    m["order_number"]  ?? "-",
+          "roomNumber":     m["room_number"]   ?? "-",
+          "roomId":         m["room_id"],
+          "guestName":      m["guest_name"]    ?? "Guest",
+          "foodItem":       foodItemName,
+          "quantity":       m["quantity"]      ?? 0,
+          "status":         _statusText(statusVal),
+          "cancelReason":   m["cancel_reason"] ?? "",
+          "orderTime":      _formatTime(orderTimeVal?.toString()),
+          "raw": {
+            ...m,
+            // Ensure keys the analytics model reads are present
+            "order_time":        orderTimeVal,
+            "created_at":        orderTimeVal,
+            "status_changed_at": m["status_changed_at"],
+            "cancel_reason":     m["cancel_reason"] ?? "",
+          },
+        };
+      }).toList();
+
+      // ── Client-side date filter ──────────────────────────────────────────
+      List<Map<String, dynamic>> filteredOrders;
+      if (date != null) {
+        filteredOrders = allMapped.where((o) {
+          final rawTime = o["raw"]["order_time"] ?? o["raw"]["created_at"];
+          final dt = rawTime is DateTime
+              ? rawTime
+              : DateTime.tryParse(rawTime?.toString() ?? "");
+          if (dt == null) return false;
+          return dt.year == date.year &&
+              dt.month == date.month &&
+              dt.day == date.day;
+        }).toList();
+      } else {
+        filteredOrders = allMapped;
+      }
+
+      // ── Derive summary aggregates from rows ──────────────────────────────
+      final int weeklyTotal = allMapped.length;
+      final int weeklyCancelled = allMapped.where((o) {
+        final s = (o["status"] ?? "").toString().toUpperCase();
+        return s == "CANCELLED" || s == "CANCELED";
+      }).length;
 
       return {
         "success": true,
-        "message": decoded["message"] ?? "Success",
-        "summary": summary,
-        "orders":  ordersRaw.map<Map<String, dynamic>>((o) {
-          final m = Map<String, dynamic>.from(o);
-          return {
-            "orderRequestId": m["order_request_id"],
-            "orderNumber":    m["order_number"],
-            "roomNumber":     m["room_number"],
-            "roomId":         m["room_id"],
-            "guestName":      m["guest_name"] ?? "Guest",
-            "foodItem":       m["food_item"],
-            "quantity":       m["quantity"],
-            "status":         _statusText(m["order_status"]),
-            "orderTime":      _formatTime(m["order_time"]),
-            "raw":            m,
-          };
-        }).toList(),
+        "message": statusList[0]["message"] ?? "Success",
+        "summary": {
+          "weeklyTotal":     weeklyTotal,
+          "weeklyCancelled": weeklyCancelled,
+        },
+        "orders": filteredOrders,
       };
     } catch (e, stack) {
-      dev.log("❌ ERROR (getOrderSummary): $e");
+      dev.log("❌ ERROR (getOrderSummary v1): $e");
       dev.log("❌ Stack: $stack");
       return {"success": false, "message": "Network error"};
     }
@@ -638,7 +720,4 @@ class FoodOrderService {
   static String _formatTime(String? timestamp) {
     return DateFormatter.formatDateTimeAmPm(timestamp);
   }
-
-  // Internal base URL copy for getOrderSummary (not yet migrated)
-  static const String baseUrl = "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production";
 }

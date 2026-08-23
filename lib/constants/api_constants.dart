@@ -81,29 +81,4 @@ class ApiConstants {
   // ── Checkout ──────────────────────────────────────────────────
   static const String checkoutReport = "$baseUrl/ScreenSync_get_guest_checkout_report_mobile";
   static const String guestBill      = "$baseUrl/ScreenSync_get_guest_bill_mobile";
-
-  // ── Deprecated Endpoints (DO NOT USE — kept for historical reference) ────
-  // These endpoints are superseded by v1 equivalents above.
-  // Remove from production after all devices are updated.
-  //
-  // static const String foodOrderDetails      = "$baseUrl/ScreenSync_get_food_orders_mobile";       // → getFoodOrdersV1
-  // static const String updateFoodOrderStatus = "$baseUrl/ScreenSync_update_food_order_status_mobile"; // → updateFoodOrderV1 + tapFoodOrderEtaV1
-  // static const String orderSummary          = "$baseUrl/ScreenSync_get_order_summary_mobile";      // → not migrated yet
-  // static const String getRushHour           = "$baseUrl/ScreenSync_get_rush_hour_state_mobile";    // → setRushHourV1 response / login cache
-  //
-  // Legacy escalation / service endpoints (no v1 equivalent):
-  // static const String acceptTaskOld              = "$baseUrl/ScreenSync_task_accept_mobile";
-  // static const String reassignTicketOld          = "$baseUrl/ScreenSync_reassign_task_mobile";
-  // static const String escalationBadgeCountOld    = "$baseUrl/ScreenSync_get_escalation_badge_count_mobile";
-  // static const String escalatedTasksOld          = "$baseUrl/ScreenSync_get_escalated_tasks_mobile";
-  // static const String logEscalationOld           = "$baseUrl/ScreenSync_log_escalation_mobile";
-  // static const String escalationReportOld        = "$baseUrl/ScreenSync_get_escalation_report_mobile";
-  // static const String notifyReassignOld          = "$baseUrl/ScreenSync_notify_reassign_mobile";
-  // static const String escalationStatusOld        = "$baseUrl/ScreenSync_get_escalation_status_mobile";
-  // static const String resolveEscalationOld       = "$baseUrl/ScreenSync_sp_resolve_escalation_mobile";
-  // static const String checkAndEscalateOld        = "$baseUrl/ScreenSync_sp_check_and_escalate_mobile";
-  // static const String legacyCheckAndEscalateOld  = "$baseUrl/ScreenSync_check_and_escalate_mobile";
-  // static const String escalateOneLevelOld        = "$baseUrl/ScreenSync_sp_escalate_one_level_mobile";
-  // static const String addNotes                   = "$baseUrl/ScreenSync_add_service_request_note_mobile";
-  // static const String closeServiceRequestOld     = "$baseUrl/ScreenSync_close_service_request_mobile";
 }

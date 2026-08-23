@@ -2,7 +2,6 @@
 import 'dart:developer' as dev;
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:http/http.dart' as http;
 
 import '../constants/api_constants.dart';
 import '../constants/api_timeouts.dart';
@@ -245,34 +244,16 @@ class LoginService {
 
   Future<Map<String, dynamic>> sendOtp({required String mobile}) async {
     try {
-      final response = await http.post(
-        Uri.parse(
-          "https://m71rjqgt83.execute-api.ap-south-1.amazonaws.com/production/ScreenSync_send_otp_mobile",
-        ),
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": ApiConstants.apiKey, // ✅ keep consistent with your Dio
-        },
-        body: jsonEncode({
-          "mobile_no": mobile,   // ✅ FIXED
-          "stage": AppConfig.stage,        // ✅ REQUIRED
-        }),
-      );
-
-      final data = jsonDecode(response.body);
-
-      final result = data["RESULT"];
-
-      return {
-        "success": result?["status"] == "S",                 // ✅ FIXED
-        "message": result?["message"] ?? "OTP failed",       // ✅ FIXED
+      final payload = {
+        "mobile_no": mobile,
+        "stage":     AppConfig.stage,
       };
 
+      dev.log('📤 Send OTP payload: $payload');
+      final response = await _dio.post(ApiConstants.sendOtp, data: payload);
+      return _parseResponse(response);
     } catch (e) {
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-      };
+      return _handleError(e);
     }
   }
 

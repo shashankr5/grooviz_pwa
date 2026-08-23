@@ -48,25 +48,22 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
     setState(() => isLoading = true);
 
     try {
-      final results = await Future.wait([
-        _service.getOrderSummary(date: date),
-        _service.getOrderSummary(),
-      ]);
+      // Single v1 call — service returns all orders and filters by date
+      // internally when [date] is provided. Weekly aggregates come from the
+      // same response's summary object (derived from the full result set).
+      final result = await _service.getOrderSummary(date: date);
 
       if (!mounted) return;
 
-      final dailyResult = results[0];
-      final weeklyResult = results[1];
-
-      if (dailyResult["success"] == true) {
-        final orders = List<Map<String, dynamic>>.from(dailyResult["orders"] ?? []);
+      if (result["success"] == true) {
+        final orders = List<Map<String, dynamic>>.from(result["orders"] ?? []);
         allOrders = orders;
         analytics = OrderHistoryAnalyticsModel.fromOrders(orders);
-      }
 
-      if (weeklyResult["success"] == true) {
-        summary["weeklyTotal"] = weeklyResult["summary"]?["weeklyTotal"] ?? 0;
-        summary["weeklyCancelled"] = weeklyResult["summary"]?["weeklyCancelled"] ?? 0;
+        // Weekly summary aggregates are always present in the response,
+        // regardless of the date filter applied to the orders list.
+        summary["weeklyTotal"]     = result["summary"]?["weeklyTotal"]     ?? 0;
+        summary["weeklyCancelled"] = result["summary"]?["weeklyCancelled"] ?? 0;
       }
 
       setState(() => isLoading = false);

@@ -77,17 +77,26 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
-  // Load user departments to filter out irrelevant notifications
+  // Load user departments & role to filter out irrelevant notifications
   final depts = await UserSessionHelper.getDepartments();
+  final role = await UserSessionHelper.getRole();
   final normalized = depts.map((e) => e.toLowerCase().trim()).toList();
-  final isRoomService = normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice"));
-  final isFoodBeverage = normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb"));
+  final isManagerOrAdmin = role != null && (
+    role.toLowerCase().contains("manager") ||
+    role.toLowerCase().contains("admin") ||
+    role.toLowerCase().contains("supervisor") ||
+    role.toLowerCase().contains("gm") ||
+    role.toLowerCase().contains("executive") ||
+    role.toLowerCase().contains("director")
+  );
+  final isRoomService = isManagerOrAdmin || normalized.isEmpty || normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice") || d.contains("delivery"));
+  final isFoodBeverage = isManagerOrAdmin || normalized.isEmpty || normalized.any((d) => d.contains("food") || d.contains("beverage") || d.contains("fnb") || d.contains("fb") || d.contains("kitchen"));
   final isRoomServiceOrFnB = isRoomService || isFoodBeverage;
 
   final data      = message.data;
   final type      = (data['type'] ?? '').toString();
   final stopAlert = data['stop_alert'] == 'true';
-  print('Background FCM | type=$type | stop_alert=$stopAlert | depts=$normalized');
+  print('Background FCM | type=$type | stop_alert=$stopAlert | role=$role | depts=$normalized');
 
   // Do not surface periodic scheduler reminders as user alerts. Initial
   // escalation events are still handled below as ESCALATION_ALERT.

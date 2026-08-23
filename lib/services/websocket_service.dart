@@ -186,7 +186,6 @@ class WebSocketService {
       }
 
       if (type == 'ORDER_ACCEPTED' || type == 'ORDER_CANCELLED') {
-        // Optimistically decrement and stop if count hits zero, keep looping if > 0
         OrderAlertService.stopOne();
         OrderAlertService.notifyNewOrder();
         return;
@@ -221,15 +220,14 @@ class WebSocketService {
 
       // ── Service task alerts ────────────────────────────────────────────
 
-      if (type == 'NEW_SERVICE_TASK') {
+      if (type == 'NEW_SERVICE_TASK' || type == 'NEW_SERVICE_REQUEST') {
         TaskAlertService.ensureServiceRunning();
         TaskAlertService.notifyNewTask();
         return;
       }
 
-      if (type == 'SERVICE_TASK_ACCEPTED') {
-        // Optimistically decrement and stop if count hits zero, keep looping if > 0
-        TaskAlertService.stopOneServiceAlert();
+      if (type == 'SERVICE_TASK_ACCEPTED' || type == 'ACCEPTED') {
+        TaskAlertService.resetServiceCount(0, reconcileAlert: true);
         TaskAlertService.notifyNewTask();
         return;
       }
@@ -248,12 +246,8 @@ class WebSocketService {
         return;
       }
 
-      if (type == 'DELIVERY_ACCEPTED') {
-        TaskAlertService.notifyNewDelivery();
-        return;
-      }
-
-      if (type == 'DELIVERY_DELIVERED') {
+      if (type == 'DELIVERY_ACCEPTED' || type == 'DELIVERY_DELIVERED') {
+        TaskAlertService.resetDeliveryCount(0, reconcileAlert: true);
         TaskAlertService.notifyNewDelivery();
         return;
       }
@@ -270,20 +264,7 @@ class WebSocketService {
       // ── Pulse ──────────────────────────────────────────────────────────
 
       if (type == 'PULSE') {
-        // A pulse is not a new request. Re-ring only when the already
-        // reconciled queue says actionable service work still exists.
-        if (TaskAlertService.pendingServiceCount > 0) {
-          TaskAlertService.ensureServiceRunning();
-        }
-        return;
-      }
-
-      // ── Accepted ───────────────────────────────────────────────────────
-
-      if (type == 'ACCEPTED') {
-        // Optimistically decrement and stop if count hits zero, keep looping if > 0
-        TaskAlertService.stopOneServiceAlert();
-        TaskAlertService.notifyNewTask();
+        // Pulse concept safely removed: alerts loop until actioned.
         return;
       }
 
