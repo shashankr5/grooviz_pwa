@@ -9,8 +9,9 @@
 // Accepts optional [initialFilter] for deep-linking into Ready/Accepted/Delivered.
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import '../services/home_service.dart';
+import '../services/task_service.dart';
 import '../services/task_alert_service.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/date_formatter.dart';
@@ -139,68 +140,62 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
+  /// Loads delivery work from the unified service-request API. A food order
+  /// becomes a Room Service request when Kitchen marks it Ready, so
+  /// [food_order_summary_id] is the reliable discriminator (not is_from_order).
   Future<void> _loadAllOrders() async {
     if (mounted) {
       setState(() {
-        isLoading = readyOrders.isEmpty;
+        isLoading = readyOrders.isEmpty && acceptedOrders.isEmpty;
         errorMessage = null;
       });
     }
+
     try {
-      // Load active 'Ready' tab first so UI renders immediately
-      await _loadReadyOrders();
+      final result = await TaskService().getAllServices();
+      if (!mounted) return;
+      if (result['success'] != true) {
+        setState(() {
+          errorMessage = result['message'] as String? ?? 'Unable to load delivery orders.';
+        });
+        return;
+      }
+
+      final allRequests = (result['services'] as List? ?? const <dynamic>[])
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .where(_isFoodDeliveryRequest)
+          .map(_toDeliveryOrder)
+          .toList()
+        ..sort((a, b) {
+          final aTime = a['_orderTimeDt'] as DateTime?;
+          final bTime = b['_orderTimeDt'] as DateTime?;
+          if (aTime == null && bTime == null) return 0;
+          if (aTime == null) return 1;
+          if (bTime == null) return -1;
+          return bTime.compareTo(aTime);
+        });
+
+      final ready = allRequests.where((o) => o['uiStatus'] == 'Ready').toList();
+      final accepted = allRequests.where((o) => o['uiStatus'] == 'Accepted').toList();
+      final delivered = allRequests.where((o) => o['uiStatus'] == 'Delivered').toList();
+
+      setState(() {
+        readyOrders
+          ..clear()
+          ..addAll(ready);
+        acceptedOrders
+          ..clear()
+          ..addAll(accepted);
+        deliveredOrders
+          ..clear()
+          ..addAll(delivered);
+      });
+      // The looping delivery alert is only for food waiting at the hand-off.
+      TaskAlertService.resetDeliveryCount(ready.length);
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
-    // Fetch Accepted and Delivered in background without blocking screen
-    _loadAcceptedOrders();
-    _loadDeliveredOrders();
-  }
-
-  Future<void> _loadReadyOrders() async {
-    final result = await HomeService().getReadyOrdersForRoomService();
-    if (!mounted) return;
-    if (result['success'] != true) {
-      setState(() {
-        errorMessage =
-            result['message'] as String? ?? 'Unable to load orders.';
-      });
-      return;
-    }
-    final grouped = _groupOrders(
-        List<Map<String, dynamic>>.from(result['orders'] as List? ?? []));
-    setState(() {
-      readyOrders
-        ..clear()
-        ..addAll(grouped.map((o) => {...o, 'uiStatus': 'Ready'}));
-    });
-    TaskAlertService.resetDeliveryCount(readyOrders.length);
-  }
-
-  Future<void> _loadAcceptedOrders() async {
-    final result = await HomeService().getAcceptedOrdersForRoomService();
-    if (!mounted) return;
-    if (result['success'] != true) return;
-    final grouped = _groupOrders(
-        List<Map<String, dynamic>>.from(result['orders'] as List? ?? []));
-    setState(() {
-      acceptedOrders
-        ..clear()
-        ..addAll(grouped.map((o) => {...o, 'uiStatus': 'Accepted'}));
-    });
-  }
-
-  Future<void> _loadDeliveredOrders() async {
-    final result = await HomeService().getDeliveredOrdersForRoomService();
-    if (!mounted) return;
-    if (result['success'] != true) return;
-    final grouped = _groupOrders(
-        List<Map<String, dynamic>>.from(result['orders'] as List? ?? []));
-    setState(() {
-      deliveredOrders
-        ..clear()
-        ..addAll(grouped.map((o) => {...o, 'uiStatus': 'Delivered'}));
-    });
   }
 
   // ── Grouping & parsing ────────────────────────────────────────────────────
@@ -221,43 +216,57 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
   }
 
-  List<Map<String, dynamic>> _groupOrders(
-      List<Map<String, dynamic>> apiOrders) {
-    final Map<String, Map<String, dynamic>> grouped = {};
-    for (final o in apiOrders) {
-      final orderNo = o['orderNumber'];
-      if (orderNo == null) continue;
-      if (!grouped.containsKey(orderNo)) {
-        final dt = _parseOrderTime(o['orderTime']?.toString());
-        grouped[orderNo] = {
-          'orderNumber': orderNo,
-          'roomNumber': o['roomNumber'],
-          'guestName': o['guestName'],
-          'status': o['status'],
-          'items': <Map<String, dynamic>>[],
-          'orderTime': o['orderTime'],
-          '_orderTimeDt': dt, // null when timestamp is absent/malformed
-          'raw': o['raw'],
-        };
-      }
-      (grouped[orderNo]!['items'] as List).add({
-        'name': o['foodItem'],
-        'qty': o['quantity'],
-        'is_veg': o['raw']?['is_veg'] ?? o['is_veg'],
-      });
-    }
+  bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
+    final foodSummaryId = request['food_order_summary_id'];
+    return foodSummaryId != null &&
+        foodSummaryId.toString().trim().isNotEmpty &&
+        foodSummaryId.toString() != '0';
+  }
 
-    final result = grouped.values.toList();
-    // Sort newest-first. Orders with no timestamp float to end.
-    result.sort((a, b) {
-      final da = a['_orderTimeDt'] as DateTime?;
-      final db = b['_orderTimeDt'] as DateTime?;
-      if (da == null && db == null) return 0;
-      if (da == null) return 1;
-      if (db == null) return -1;
-      return db.compareTo(da);
-    });
-    return result;
+  List<Map<String, dynamic>> _parseOrderItems(dynamic value) {
+    try {
+      final decoded = value is String ? jsonDecode(value) : value;
+      if (decoded is! List) return const <Map<String, dynamic>>[];
+      return decoded.whereType<Map>().map((item) {
+        final row = Map<String, dynamic>.from(item);
+        return {
+          'name': row['food_name'] ?? row['item_name'] ?? 'Food item',
+          'qty': row['quantity'] ?? 1,
+          // The current API does not expose dietary type. Do not incorrectly
+          // label every item non-vegetarian until the backend provides it.
+          'isVegKnown': row.containsKey('is_veg'),
+          'is_veg': row['is_veg'],
+        };
+      }).toList();
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Map<String, dynamic> _toDeliveryOrder(Map<String, dynamic> raw) {
+    final status = (raw['status'] ?? '').toString().toLowerCase();
+    final isClosed = raw['closed'] == 1 || raw['closed'] == true || status == 'closed';
+    final isAccepted = status == 'in progress' || status == 'in_progress' ||
+        raw['accepted_at'] != null;
+    final uiStatus = isClosed ? 'Delivered' : (isAccepted ? 'Accepted' : 'Ready');
+    final createdAt = raw['food_order_created_at'] ?? raw['created_at'];
+    final readyAt = raw['food_order_ready_time'];
+    final displayTime = uiStatus == 'Ready' ? readyAt :
+        (uiStatus == 'Accepted' ? raw['accepted_at'] : raw['closed_at']);
+    final requestId = raw['service_request_id'];
+
+    return {
+      'serviceRequestId': requestId,
+      'orderNumber': raw['food_order_number'] ?? 'SR-$requestId',
+      'roomNumber': raw['room_number'] ?? raw['room_id'] ?? '—',
+      'guestName': raw['guest_name'] ?? '',
+      'items': _parseOrderItems(raw['order_items_json']),
+      'uiStatus': uiStatus,
+      'status': raw['status'],
+      'orderTime': displayTime?.toString(),
+      '_orderTimeDt': _parseOrderTime(displayTime?.toString() ?? createdAt?.toString()),
+      'raw': raw,
+    };
   }
 
   // ── Derived lists ─────────────────────────────────────────────────────────
@@ -289,13 +298,18 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
     final orderNo = (order['orderNumber'] ?? '').toString();
-    if (_actionLoadingOrderNo != null || orderNo.isEmpty) return;
+    final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty || serviceRequestId == null) {
+      _showGenericError();
+      return;
+    }
 
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      final res = await HomeService().updateRoomServiceStatus(
-          orderNumber: orderNo, action: 'Accept');
+      final res = await TaskService().acceptServiceRequest(
+        serviceRequestId: serviceRequestId,
+      );
 
       if (!mounted) return;
 
@@ -326,13 +340,18 @@ class _DeliveryPageState extends State<DeliveryPage>
     if (confirm != true) return;
 
     final orderNo = (order['orderNumber'] ?? '').toString();
-    if (_actionLoadingOrderNo != null || orderNo.isEmpty) return;
+    final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
+    if (_actionLoadingOrderNo != null || orderNo.isEmpty || serviceRequestId == null) {
+      _showGenericError();
+      return;
+    }
 
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      final res = await HomeService().updateRoomServiceStatus(
-          orderNumber: orderNo, action: 'Delivered');
+      final res = await TaskService().closeService(
+        serviceRequestId: serviceRequestId,
+      );
 
       if (!mounted) return;
 
@@ -1093,6 +1112,7 @@ class _DeliveryPageState extends State<DeliveryPage>
 
             // ── Receipt-style items list ──────────────────────────────────
             ...items.map<Widget>((item) {
+              final isVegKnown = item['isVegKnown'] == true;
               final isVeg = resolveIsVeg(item['is_veg']);
               final name = (item['name'] ?? '').toString();
               final qty = item['qty'];
@@ -1101,8 +1121,10 @@ class _DeliveryPageState extends State<DeliveryPage>
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    vegIndicator(isVeg),
-                    const SizedBox(width: 8),
+                    if (isVegKnown) ...[
+                      vegIndicator(isVeg),
+                      const SizedBox(width: 8),
+                    ],
                     Expanded(
                       child: Text(
                         name,
@@ -1257,17 +1279,17 @@ class _DeliveryPageState extends State<DeliveryPage>
     final raw = Map<String, dynamic>.from(order['raw'] as Map? ?? const {});
     final status = (order['uiStatus'] ?? order['status'] ?? '').toString();
     final createdAt = _firstTimelineDate(raw, const [
-          'created_at', 'order_time', 'placed_time',
+          'food_order_created_at', 'created_at', 'order_time', 'placed_time',
         ]) ??
         (order['_orderTimeDt'] as DateTime?);
     final readyAt = _firstTimelineDate(raw, const [
-      'summary_ready_time', 'ready_time', 'food_ready_at', 'status_updated_time',
+      'food_order_ready_time', 'summary_ready_time', 'ready_time', 'food_ready_at', 'status_updated_time',
     ]);
     final acceptedAt = _firstTimelineDate(raw, const [
       'room_service_accepted_at', 'accepted_time', 'accepted_at',
     ]);
     final deliveredAt = _firstTimelineDate(raw, const [
-      'summary_delivered_time', 'delivered_time', 'delivered_at',
+      'closed_at', 'food_order_delivered_time', 'summary_delivered_time', 'delivered_time', 'delivered_at',
     ]);
 
     var activeStage = 1; // Ready is the first state shown in Delivery Management.

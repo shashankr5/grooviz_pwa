@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'tasks_page.dart';
-import 'profile_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
 import 'login_page.dart';
@@ -23,7 +22,7 @@ class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
 
   /// Called externally (e.g. from notification tap) to switch to a named tab.
-  /// Keys: 'home', 'food', 'tasks', 'profile', 'camera'.
+  /// Keys: 'home', 'food', 'tasks', 'camera'.
   static void Function(String tabKey)? tabSwitchCallback;
 
   @override
@@ -75,15 +74,6 @@ class _MainNavigationState extends State<MainNavigation>
       ),
     ),
     const _NavEntry(
-      key: 'profile',
-      page: ProfilePage(key: PageStorageKey('profile')),
-      item: BottomNavigationBarItem(
-        icon: Icon(Icons.person_outline, size: 26),
-        activeIcon: Icon(Icons.person, size: 26),
-        label: 'Profile',
-      ),
-    ),
-    const _NavEntry(
       key: 'camera',
       page: CameraContentPage(key: PageStorageKey('camera')),
       item: BottomNavigationBarItem(
@@ -112,7 +102,7 @@ class _MainNavigationState extends State<MainNavigation>
         d == 'f&b' ||
         d == 'fnb' ||
         d.contains('food') && d.contains('beverage')) {
-      return {'food', 'tasks', 'profile'};
+      return {'food', 'tasks'};
     }
 
     // ── Front Office ──────────────────────────────────────────────────────
@@ -207,9 +197,6 @@ class _MainNavigationState extends State<MainNavigation>
     for (final dept in _departments) {
       allowed.addAll(_tabsForDepartment(dept));
     }
-
-    // 'profile' is only shown when 'home' is absent (F&B-only users).
-    if (allowed.contains('home')) allowed.remove('profile');
 
     // Preserve the canonical ordering defined in _allNavItems.
     return _allNavItems

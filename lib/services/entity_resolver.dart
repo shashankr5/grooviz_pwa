@@ -31,7 +31,7 @@ class EntityResolver {
   //   ORDER_DELIVERED notifications have no entityType/entityId in DeepLinkPayload
   //   and notification_handler only calls OrderAlertService.stop() for that type.
   //   Delivered room-service orders also use a different incompatible schema from
-  //   HomeService.getDeliveredOrdersForRoomService(). Tapping delivered
+  //   The unified service response is used for delivered orders. Tapping delivered
   //   notifications tab-switches only — this is intentional, not a bug.
 
   Future<Map<String, dynamic>?> resolveFoodOrder(String orderId) async {

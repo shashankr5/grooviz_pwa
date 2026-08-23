@@ -15,6 +15,8 @@ class NotificationPolicy {
       case 'NEW_SERVICE_TASK':
       case 'NEW_SERVICE_REQUEST':
       case 'TASK_REASSIGNED':
+      case 'ESCALATION':
+      case 'ESCALATION_ALERT':
       case 'NEW_DELIVERY_TASK':
       case 'ORDER_READY':
       case 'FOOD_ORDER_READY':

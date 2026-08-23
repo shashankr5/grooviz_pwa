@@ -23,6 +23,7 @@ import 'package:flutter/widgets.dart';
 import 'food_order_service.dart';
 import 'home_service.dart';
 import 'order_alert_service.dart';
+import 'task_service.dart';
 import 'task_alert_service.dart';
 
 class AlertReloadCoordinator with WidgetsBindingObserver {
@@ -196,9 +197,18 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
     }
     _deliveryInFlight = true;
     try {
-      final result = await _homeService.getReadyOrdersForRoomService();
+      final result = await TaskService().getAllServices();
       if (result['success'] == true) {
-        final orders = result['orders'] as List? ?? [];
+        final orders = (result['services'] as List? ?? const <dynamic>[])
+            .whereType<Map>()
+            .where((row) {
+              final foodSummaryId = row['food_order_summary_id'];
+              final status = row['status']?.toString().toLowerCase();
+              return foodSummaryId != null && foodSummaryId.toString() != '0' &&
+                  status != 'closed' && status != 'in progress' &&
+                  status != 'in_progress' && row['accepted_at'] == null;
+            })
+            .toList();
         // FIX-8: Use shared utility — same deduplication as DeliveryPage
         final count = distinctOrderCount(orders);
 
@@ -233,13 +243,14 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
   // Previously each had its own implementation — if they diverged, the
   // delivery alert count would be wrong and the alert would not stop.
   //
-  // Pass the raw orders list (as returned by getReadyOrdersForRoomService).
+  // Pass unified service-request rows or legacy-shaped order rows.
 
   static int distinctOrderCount(List orders) {
     final seen = <dynamic>{};
     for (final o in orders) {
-      final orderNo = o['orderNumber'] ?? o['order_number'];
-      if (orderNo != null) seen.add(orderNo);
+      final identifier = o['service_request_id'] ??
+          o['orderNumber'] ?? o['order_number'];
+      if (identifier != null) seen.add(identifier);
     }
     return seen.length;
   }

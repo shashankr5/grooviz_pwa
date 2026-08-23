@@ -127,6 +127,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
+    case 'ESCALATION':
+      // The scheduler sends data-only FCM. Start the one-shot escalation
+      // sound explicitly; NotificationPolicy posts its local notification.
+      await TaskAlertService.ensureEscalationRunning();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      break;
+
     case 'NEW_DELIVERY_TASK':
     case 'ORDER_READY':
     case 'FOOD_ORDER_READY':

@@ -305,6 +305,13 @@ Future<void> _showNotification(RemoteMessage message) async {
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
+    case 'ESCALATION':
+      // Scheduler escalation: one local notification and one non-looping
+      // sound. The request list is refreshed before the user opens it.
+      await TaskAlertService.ensureEscalationRunning();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      break;
+
     case 'NEW_DELIVERY_TASK':
       if (!isRoomService) {
         print('Foreground FCM | Ignoring delivery alerts for non-Room Service user.');

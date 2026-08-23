@@ -50,6 +50,15 @@ class TaskAlertService {
         notificationText:  'Tap to view pending tasks',
       );
 
+  /// Escalations are urgent one-time alerts. They never join the normal
+  /// service/delivery loop and therefore cannot be restarted by a queue refresh.
+  static Future<bool> ensureEscalationRunning() => _ensureRunning(
+        soundName: AlertSoundKey.escalation,
+        shouldLoop: false,
+        notificationTitle: 'Escalation Requires Attention',
+        notificationText: 'Tap to review the escalated service request',
+      );
+
   /// ACCEPTOR DEVICE ONLY — optimistic decrement.
   static Future<void> stopOneServiceAlert() async {
     _pendingServiceCount = (_pendingServiceCount - 1).clamp(0, 9999);

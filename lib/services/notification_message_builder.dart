@@ -119,6 +119,7 @@ class NotificationMessageBuilder {
         );
 
       // ── Escalation ────────────────────────────────────────────────────────
+      case 'ESCALATION':
       case 'ESCALATION_ALERT':
         final ref = taskId.isNotEmpty ? '#$taskId' : '';
         final roomLabel = room.isNotEmpty ? '$room · ' : '';

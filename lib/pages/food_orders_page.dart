@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'order_history_page.dart';
 import '../services/food_order_service.dart';
-import '../services/home_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/food_order_status.dart';
 import '../utils/date_formatter.dart';
@@ -67,7 +66,6 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   DateTime _currentDay    = DateTime.now();
 
   final FoodOrderService _foodOrderService = FoodOrderService();
-  final HomeService      _homeService      = HomeService();
 
   bool    _isLoading = true;
   bool    _hasError  = false;
@@ -78,8 +76,6 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
 
   final Set<String> _maxDelayReachedOrders = {};
   final Set<String> _expandedTimelineOrders = {};
-
-  bool _deliveredLoaded = false;
 
   static const int _kMaxExtraEta = 14;
 
@@ -313,21 +309,17 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     cancelled.sort((a, b) =>
         (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
 
-    // Fetch delivered orders concurrently so All filter displays pending, preparing, ready, delivered, cancelled
-    final deliveredResult = await _homeService.getDeliveredOrdersForRoomService();
-    List<Map<String, dynamic>> deliveredGrouped = [];
-    if (deliveredResult["success"] == true) {
-      deliveredGrouped = _groupApiOrders(deliveredResult["orders"] ?? []);
-      for (final o in deliveredGrouped) o["status"] = FoodOrderStatus.delivered.label;
-      deliveredGrouped.sort((a, b) =>
-          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+    final deliveredGrouped = _groupApiOrders(result["deliveredOrders"] ?? []);
+    for (final o in deliveredGrouped) {
+      o["status"] = FoodOrderStatus.delivered.label;
     }
+    deliveredGrouped.sort((a, b) =>
+        (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
 
     setState(() {
       foodOrders..clear()..addAll(active);
       cancelledOrders..clear()..addAll(cancelled);
       deliveredOrders..clear()..addAll(deliveredGrouped);
-      _deliveredLoaded = true;
       _isLoading = false;
     });
 
@@ -474,25 +466,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   Future<void> _handleFilterChange(String filter) async {
     if (selectedFilter == filter) return;
     setState(() => selectedFilter = filter);
-    if (filter == FoodOrderStatus.delivered.label) {
-      await _loadDeliveredOrders();
-    } else if (filter == FoodOrderStatus.cancelled.label) {
+    if (filter == FoodOrderStatus.cancelled.label) {
       await _loadFoodOrders();
-    }
-  }
-
-  Future<void> _loadDeliveredOrders() async {
-    final result = await _homeService.getDeliveredOrdersForRoomService();
-    if (!mounted) return;
-    if (result["success"] == true) {
-      final grouped = _groupApiOrders(result["orders"] ?? []);
-      for (final o in grouped) o["status"] = FoodOrderStatus.delivered.label;
-      grouped.sort((a, b) =>
-          (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
-      setState(() {
-        deliveredOrders..clear()..addAll(grouped);
-        _deliveredLoaded = true;
-      });
     }
   }
 

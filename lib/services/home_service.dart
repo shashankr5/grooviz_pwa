@@ -814,58 +814,11 @@ class HomeService {
 
   // â”€â”€ GET READY ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  Future<Map<String, dynamic>> getReadyOrdersForRoomService() async {
-    try {
-      final int? userId = await UserSessionHelper.getUserId();
-      if (userId == null || userId == 0) {
-        return {"success": false, "message": "User ID missing"};
-      }
-
-      final payload = {"user_id": userId, "stage": AppConfig.stage};
-
-      dev.log("ðŸ“¤ Fetching READY Orders for Room Service");
-      final response =
-          await _dio.post(ApiConstants.getReadyOrders, data: payload);
-      dev.log("ðŸ“¥ Ready Orders Response: ${response.data}");
-
-      if (response.statusCode != 200) {
-        return {"success": false, "message": "Server error"};
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {"success": false, "message": "Invalid response"};
-      }
-
-      final resultList = response.data["RESULT"] as List? ?? [];
-      return {"success": true, "orders": _mapReadyOrders(resultList)};
-    } catch (e) {
-      dev.log("âŒ ERROR (getReadyOrdersForRoomService): $e");
-      return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
-    }
-  }
-
-  static List<Map<String, dynamic>> _mapReadyOrders(List raw) {
-    return raw.map<Map<String, dynamic>>((o) {
-      final m = Map<String, dynamic>.from(o);
-      return {
-        "orderRequestId": m["order_request_id"],
-        "orderNumber":    m["order_number"],
-        "roomNumber":     m["room_number"],
-        "roomId":         m["room_id"],
-        "guestName":      m["guest_name"],
-        "foodItem":       m["food_item"],
-        "quantity":       m["quantity"],
-        "status":         "Ready",
-        "orderTime":      m["ready_time"],
-        "is_veg":         m["is_veg"],
-        "raw":            m,
-      };
-    }).toList();
-  }
-
   // â”€â”€ UPDATE ROOM SERVICE STATUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+  /* Deprecated Room Service API implementation retained as a reference only.
+     Delivery now uses TaskService.getAllServices(), acceptServiceRequest(),
+     and closeService().
   Future<Map<String, dynamic>> updateRoomServiceStatus({
     required String orderNumber,
     required String action,
@@ -1035,4 +988,5 @@ class HomeService {
       };
     }).toList();
   }
+  */
 }

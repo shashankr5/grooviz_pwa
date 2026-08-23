@@ -57,7 +57,7 @@ class DeepLinkPayload {
       entityType = DeepLinkEntityType.serviceTask;
       entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'] ?? data['instance_id'])?.toString();
     }
- else if (rawType == 'ESCALATION_ALERT') {
+    } else if (rawType == 'ESCALATION' || rawType == 'ESCALATION_ALERT') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.escalation;
       entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'])?.toString();

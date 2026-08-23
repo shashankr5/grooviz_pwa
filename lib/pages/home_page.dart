@@ -18,6 +18,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
+import '../services/task_service.dart';
 import '../services/session_change_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/order_alert_service.dart';
@@ -476,34 +477,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  List<Map<String, dynamic>> _groupDeliveryOrders(
-      List<Map<String, dynamic>> apiOrders) {
-    final Map<String, Map<String, dynamic>> grouped = {};
-    for (final o in apiOrders) {
-      final orderNo = o['orderNumber'];
-      if (orderNo == null) continue;
-      if (!grouped.containsKey(orderNo)) {
-        final dt = _parseOrderTime(o['orderTime']?.toString());
-        grouped[orderNo] = {
-          'orderNumber':  orderNo,
-          'roomNumber':   o['roomNumber'],
-          'guestName':    o['guestName'],
-          'status':       o['status'],
-          'items':        <Map<String, dynamic>>[],
-          'orderTime':    o['orderTime'],
-          '_orderTimeDt': dt,
-          'raw':          o['raw'],
-        };
-      }
-      (grouped[orderNo]!['items'] as List).add({
-        'name':   o['foodItem'],
-        'qty':    o['quantity'],
-        'is_veg': o['raw']?['is_veg'] ?? o['is_veg'],
-      });
-    }
-    return grouped.values.toList();
-  }
-
   Future<void> _loadDeliveryCounts() async {
     if (!mounted) return;
     // Only show skeleton on the very first load — subsequent live updates
@@ -512,20 +485,40 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _deliveryCountsLoading = true);
     }
 
-    final readyResult     = await HomeService().getReadyOrdersForRoomService();
-    final acceptedResult  = await HomeService().getAcceptedOrdersForRoomService();
-    final deliveredResult = await HomeService().getDeliveredOrdersForRoomService();
+    final deliveryResult = await TaskService().getAllServices();
 
     if (!mounted) return;
 
-    final rawReady     = (readyResult['orders']     as List?)?.cast<Map<String, dynamic>>() ?? [];
-    final rawAccepted  = (acceptedResult['orders']  as List?)?.cast<Map<String, dynamic>>() ?? [];
-    final rawDelivered = (deliveredResult['orders'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final requests = (deliveryResult['services'] as List? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where((row) {
+          final summaryId = row['food_order_summary_id'];
+          return summaryId != null && summaryId.toString().isNotEmpty &&
+              summaryId.toString() != '0';
+        })
+        .toList();
 
     // Group before counting — each group = one order, not one line-item.
-    final groupedReady     = _groupDeliveryOrders(rawReady);
-    final groupedAccepted  = _groupDeliveryOrders(rawAccepted);
-    final groupedDelivered = _groupDeliveryOrders(rawDelivered);
+    bool isClosed(Map<String, dynamic> row) => row['closed'] == 1 ||
+        row['closed'] == true || row['status']?.toString().toLowerCase() == 'closed';
+    bool isAccepted(Map<String, dynamic> row) => row['accepted_at'] != null ||
+        row['status']?.toString().toLowerCase() == 'in progress' ||
+        row['status']?.toString().toLowerCase() == 'in_progress';
+    Map<String, dynamic> preview(Map<String, dynamic> row) {
+      final readyAt = row['food_order_ready_time'] ?? row['created_at'];
+      return {
+        'orderNumber': row['food_order_number'] ?? 'SR-${row['service_request_id']}',
+        'roomNumber': row['room_number'] ?? row['room_id'] ?? '—',
+        'guestName': row['guest_name'] ?? '',
+        'orderTime': readyAt?.toString(),
+        '_orderTimeDt': _parseOrderTime(readyAt?.toString()),
+        'raw': row,
+      };
+    }
+    final groupedReady = requests.where((row) => !isClosed(row) && !isAccepted(row)).map(preview).toList();
+    final groupedAccepted = requests.where((row) => !isClosed(row) && isAccepted(row)).map(preview).toList();
+    final groupedDelivered = requests.where(isClosed).map(preview).toList();
 
     // Oldest ready order: sort ascending by timestamp, skip orders whose
     // timestamp could not be parsed (null) to avoid surfacing stale data.

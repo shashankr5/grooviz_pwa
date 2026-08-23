@@ -152,31 +152,14 @@ This document describes the REST API contract for the ScreenSync application. Al
 
 ## 4. Food Orders
 
-### 4.1 Get Ready Orders (Room Service)
-- **Endpoint**: `/ScreenSync_get_ready_orders_for_room_service_mobile`
-- **Method**: `POST`
-- **Request Payload**:
-```json
-{
-  "enterprise_id": 42,
-  "stage": "dev"
-}
-```
+### 4.1 Delivery Management (Unified service requests)
+- **List**: `/ScreenSync_get_all_services_mobile1`
+- **Accept**: `/ScreenSync_accept_service_request_mobile1`
+- **Complete delivery**: `/ScreenSync_close_service_mobile1`
+- Food delivery requests are identified by `food_order_summary_id`. Their
+  timestamps and ordered items are returned in the unified service response.
 
-### 4.2 Update Room Service Status
-- **Endpoint**: `/ScreenSync_update_room_service_status_mobile`
-- **Method**: `POST`
-- **Request Payload**:
-```json
-{
-  "order_id": 501,
-  "status": "delivered",
-  "user_id": 42,
-  "stage": "dev"
-}
-```
-
-### 4.3 Get Rush Hour Status (F&B)
+### 4.2 Get Rush Hour Status (F&B)
 - **Endpoint**: `/ScreenSync_get_rush_hour_state_mobile`
 - **Method**: `POST`
 - **Request Payload**:

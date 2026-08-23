@@ -71,10 +71,6 @@ class ApiConstants {
   static const String setRushHourV1 = "$baseUrl/ScreenSync_set_rush_hour_state_mobile";
 
   // ── Food Orders — Room Service Tab ────────────────────────────
-  static const String getReadyOrders          = "$baseUrl/ScreenSync_get_ready_orders_for_room_service_mobile";
-  static const String getAcceptedOrders       = "$baseUrl/ScreenSync_get_accepted_orders_for_room_service_mobile";
-  static const String getDeliveredOrders      = "$baseUrl/ScreenSync_get_delivered_orders_for_room_service_mobile";
-  static const String updateRoomServiceStatus = "$baseUrl/ScreenSync_update_room_service_status_mobile";
 
   // ── Camera / Content ──────────────────────────────────────────
   static const String getRooms         = "$baseUrl/ScreenSync_get_rooms_for_mobile";

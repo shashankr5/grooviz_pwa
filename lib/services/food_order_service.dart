@@ -103,9 +103,11 @@ class FoodOrderService {
 
       final resultList = (response.data["RESULT"] ?? []) as List;
 
-      // Separate active and cancelled by order_status (from order_status_summary)
+      // Keep each terminal state separate for the UI. Delivery is now returned
+      // by get_food_orders_mobile1; do not query the retired Room Service API.
       final activeRaw    = <dynamic>[];
       final cancelledRaw = <dynamic>[];
+      final deliveredRaw = <dynamic>[];
 
       for (final item in resultList) {
         final itemMap   = Map<String, dynamic>.from(item);
@@ -118,6 +120,8 @@ class FoodOrderService {
 
         if (statusVal == "CANCELLED" || statusVal == "CANCELED") {
           cancelledRaw.add(item);
+        } else if (statusVal == "DELIVERED") {
+          deliveredRaw.add(item);
         } else {
           activeRaw.add(item);
         }
@@ -128,6 +132,7 @@ class FoodOrderService {
         "message":         statusList[0]["message"] ?? "Success",
         "orders":          _mapFoodOrders(activeRaw),
         "cancelledOrders": _mapCancelledOrders(cancelledRaw),
+        "deliveredOrders": _mapFoodOrders(deliveredRaw),
       };
     } catch (e, stack) {
       dev.log("❌ ERROR (getFoodOrders v1): $e");

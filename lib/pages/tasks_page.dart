@@ -2937,32 +2937,34 @@ class TasksPageState extends State<TasksPage> {
     Widget? trailing,
   }) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Row(
-          children: [
-            Container(
-              width: 4,
-              height: 18,
-              decoration: BoxDecoration(
-                color: iconColor,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Icon(icon, size: 18, color: iconColor),
-            const SizedBox(width: 6),
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ],
+        Container(
+          width: 4,
+          height: 18,
+          decoration: BoxDecoration(
+            color: iconColor,
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
-        if (trailing != null) trailing,
+        const SizedBox(width: 8),
+        Icon(icon, size: 18, color: iconColor),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            title,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ),
+        if (trailing != null) ...[
+          const SizedBox(width: 8),
+          trailing,
+        ],
       ],
     );
   }
@@ -3091,12 +3093,15 @@ class TasksPageState extends State<TasksPage> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _buildSectionHeader(
-                    title: '$scopeLabel Velocity',
-                    icon: Icons.trending_up_rounded,
-                    iconColor: AppColors.primary,
+                  Flexible(
+                    child: _buildSectionHeader(
+                      title: '$scopeLabel Velocity',
+                      icon: Icons.trending_up_rounded,
+                      iconColor: AppColors.primary,
+                    ),
                   ),
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       // Weekly / Monthly toggle
                       _buildTogglePill('Weekly', _velocityWeekly, () {
