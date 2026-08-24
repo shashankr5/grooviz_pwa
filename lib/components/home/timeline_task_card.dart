@@ -68,10 +68,16 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
   DateTime? _parseTimestamp(dynamic val) {
     if (val == null) return null;
     try {
-      if (val is DateTime) return val;
+      if (val is DateTime) return val.toLocal();
       final str = val.toString().trim();
       if (str.isEmpty || str == 'null') return null;
-      return DateTime.tryParse(str.replaceAll(' ', 'T'));
+      final raw = DateTime.tryParse(str.replaceAll(' ', 'T'));
+      if (raw == null) return null;
+      // MySQL returns timestamps without timezone — treat as UTC → local.
+      if (!str.contains('Z') && !str.contains('z') && !str.contains('+')) {
+        return DateTime.utc(raw.year, raw.month, raw.day, raw.hour, raw.minute, raw.second).toLocal();
+      }
+      return raw.toLocal();
     } catch (_) {
       return null;
     }
@@ -117,8 +123,13 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     final Color statusCol = AppColors.statusColor(statusStr);
     final Color statusBg = AppColors.statusLightColor(statusStr);
 
-    // Escalation presentation is disabled. Keep only the normal card styling;
-    // an independent resolution-SLA timer may still render where applicable.
+    // ── Escalation styling ─────────────────────────────────────────────────
+    // is_escalated == 1 is set by check_and_escalate_unified and surfaced by
+    // get_all_services_mobile1. Use it as the sole source of truth for the
+    // red-border + accent-strip visual treatment on the card.
+    final role        = escalationRoleFromName(widget.userRole);
+    final accentStyle = EscalationVisibility.accentStyle(role);
+    final esc         = EscalationInfo.fromTask(task);
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -127,14 +138,43 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border.withValues(alpha: 0.6)),
-          boxShadow: [
-            BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: Offset(0, 4)),
-          ],
+          border: isEscalated
+              ? EscalationDisplay.escalatedBorder()
+              : Border.all(color: AppColors.border.withValues(alpha: 0.6)),
+          boxShadow: isEscalated
+              ? EscalationDisplay.escalatedShadow()
+              : [BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: Offset(0, 4))],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Escalation accent banner (only when escalated) ─────────────
+            if (isEscalated)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 14),
+                decoration: BoxDecoration(
+                  color: EscalationDisplay.accentBarColor(accentStyle),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 12),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
+                      style: const TextStyle(
+                        color: Colors.white, fontSize: 10,
+                        fontWeight: FontWeight.w700, letterSpacing: 0.4,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  EscalationDisplay.countdownChip(esc),
+                ]),
+              ),
             Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -215,6 +255,10 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                               ),
                             ),
                           ),
+                          if (isEscalated) ...[
+                            const SizedBox(width: 6),
+                            EscalationDisplay.statusPill(),
+                          ],
                         ],
                       ),
                     ],

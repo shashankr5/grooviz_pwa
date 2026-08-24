@@ -54,55 +54,25 @@ class NotificationMessageBuilder {
           icon:      NotifIcon.food,
         );
 
-      case 'ORDER_ACCEPTED':
-        final ref = orderNumber.isNotEmpty ? '#$orderNumber' : '';
+      // ── Service Orders (TV booking) ───────────────────────────────────────
+      case 'SERVICE_ORDER':
+        final ref = orderNumber.isNotEmpty ? '#$orderNumber' : (orderId.isNotEmpty ? '#$orderId' : '');
+        final roomLabel = room.isNotEmpty ? '$room · ' : '';
+        final itemLabel = items.isNotEmpty ? items : 'Service booking';
         return NotifMessage(
-          title:     '✅ Order Accepted',
-          body:      'Order $ref has been accepted by a team member'.trim(),
-          bigText:   'Order $ref from${room.isNotEmpty ? " $room" : " the queue"} has been accepted. '
-                     'Your order list has been updated.',
-          ticker:    'Order accepted — queue updated',
-          notifId:   NotifId.foodOrder, // same ID → replaces food order alert
-          channelId: NotifChannel.foodOrder,
-          color:     NotifColor.foodOrder,
-          icon:      NotifIcon.food,
-        );
-
-      case 'ORDER_CANCELLED':
-        final ref = orderNumber.isNotEmpty ? '#$orderNumber' : '';
-        return NotifMessage(
-          title:     '❌ Order Cancelled',
-          body:      'Order $ref has been cancelled'.trim(),
-          bigText:   'Order $ref has been cancelled and removed from the queue. '
-                     'No further action is required.',
-          ticker:    'Order cancelled',
-          notifId:   NotifId.foodOrder,
-          channelId: NotifChannel.foodOrder,
-          color:     NotifColor.foodOrder,
-          icon:      NotifIcon.food,
-        );
-
-      // ── Delivery ─────────────────────────────────────────────────────────
-      case 'ORDER_READY':
-      case 'FOOD_ORDER_READY':
-      case 'DELIVERY_READY':
-      case 'DELIVERY_NOTIFICATION':
-        final ref = orderNumber.isNotEmpty ? '#$orderNumber' : '';
-        final roomLabel = room.isNotEmpty ? ' · $room' : '';
-        return NotifMessage(
-          title:     '🚚 Ready for Delivery',
-          body:      'Order $ref$roomLabel · Ready for pickup'.trim(),
-          bigText:   'Order $ref has been prepared and is waiting at the kitchen counter. '
-                     'Assign a delivery staff member or pick it up now.',
-          ticker:    'Order ready${room.isNotEmpty ? " — $room awaiting pickup" : ""}',
-          notifId:   NotifId.delivery,
-          channelId: NotifChannel.delivery,
-          color:     NotifColor.delivery,
-          icon:      NotifIcon.delivery,
+          title:     '🛎️ New Service Order',
+          body:      '$roomLabel$itemLabel'.trim(),
+          bigText:   'A new service order $ref has been placed from${room.isNotEmpty ? " $room" : " a guest device"}. '
+                     'Tap to review and accept.',
+          ticker:    'New service order${room.isNotEmpty ? " — $room" : ""}',
+          notifId:   NotifId.serviceTask,
+          channelId: NotifChannel.task,
+          color:     NotifColor.serviceTask,
+          icon:      NotifIcon.task,
         );
 
       // ── Service Tasks ─────────────────────────────────────────────────────
-      case 'NEW_SERVICE_TASK':
+      case 'NEW_SERVICE_REQUEST':
         final ref = taskId.isNotEmpty ? '#$taskId' : '';
         final roomLabel = room.isNotEmpty ? '$room · ' : '';
         final itemLabel = items.isNotEmpty ? items : 'Service request';
@@ -118,66 +88,36 @@ class NotificationMessageBuilder {
           icon:      NotifIcon.task,
         );
 
+      // ── Task Reassigned ───────────────────────────────────────────────────
+      case 'TASK_REASSIGNED':
+        final srId = data['service_request_id']?.toString() ?? '';
+        return NotifMessage(
+          title:     '🔄 Task Assigned to You',
+          body:      'Service request #$srId has been assigned to you',
+          bigText:   'A service request has been reassigned to you. Tap to review and begin working.',
+          ticker:    'Task assigned to you',
+          notifId:   NotifId.serviceTask,
+          channelId: NotifChannel.task,
+          color:     NotifColor.serviceTask,
+          icon:      NotifIcon.task,
+        );
+
       // ── Escalation ────────────────────────────────────────────────────────
       case 'ESCALATION':
-      case 'ESCALATION_ALERT':
         final ref = taskId.isNotEmpty ? '#$taskId' : '';
+        final srId = data['service_request_id']?.toString() ?? '';
+        final displayRef = ref.isNotEmpty ? ref : (srId.isNotEmpty ? '#$srId' : '');
         final roomLabel = room.isNotEmpty ? '$room · ' : '';
-        final itemLabel = items.isNotEmpty ? items : 'Pending request';
         return NotifMessage(
           title:     '⚠️ Escalation — Immediate Attention Required',
-          body:      '${roomLabel}$itemLabel · SLA threshold breached'.trim(),
-          bigText:   'Request $ref from${room.isNotEmpty ? " $room" : " a guest"} has exceeded the SLA threshold '
-                     'and requires your immediate review. This is a one-time alert.',
+          body:      '${roomLabel}Request $displayRef · SLA threshold breached'.trim(),
+          bigText:   'Request $displayRef has exceeded the SLA threshold and requires your immediate review. '
+                     'This is a one-time alert — tap to action.',
           ticker:    'Escalation alert — SLA breach',
           notifId:   NotifId.escalation,
           channelId: NotifChannel.escalation,
           color:     NotifColor.escalation,
           icon:      NotifIcon.escalation,
-        );
-
-      // ── Session / Role ────────────────────────────────────────────────────
-      case 'SESSION_INVALIDATED':
-      case 'ROLE_UPDATED':
-      case 'DEPARTMENT_UPDATED':
-        return NotifMessage(
-          title:     '🔒 Session Ended',
-          body:      'Your access has been updated. Please log in again.',
-          bigText:   reason,
-          ticker:    'Access updated — please log in',
-          notifId:   NotifId.session,
-          channelId: NotifChannel.foodOrder, // high importance
-          color:     NotifColor.session,
-          icon:      NotifIcon.fallback,
-        );
-
-      // ── Service Status Updates ────────────────────────────────────────────
-      case 'SERVICE_STATUS_UPDATE':
-      case 'SERVICE_GUEST_UPDATE':
-        final fallbackBody = data['body']?.toString() ??
-                             data['message']?.toString() ?? 'Tap to view';
-        return NotifMessage(
-          title:     data['title']?.toString() ?? '🔧 Service Request Update',
-          body:      fallbackBody,
-          bigText:   fallbackBody,
-          ticker:    'Service status update',
-          notifId:   NotifId.serviceTask,
-          channelId: NotifChannel.task,
-          color:     NotifColor.serviceTask,
-          icon:      NotifIcon.task,
-        );
-
-      case 'TASK_REASSIGNED':
-        final srId = data['service_request_id']?.toString() ?? '';
-        return NotifMessage(
-          title:     '🔄 Task Reassigned',
-          body:      'Service request #${srId} has been assigned to you',
-          bigText:   'A service request has been reassigned to you. Tap to review and begin working.',
-          ticker:    'Task reassigned to you',
-          notifId:   NotifId.serviceTask,
-          channelId: NotifChannel.task,
-          color:     NotifColor.serviceTask,
-          icon:      NotifIcon.task,
         );
 
       // ── Default / Unknown ─────────────────────────────────────────────────
@@ -189,9 +129,9 @@ class NotificationMessageBuilder {
           body:      fallbackBody,
           bigText:   fallbackBody,
           ticker:    'New alert from ScreenSync',
-          notifId:   NotifId.foodOrder,
-          channelId: NotifChannel.foodOrder,
-          color:     NotifColor.foodOrder,
+          notifId:   NotifId.serviceTask,
+          channelId: NotifChannel.task,
+          color:     NotifColor.serviceTask,
           icon:      NotifIcon.fallback,
         );
     }

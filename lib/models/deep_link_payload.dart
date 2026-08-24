@@ -34,54 +34,27 @@ class DeepLinkPayload {
     DeepLinkEntityType? entityType;
     String? entityId;
 
-    if (rawType == 'NEW_FOOD_ORDER' ||
-        rawType == 'ORDER_ACCEPTED' ||
-        rawType == 'ORDER_CANCELLED' ||
-        rawType == 'FOOD_ORDER') {
+    if (rawType == 'NEW_FOOD_ORDER') {
       targetTab = 'food';
       entityType = DeepLinkEntityType.foodOrder;
       entityId = (data['order_id'] ?? data['order_number'])?.toString();
-    } else if (rawType == 'NEW_SERVICE_TASK' ||
-        rawType == 'SERVICE_TASK_ACCEPTED' ||
-        rawType == 'ACCEPTED' ||
-        rawType == 'SERVICE_TASK' ||
-        rawType == 'TASK' ||
-        rawType == 'ESCALATION_STARTED' ||
-        rawType == 'PENDING_ACCEPTANCE' ||
-        rawType == 'ESCALATION_STAGE_1' ||
-        rawType == 'SERVICE_STATUS_UPDATE' ||
+    } else if (rawType == 'SERVICE_ORDER' ||
         rawType == 'NEW_SERVICE_REQUEST' ||
-        rawType == 'TASK_REASSIGNED' ||
-        rawType == 'ESCALATION_PULSE') {
+        rawType == 'TASK_REASSIGNED') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.serviceTask;
-      entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'] ?? data['instance_id'])?.toString();
-    } else if (rawType == 'ESCALATION' || rawType == 'ESCALATION_ALERT') {
+      entityId = (data['service_request_id'] ??
+              data['task_id'] ??
+              data['order_id'] ??
+              data['instance_id'])
+          ?.toString();
+    } else if (rawType == 'ESCALATION') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.escalation;
-      entityId = (data['service_request_id'] ?? data['task_id'] ?? data['order_id'])?.toString();
-    } else if (rawType == 'NEW_DELIVERY_TASK' ||
-        rawType == 'ORDER_READY' ||
-        rawType == 'FOOD_ORDER_READY' ||
-        rawType == 'DELIVERY_READY' ||
-        rawType == 'DELIVERY_NOTIFICATION' ||
-        rawType == 'DELIVERY') {
-      targetTab = 'delivery';
-      entityType = DeepLinkEntityType.delivery;
-      entityId = (data['order_id'] ?? data['order_number'])?.toString();
-    } else if (rawType == 'ORDER_STATUS_CHANGED') {
-      final orderStatus = (data['order_status'] ?? data['status'] ?? '')
-          .toString()
-          .toUpperCase();
-      if (orderStatus == 'READY') {
-        targetTab = 'delivery';
-        entityType = DeepLinkEntityType.delivery;
-        entityId = (data['order_id'] ?? data['order_number'])?.toString();
-      } else {
-        targetTab = 'food';
-        entityType = DeepLinkEntityType.foodOrder;
-        entityId = (data['order_id'] ?? data['order_number'])?.toString();
-      }
+      entityId = (data['service_request_id'] ??
+              data['task_id'] ??
+              data['order_id'])
+          ?.toString();
     }
 
     return DeepLinkPayload(

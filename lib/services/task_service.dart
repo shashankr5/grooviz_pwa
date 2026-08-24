@@ -348,6 +348,11 @@ class TaskService {
   }
 
   /// Reassign a service request to another staff member using ScreenSync_reassign_service_mobile1
+  ///
+  /// The SP returns a single result set whose first row contains BOTH the
+  /// status flag/message AND all task fields (username, token_app, assigned_to,
+  /// assigned_at, department_name, etc.).  The Lambda surfaces this as
+  /// STATUS[0].  There is no separate RESULT / RESULT2 key.
   Future<Map<String, dynamic>> reassignService({
     required int taskId,
     required int reassignTo,
@@ -375,32 +380,47 @@ class TaskService {
       );
 
       final data = response.data as Map? ?? const {};
-      final rawStatus = data['STATUS'];
-      final statusList = rawStatus is List
-          ? rawStatus
-          : (rawStatus is Map ? [rawStatus] : const <dynamic>[]);
 
-      if (statusList.isNotEmpty && statusList.first is Map) {
-        final statusMap = statusList.first as Map;
-        final flag = statusMap['status']?.toString().toUpperCase();
-        final message = statusMap['message']?.toString() ?? 'Task reassigned successfully';
+      // The Lambda wraps the SP result as RESULT[0] (single result set).
+      // Fall back to STATUS for legacy Lambda versions that split them.
+      final rawResult = data['RESULT'] ?? data['STATUS'];
+      final resultList = rawResult is List
+          ? rawResult
+          : (rawResult is Map ? [rawResult] : const <dynamic>[]);
+
+      if (resultList.isNotEmpty && resultList.first is Map) {
+        // STATUS[0] / RESULT[0] — the first row always carries status + message.
+        final row = Map<String, dynamic>.from(resultList.first as Map);
+        final flag    = row['status']?.toString().toUpperCase();
+        final message = row['message']?.toString() ?? 'Task reassigned successfully';
+
         if (flag == 'S') {
           dev.log('✅ reassignService success: $message');
-          final rawUpdate = data['RESULT2'] ?? data['RESULT'] ?? data['ASSIGNMENT'];
-          final updateRows = rawUpdate is List
-              ? rawUpdate
-              : (rawUpdate is Map ? [rawUpdate] : const <dynamic>[]);
-          final updatedTask = updateRows.isNotEmpty && updateRows.first is Map
-              ? Map<String, dynamic>.from(updateRows.first as Map)
-              : <String, dynamic>{};
+
+          // The same row also contains the task update fields returned by
+          // the SP's final SELECT (assigned_to, assigned_at, department_name …).
+          // Build updatedTask directly from it so callers always get the data.
+          final updatedTask = Map<String, dynamic>.from(row);
+
+          // Normalise the key names the UI expects.
+          final assignedAt = (updatedTask['assigned_at'] ??
+              updatedTask['recent_reassigned_at'])?.toString();
+          final assignedByName = (updatedTask['assigned_by'] ??
+              updatedTask['assigned_by_name'] ??
+              updatedTask['recent_reassigned_by_user_name'])?.toString();
+          final assignedToName = (updatedTask['assigned_to_name'] ??
+              updatedTask['username'])?.toString();
+
           return {
-            'success': true,
-            'message': message,
-            'updatedTask': updatedTask,
-            'assigned_by_name': updatedTask['assigned_by_name'] ??
-                updatedTask['recent_reassigned_by_user_name'],
-            'assigned_at': updatedTask['assigned_at'] ??
-                updatedTask['recent_reassigned_at'],
+            'success':          true,
+            'message':          message,
+            'updatedTask':      updatedTask,
+            'assigned_by_name': assignedByName,
+            'assigned_to_name': assignedToName,
+            'assigned_at':      assignedAt,
+            // Also expose the reassigned user's department for badge refresh
+            'department_id':    updatedTask['department_id'],
+            'department_name':  updatedTask['department_name'],
           };
         } else {
           return {

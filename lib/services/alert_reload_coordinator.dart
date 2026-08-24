@@ -58,6 +58,41 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
   final FoodOrderService _foodOrderService = FoodOrderService();
   final HomeService      _homeService      = HomeService();
 
+  /// Helper method to identify food delivery tasks that should not appear in Service Requests
+  bool _isFoodDeliveryTask(Map<String, dynamic> task) {
+    // Check for food_order_summary_id (most reliable indicator)
+    final foodSummaryId = task['food_order_summary_id'] ?? task['raw']?['food_order_summary_id'];
+    if (foodSummaryId != null &&
+        foodSummaryId.toString().trim().isNotEmpty &&
+        foodSummaryId.toString() != '0') {
+      return true;
+    }
+
+    // Check is_from_order flag
+    final isFromOrder = task['is_from_order'] ?? task['raw']?['is_from_order'];
+    if (isFromOrder == 1 || isFromOrder == true) {
+      return true;
+    }
+
+    // Check service_order_id (alternative identifier)
+    final serviceOrderId = task['service_order_id'] ?? task['raw']?['service_order_id'];
+    if (serviceOrderId != null &&
+        serviceOrderId.toString().trim().isNotEmpty &&
+        serviceOrderId.toString() != '0') {
+      return true;
+    }
+
+    // Check question content for food delivery indicators
+    final question = ((task['question'] ?? task['title'] ?? task['raw']?['question'] ?? '').toString().toLowerCase());
+    if (question.contains('food order') || 
+        question.contains('ready for delivery') ||
+        question.contains('food delivery')) {
+      return true;
+    }
+
+    return false;
+  }
+
   void _init() {
     if (_started) return;
     _start();
@@ -156,8 +191,10 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       final result = await _homeService.getTasks();
       if (result['success'] == true) {
         final tasks = result['tasks'] as List? ?? [];
-        final openCount =
-            tasks.where((t) => (t['status'] ?? '') == 'Open').length;
+        // Filter out food delivery tasks - they belong in Delivery page, not Service Requests
+        final openCount = tasks.where((t) => 
+          (t['status'] ?? '') == 'Open' && !_isFoodDeliveryTask(t)
+        ).length;
 
         // FIX-10: Only start the alert for a live new-event reload.
         // Cold-launch reconciliation (silentReconcile:true) must never

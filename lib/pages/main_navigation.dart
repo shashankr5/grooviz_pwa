@@ -7,6 +7,7 @@ import 'tasks_page.dart';
 import 'food_orders_page.dart';
 import 'camera_content_page.dart';
 import 'login_page.dart';
+import 'profile_page.dart';
 import '../utils/notification_permission_manager.dart';
 import '../utils/user_session_helper.dart';
 import '../services/logout_service.dart';
@@ -80,6 +81,15 @@ class _MainNavigationState extends State<MainNavigation>
         icon: Icon(Icons.camera_alt_outlined, size: 26),
         activeIcon: Icon(Icons.camera_alt, size: 26),
         label: 'Camera',
+      ),
+    ),
+    const _NavEntry(
+      key: 'profile',
+      page: ProfilePage(),
+      item: BottomNavigationBarItem(
+        icon: Icon(Icons.person_outline_rounded, size: 26),
+        activeIcon: Icon(Icons.person_rounded, size: 26),
+        label: 'Profile',
       ),
     ),
   ];
@@ -182,11 +192,12 @@ class _MainNavigationState extends State<MainNavigation>
   List<String> get _visibleKeys {
     // Management roles (Manager, GM, Admin) are not restricted by department —
     // they supervise all operations and need every tab.
-    const _managementRoles = {
+    const managementRoles = {
       'admin', 'general manager', 'manager',
     };
-    if (_managementRoles.contains(_userRole.trim().toLowerCase())) {
-      return _allNavItems.map((e) => e.key).toList();
+    if (managementRoles.contains(_userRole.trim().toLowerCase())) {
+      // Management sees all tabs except the profile tab (they always have Home).
+      return _allNavItems.map((e) => e.key).where((k) => k != 'profile').toList();
     }
 
     // No departments stored yet — show minimal set while loading.
@@ -196,6 +207,12 @@ class _MainNavigationState extends State<MainNavigation>
     final allowed = <String>{};
     for (final dept in _departments) {
       allowed.addAll(_tabsForDepartment(dept));
+    }
+
+    // If the user has no 'home' tab, replace it with 'profile' so they
+    // still have access to their info and logout.
+    if (!allowed.contains('home')) {
+      allowed.add('profile');
     }
 
     // Preserve the canonical ordering defined in _allNavItems.
@@ -377,8 +394,10 @@ class _MainNavigationState extends State<MainNavigation>
   }
 
   Future<void> _requestPermissions() async {
-    await Future.delayed(const Duration(milliseconds: 500));
-    await NotificationPermissionManager.requestAllNotificationPermissions();
+    // Wait for the first frame so we have a valid BuildContext for the sheet.
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (!mounted) return;
+    await NotificationPermissionManager.requestAllPermissions(context);
   }
 
   // ── Role / dept changed ───────────────────────────────────────────────────

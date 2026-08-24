@@ -210,24 +210,15 @@ Future<void> _showNotification(RemoteMessage message) async {
 
   print('🎯 Foreground FCM | type=$type | role=$role | depts=$normalized | isRoomService=$isRoomService | isFnB=$isFoodBeverage');
 
-  // ESCALATION_PULSE is a scheduler reminder, not a new escalation. Alerts
-  // are event-driven: notify once for the escalation event and ignore later
-  // pulses so they cannot repeatedly restart audio or replace the notification.
-  if (type == 'ESCALATION_PULSE') {
-    print('Foreground FCM | Ignoring periodic escalation pulse');
-    return;
-  }
-
-  // Escalation is currently disabled in the client. Do not allow legacy
-  // server events to produce a local notification, sound, or task reload.
-  if (type == 'ESCALATION_ALERT' ||
-      type == 'ESCALATION_STARTED' ||
-      type == 'ESCALATION_STAGE_1') {
-    print('Foreground FCM | Ignoring disabled escalation event: $type');
-    return;
-  }
-
+  // ── Only the 5 canonical types from the new backend are handled. ──────────
+  // All legacy delivery/order-accepted/pulse/escalation-legacy events are
+  // silently dropped so stale alerts cannot accumulate.
   switch (type) {
+
+    // ── NEW_FOOD_ORDER ─────────────────────────────────────────────────────
+    // TV device places a food order → notify F&B / Room Service staff.
+    // Alert loops until any device accepts, which triggers a task reload
+    // that will reset the count to 0 via AlertReloadCoordinator.
     case 'NEW_FOOD_ORDER':
       if (!isRoomServiceOrFnB) {
         print('Foreground FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
@@ -235,120 +226,54 @@ Future<void> _showNotification(RemoteMessage message) async {
       }
       await OrderAlertService.ensureRunning();
       OrderAlertService.notifyNewOrder();
-      // The FCM is only a hint. Confirm the live queue before keeping the
-      // foreground alert or showing a user-facing notification.
+      // Confirm the live queue before keeping the foreground alert.
       await AlertReloadCoordinator.instance.reloadFood();
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
-    case 'ORDER_ACCEPTED':
-    case 'ORDER_CANCELLED':
-      if (!isRoomServiceOrFnB) return;
-      // Optimistically decrement and stop if count hits zero, keep looping if > 0
-      await OrderAlertService.stopOne();
-      OrderAlertService.notifyNewOrder();
-      break;
-
-    case 'ORDER_DELIVERED':
-      if (!isRoomServiceOrFnB) return;
-      await OrderAlertService.stop();
-      break;
-
-    case 'ORDER_STATUS_CHANGED':
-      final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
-      if (orderStatus == 'READY') {
-        if (!isRoomService) return;
-        await TaskAlertService.ensureDeliveryRunning();
-        TaskAlertService.notifyNewDelivery();
-      }
-      break;
-
-    case 'ORDER_READY':
-    case 'FOOD_ORDER_READY':
-    case 'DELIVERY_READY':
-    case 'DELIVERY_NOTIFICATION':
-      if (!isRoomService) {
-        print('Foreground FCM | Ignoring delivery alerts for non-Room Service user.');
-        return;
-      }
-      await TaskAlertService.ensureDeliveryRunning();
-      TaskAlertService.notifyNewDelivery();
-      break;
-
-    case 'NEW_SERVICE_REQUEST':
-    case 'NEW_SERVICE_TASK':
+    // ── SERVICE_ORDER ──────────────────────────────────────────────────────
+    // TV device places a service booking → notify Service dept staff.
+    // Treated identically to NEW_SERVICE_REQUEST on the client side.
+    case 'SERVICE_ORDER':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
-      // Auto-reload the task list so the new request appears immediately
-      // without the user needing to manually pull-to-refresh.
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    case 'ACCEPTED':
-    case 'SERVICE_TASK_ACCEPTED':
-      // Cross-device hard stop: reset count to 0 so the foreground service
-      // stops on ALL devices the moment any device accepts the task.
-      TaskAlertService.resetServiceCount(0, reconcileAlert: true);
+    // ── NEW_SERVICE_REQUEST ────────────────────────────────────────────────
+    // WhatsApp webhook OR any backend path that creates a service_request.
+    // Alert loops until any staff member accepts — cross-device stop is
+    // handled by AlertReloadCoordinator.reloadTasks() resetting count to 0.
+    case 'NEW_SERVICE_REQUEST':
+      await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    case 'SERVICE_STATUS_UPDATE':
-      final action = (data['action'] ?? '').toString();
-      if (action == 'Reject' || action == 'Cancel') {
-        await TaskAlertService.stopAll();
-        await OrderAlertService.stop();
-      } else {
-        TaskAlertService.notifyNewTask();
-        await AlertReloadCoordinator.instance.reloadTasks();
-      }
-      break;
-
-    case 'SERVICE_GUEST_UPDATE':
-      TaskAlertService.notifyNewTask();
-      await AlertReloadCoordinator.instance.reloadTasks();
-      break;
-
+    // ── TASK_REASSIGNED ────────────────────────────────────────────────────
+    // A supervisor has reassigned a task to this user.
+    // Start the service alert loop so the new assignee is notified.
     case 'TASK_REASSIGNED':
       await TaskAlertService.ensureServiceRunning();
       TaskAlertService.notifyNewTask();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
+    // ── ESCALATION ─────────────────────────────────────────────────────────
+    // Scheduler fired — SLA breached, task climbed the hierarchy.
+    // One-shot non-looping escalation sound + reload so the escalated
+    // badge count and red card highlight update immediately.
     case 'ESCALATION':
-      // Scheduler escalation: one local notification and one non-looping
-      // sound. The request list is refreshed before the user opens it.
       await TaskAlertService.ensureEscalationRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    case 'NEW_DELIVERY_TASK':
-      if (!isRoomService) {
-        print('Foreground FCM | Ignoring delivery alerts for non-Room Service user.');
-        return;
-      }
-      await TaskAlertService.ensureDeliveryRunning();
-      TaskAlertService.notifyNewDelivery();
-      break;
-
-    case 'DELIVERY_ACCEPTED':
-    case 'DELIVERY_DELIVERED':
-      if (!isRoomService) return;
-      TaskAlertService.resetDeliveryCount(0, reconcileAlert: true);
-      TaskAlertService.notifyNewDelivery();
-      break;
-
-    case 'PULSE':
-      // Pulse concept safely removed: alerts are self-contained native loops until actioned.
-      return;
-
-    case 'PENDING_ACCEPTANCE':
-      await TaskAlertService.ensureServiceRunning();
-      TaskAlertService.notifyNewTask();
-      break;
-
     default:
-      print('Foreground FCM: unhandled type=$type');
+      // All other types (legacy delivery, order-accepted, pulses, etc.)
+      // are silently discarded — they either come from a different Lambda
+      // that is not part of the current backend or are obsolete.
+      print('Foreground FCM: discarding unrecognised type=$type');
+      return;
   }
 
   if (!NotificationPolicy.shouldShowLocalNotification(data)) {

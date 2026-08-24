@@ -163,7 +163,7 @@ class _DeliveryPageState extends State<DeliveryPage>
       final List rawOrders = (result['orders'] as List? ?? []);
       final grouped = groupFoodOrderRows(rawOrders);
 
-      final List deliveredRaw = (result['delivered'] as List? ?? []);
+      final List deliveredRaw = (result['deliveredOrders'] as List? ?? []);
       final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
 
       final ready = grouped
@@ -348,6 +348,9 @@ class _DeliveryPageState extends State<DeliveryPage>
         return;
       }
 
+      // Show success message immediately after API success
+      AppSnackBar.show(context, 'Order accepted ✅');
+
       await TaskAlertService.stopOneDeliveryAlert();
       await _loadAllOrders();
 
@@ -357,8 +360,6 @@ class _DeliveryPageState extends State<DeliveryPage>
         selectedFilter = 'Accepted';
         _tabController.animateTo(1);
       });
-
-      AppSnackBar.show(context, 'Order accepted ✅');
     } finally {
       if (mounted) setState(() => _actionLoadingOrderNo = null);
     }
@@ -413,6 +414,9 @@ class _DeliveryPageState extends State<DeliveryPage>
         return;
       }
 
+      // Show success message immediately after API success
+      AppSnackBar.show(context, 'Order delivered successfully 🎉');
+
       await _loadAllOrders();
 
       if (!mounted) return;
@@ -421,8 +425,6 @@ class _DeliveryPageState extends State<DeliveryPage>
         selectedFilter = 'Delivered';
         _tabController.animateTo(2);
       });
-
-      AppSnackBar.show(context, 'Order delivered successfully 🎉');
     } finally {
       if (mounted) setState(() => _actionLoadingOrderNo = null);
     }
@@ -869,11 +871,46 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     if (isLoading) {
-      return ListView.builder(
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-        itemCount: 5,
-        itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          children: [
+            // Show a loading header
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Loading delivery orders...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Show skeleton cards
+            Expanded(
+              child: ListView.builder(
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: 10,
+                itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
+              ),
+            ),
+          ],
+        ),
       );
     }
 

@@ -657,9 +657,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       });
       _showError(result["message"]);
     } else {
+      // Show success message immediately after API success
+      AppSnackBar.show(context, "Order marked Ready");
       order["raw"]["order_status"] = "READY";
       await _loadFoodOrders();
-      AppSnackBar.show(context, "Order marked Ready");
     }
   }
 
@@ -889,11 +890,46 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   Widget _buildSkeletonFoodOrdersView() {
-    return ListView.builder(
-      physics: const NeverScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-      itemCount: 10,
-      itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        children: [
+          // Show a loading header
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  'Loading food orders...',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Show skeleton cards
+          Expanded(
+            child: ListView.builder(
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: 10,
+              itemBuilder: (_, __) => const SkeletonFoodOrderCard(),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

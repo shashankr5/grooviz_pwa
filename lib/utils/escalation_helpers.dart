@@ -194,7 +194,11 @@ class EscalationInfo {
             raw['next_escalation_at'] ?? '').toString();
     DateTime? nextAt;
     if (nextRaw.isNotEmpty && nextRaw != 'null') {
-      nextAt = DateTime.tryParse(nextRaw.replaceAll(' ', 'T'))?.toLocal();
+      final parsed = DateTime.tryParse(nextRaw.replaceAll(' ', 'T'));
+      if (parsed != null) {
+        // Show timestamps as current time without UTC conversion for consistency
+        nextAt = parsed;
+      }
     }
 
     // ── Reassigned at ────────────────────────────────────────────────────
@@ -202,8 +206,7 @@ class EscalationInfo {
             raw['recent_reassigned_at'] ?? '').toString();
     DateTime? reassignedAt;
     if (reassignedAtRaw.isNotEmpty && reassignedAtRaw != 'null') {
-      reassignedAt =
-          DateTime.tryParse(reassignedAtRaw.replaceAll(' ', 'T'))?.toLocal();
+      reassignedAt = DateTime.tryParse(reassignedAtRaw.replaceAll(' ', 'T'));
     }
 
     // ── Current stage users (parse JSON array) ───────────────────────────

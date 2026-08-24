@@ -220,6 +220,27 @@ class TasksPageState extends State<TasksPage> {
     }
   }
 
+  // ── Helper method to check if task is assigned to current user ─────────────
+  bool _isTaskAssignedToUser(Map<String, dynamic> task) {
+    if (_userId == null) return false;
+    
+    final raw = task['raw'] as Map<String, dynamic>? ?? task;
+    
+    // Check if user accepted the task
+    final acceptedByUserId = raw['accepted_by_user_id'] ?? task['accepted_by_user_id'];
+    if (acceptedByUserId != null && acceptedByUserId.toString() == _userId.toString()) {
+      return true;
+    }
+    
+    // Check if task was assigned/reassigned to user
+    final assignedTo = raw['assigned_to'] ?? task['assigned_to'];
+    if (assignedTo != null && assignedTo.toString() == _userId.toString()) {
+      return true;
+    }
+    
+    return false;
+  }
+
   // ── Personal stats ────────────────────────────────────────────────────────
 
   Future<void> _loadMyStats() async {
@@ -267,11 +288,32 @@ class TasksPageState extends State<TasksPage> {
       final myEscRate     = (selfRow['escalation_rate_pct'] as num?)?.toDouble() ??
           (myTotAssigned > 0 ? (myTotEsc / myTotAssigned * 100) : 0.0);
 
+      // Calculate counts from actual task list for accurate reporting
+      int calculatedTotalAssigned = 0;
+      int calculatedCompleted = 0;
+      int calculatedInProgress = 0;
+
+      for (final task in allTasksList) {
+        final taskMap = task as Map<String, dynamic>;
+        final status = (taskMap['status'] ?? taskMap['task_flag'] ?? '').toString().toLowerCase();
+        final isAssignedToUser = _isTaskAssignedToUser(taskMap);
+        
+        if (isAssignedToUser) {
+          calculatedTotalAssigned++;
+          
+          if (status == 'closed' || status == 'completed') {
+            calculatedCompleted++;
+          } else if (status == 'in progress') {
+            calculatedInProgress++;
+          }
+        }
+      }
+
       setState(() {
-        totalTasks            = myTotAssigned;
-        completedTasks        = myTotClosed;
+        totalTasks            = calculatedTotalAssigned;
+        completedTasks        = calculatedCompleted;
+        inProgressTasks       = calculatedInProgress;
         escalatedTasks        = myTotEsc;
-        inProgressTasks       = (totalTasks - completedTasks).clamp(0, 9999);
         _avgResolutionMinutes = myAvgMins;
         _escalationRatePct    = myEscRate;
         _allTasks             = allTasksList;
@@ -379,11 +421,25 @@ class TasksPageState extends State<TasksPage> {
       }
 
       if (_isManagementOnly(_userRoleId)) {
+        // For management roles, calculate counts from team data
+        int calculatedTotalAssigned = 0;
+        int calculatedCompleted = 0;
+        int calculatedInProgress = 0;
+        
+        // Sum up all team member tasks to get department/enterprise totals
+        for (final row in rows) {
+          final assigned = (row['total_assigned'] as int?) ?? 0;
+          final closed = (row['total_closed'] as int?) ?? 0;
+          calculatedTotalAssigned += assigned;
+          calculatedCompleted += closed;
+        }
+        calculatedInProgress = (calculatedTotalAssigned - calculatedCompleted).clamp(0, 9999);
+        
         setState(() {
-          totalTasks      = totAssigned;
-          completedTasks  = totClosed;
+          totalTasks      = calculatedTotalAssigned;
+          completedTasks  = calculatedCompleted;
           escalatedTasks  = totEscalated;
-          inProgressTasks = (totAssigned - totClosed).clamp(0, 9999);
+          inProgressTasks = calculatedInProgress;
         });
       }
 
@@ -690,6 +746,11 @@ class TasksPageState extends State<TasksPage> {
   void _showFilteredTasksSheet(String filter, String sheetTitle) {
     final filtered = _allTasks.where((t) {
       final task  = t as Map<String, dynamic>;
+      
+      // Only show tasks assigned to current user
+      final isUserTask = _isTaskAssignedToUser(task);
+      if (!isUserTask) return false;
+      
       final isEsc = (task['is_escalated'] == 1 ||
           task['is_escalated'] == true ||
           task['task_flag'] == 'Escalated' ||

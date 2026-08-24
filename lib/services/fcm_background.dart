@@ -95,121 +95,55 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   final data      = message.data;
   final type      = (data['type'] ?? '').toString();
-  final stopAlert = data['stop_alert'] == 'true';
-  print('Background FCM | type=$type | stop_alert=$stopAlert | role=$role | depts=$normalized');
+  print('Background FCM | type=$type | role=$role | depts=$normalized');
 
-  // Do not surface periodic scheduler reminders as user alerts. Initial
-  // escalation events are still handled below as ESCALATION_ALERT.
-  if (type == 'ESCALATION_PULSE') {
-    print('Background FCM | Ignoring periodic escalation pulse');
-    return;
-  }
-
-  // Escalation is currently disabled in the client. Do not start an alert,
-  // reconcile its queue, or show a local notification for legacy events.
-  if (type == 'ESCALATION_ALERT' ||
-      type == 'ESCALATION_STARTED' ||
-      type == 'ESCALATION_STAGE_1') {
-    print('Background FCM | Ignoring disabled escalation event: $type');
-    return;
-  }
-
-  // Filter out notifications based on department authorizations
+  // ── Only the 5 canonical types are handled. All legacy/stale types are
+  // silently discarded so background isolates cannot start stale alerts.
   switch (type) {
+
+    // ── NEW_FOOD_ORDER ─────────────────────────────────────────────────────
     case 'NEW_FOOD_ORDER':
       if (!isRoomServiceOrFnB) {
         print('Background FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
         return;
       }
       await _startServiceIfNeeded();
-      // An event can arrive after another staff member has accepted the
-      // order. Reconcile with the server before retaining a foreground alert
-      // or posting a stale system notification.
+      // Reconcile with the server so a stale FCM doesn't keep the alert alive.
       await AlertReloadCoordinator.instance.reloadFood();
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
-    case 'NEW_SERVICE_TASK':
-    case 'TASK_REASSIGNED':
+    // ── SERVICE_ORDER ──────────────────────────────────────────────────────
+    // TV service booking — treated identically to NEW_SERVICE_REQUEST.
+    case 'SERVICE_ORDER':
       await _startServiceIfNeeded();
-      // Pre-fetch the task list so it's ready when the user opens the app.
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
+    // ── NEW_SERVICE_REQUEST ────────────────────────────────────────────────
+    case 'NEW_SERVICE_REQUEST':
+      await _startServiceIfNeeded();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      break;
+
+    // ── TASK_REASSIGNED ────────────────────────────────────────────────────
+    case 'TASK_REASSIGNED':
+      await _startServiceIfNeeded();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      break;
+
+    // ── ESCALATION ─────────────────────────────────────────────────────────
+    // One-shot non-looping sound; reload so badge + highlights update.
     case 'ESCALATION':
-      // The scheduler sends data-only FCM. Start the one-shot escalation
-      // sound explicitly; NotificationPolicy posts its local notification.
       await TaskAlertService.ensureEscalationRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    case 'NEW_DELIVERY_TASK':
-    case 'ORDER_READY':
-    case 'FOOD_ORDER_READY':
-    case 'DELIVERY_READY':
-    case 'DELIVERY_NOTIFICATION':
-      if (!isRoomService) {
-        print('Background FCM | Ignoring delivery alerts for non-Room Service user.');
-        return;
-      }
-      await _startServiceIfNeeded();
-      break;
-
-    case 'PULSE':
-      // Background isolates have no reliable in-memory queue. A scheduler
-      // pulse must never wake the foreground service or create a stale alert.
+    default:
+      // All other types (legacy delivery, order-accepted, pulses, etc.)
+      // are silently discarded.
+      print('Background FCM: discarding unrecognised type=$type');
       return;
-
-    case 'ORDER_ACCEPTED':
-    case 'ORDER_CANCELLED':
-      if (!isRoomServiceOrFnB) return;
-      // Reconcile count by fetching true state from API
-      await AlertReloadCoordinator.instance.reloadFood();
-      if (TaskAlertService.totalPending == 0 && OrderAlertService.pendingOrderCount == 0) {
-        await _stopServiceIfRunning();
-      }
-      break;
-
-    case 'DELIVERY_ACCEPTED':
-      if (!isRoomService) return;
-      await _stopServiceIfRunning(); // Delivery is play-once anyway
-      break;
-
-    case 'SERVICE_TASK_ACCEPTED':
-    case 'ACCEPTED':
-      // Reconcile count by fetching true state from API
-      await AlertReloadCoordinator.instance.reloadTasks();
-      if (TaskAlertService.totalPending == 0 && OrderAlertService.pendingOrderCount == 0) {
-        await _stopServiceIfRunning();
-      }
-      break;
-
-    case 'ORDER_DELIVERED':
-      if (!isRoomServiceOrFnB) return;
-      await _stopServiceIfRunning();
-      break;
-
-    case 'DELIVERY_DELIVERED':
-      if (!isRoomService) return;
-      await _stopServiceIfRunning();
-      break;
-
-    case 'ORDER_STATUS_CHANGED':
-      final orderStatus = (data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
-      if (orderStatus == 'READY') {
-        if (!isRoomService) return;
-        await _startServiceIfNeeded();
-      }
-      break;
-
-    case 'SERVICE_STATUS_UPDATE':
-    case 'SERVICE_GUEST_UPDATE':
-      final newStatus = (data['new_status'] ?? data['status'] ?? '').toString().toUpperCase();
-      if (newStatus == 'DELIVERED' || newStatus == 'COMPLETED' || newStatus == 'CANCELLED') {
-        await _stopServiceIfRunning();
-      }
-      await AlertReloadCoordinator.instance.reloadTasks();
-      break;
   }
 
   if (NotificationPolicy.shouldShowLocalNotification(data)) {

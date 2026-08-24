@@ -76,6 +76,24 @@ class TaskAlertService {
     // Reconciliation must always stop a stale alert at zero. It may only
     // start/restart an alert for a real incoming event.
     if (count <= 0 || reconcileAlert) _reevaluate();
+    
+    // BUGFIX: If there are pending tasks but no alert is running, start the alert
+    // This handles the case where app was killed/restarted with pending tasks
+    else if (count > 0) {
+      _checkAndStartServiceAlertIfNeeded();
+    }
+  }
+
+  static Future<void> _checkAndStartServiceAlertIfNeeded() async {
+    try {
+      final isRunning = await FlutterForegroundTask.isRunningService;
+      if (!isRunning && _pendingServiceCount > 0) {
+        print('TaskAlertService: Starting alert for existing pending tasks ($_pendingServiceCount)');
+        await ensureServiceRunning();
+      }
+    } catch (e) {
+      print('TaskAlertService._checkAndStartServiceAlertIfNeeded error: $e');
+    }
   }
 
   // ── Delivery API ─────────────────────────────────────────────────────────

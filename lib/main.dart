@@ -22,6 +22,7 @@ import 'services/notification_navigation_coordinator.dart';
 import 'services/bluetooth_printer_service.dart';
 import 'utils/user_session_helper.dart';
 import 'utils/app_colors.dart';
+import 'utils/notification_permission_manager.dart';
 
 import 'package:flutter/foundation.dart';
 
@@ -113,15 +114,10 @@ void main() async {
 }
 
 Future<void> _requestForegroundServicePermission() async {
-  try {
-    final status = await Permission.notification.request();
-    if (status.isDenied) {
-      print('Notification permission denied — alerts may not work');
-    }
-    await FlutterForegroundTask.requestIgnoreBatteryOptimization();
-  } catch (e) {
-    print('Permission request error (non-fatal): $e');
-  }
+  // Notification-only at cold start (no context yet for battery dialog).
+  // The one-time battery optimisation sheet is shown by MainNavigation
+  // after the first frame via NotificationPermissionManager.requestAllPermissions().
+  await NotificationPermissionManager.requestNotificationOnly();
 }
 
 class MyApp extends StatefulWidget {

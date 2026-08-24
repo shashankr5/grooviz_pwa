@@ -29,6 +29,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
+import '../services/websocket_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
@@ -93,6 +94,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   late Map<String, dynamic> _task;
 
+  StreamSubscription? _webSocketSubscription;
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +105,24 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     // Silently fetch fresh ticket data so stale notes / status from the
     // parent list are replaced with the current server state.
     _refreshFromServer();
+
+    // Listen to WebSocket for auto-refresh without manual reload
+    _webSocketSubscription = WebSocketService().stream.listen((data) {
+      final type = (data['type'] ?? '').toString().toUpperCase();
+      final taskId = data['service_request_id']?.toString() ?? 
+                     data['task_id']?.toString() ?? 
+                     data['request_id']?.toString();
+      
+      // Auto-refresh this ticket if it matches the WebSocket event
+      if (taskId == _serviceRequestId.toString() && 
+          (type == 'SERVICE_STATUS_CHANGED' || 
+           type == 'TASK_REASSIGNED' || 
+           type == 'SERVICE_TASK_ACCEPTED' ||
+           type == 'ACCEPTED' ||
+           type == 'TASK_CLOSED')) {
+        _refreshFromServer();
+      }
+    });
 
     // Tick every second so live countdowns (SLA banner, timeline) update.
     _slaTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -124,6 +145,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   @override
   void dispose() {
     _slaTicker?.cancel();
+    _webSocketSubscription?.cancel();
     _noteController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -266,9 +288,17 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     return int.tryParse(v.toString());
   }
 
-  // Escalation presentation is disabled until the feature is reintroduced
-  // end-to-end. Normal service-task actions remain unchanged.
-  bool get _isEscalated => false;
+  // Escalation state is read directly from the task map.
+  // is_escalated == 1 is set by check_and_escalate_unified.
+  bool get _isEscalated {
+    final raw = _task['raw'] as Map? ?? {};
+    return _task['is_escalated'] == 1 ||
+        _task['is_escalated'] == true ||
+        raw['is_escalated'] == 1 ||
+        raw['is_escalated'] == true ||
+        ((_task['escalation_instance_id'] ?? raw['escalation_instance_id']) != null &&
+            (_task['escalation_instance_id'] ?? raw['escalation_instance_id']).toString() != '0');
+  }
 
   bool get _canTakeOver {
     if (!_isEscalated) return false;
@@ -349,15 +379,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     final updated = (result['updatedTask'] as Map<String, dynamic>?) ?? {};
+    final newAssignedAt = result['assigned_at']?.toString() ??
+        updated['assigned_at']?.toString() ??
+        DateTime.now().toIso8601String();
     setState(() {
-      _task['assignedTo']   = updated['assigned_to_name'] ?? 'You';
+      _task['assignedTo']   = updated['assigned_to_name'] ?? result['assigned_to_name'] ?? 'You';
       _task['status']       = updated['status'] ?? 'In Progress';
       _task['is_escalated'] = 0;
       _task['alert_pending'] = 0;
       if (_task['raw'] is Map) {
         final raw = _task['raw'] as Map;
         raw['assigned_to']      = userId;
-        raw['assigned_to_name'] = updated['assigned_to_name'] ?? 'You';
+        raw['assigned_to_name'] = updated['assigned_to_name'] ?? result['assigned_to_name'] ?? 'You';
+        raw['assigned_at']      = newAssignedAt;
+        raw['assigned_by_name'] = result['assigned_by_name'] ?? '';
         raw['is_escalated']     = 0;
         raw['alert_pending']    = 0;
       }
@@ -799,6 +834,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                                 as Map<String,
                                                     dynamic>?) ??
                                             {};
+                                        // assigned_at is now reliably populated
+                                        // from the SP result row by task_service.
+                                        final newAssignedAt =
+                                            res['assigned_at']?.toString() ??
+                                            upd['assigned_at']?.toString() ??
+                                            DateTime.now().toIso8601String();
+                                        final newAssignedByName =
+                                            res['assigned_by_name']?.toString() ?? '';
                                         setState(() {
                                           _task['assignedTo'] =
                                               staff['name'];
@@ -811,15 +854,15 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                             final raw =
                                                 _task['raw'] as Map;
                                             raw['assigned_to'] =
-                                                staff['userId'];
+                                                staffId;
                                             raw['assigned_to_name'] =
                                                 staff['name'];
                                             raw['assigned_to_phone'] =
                                                 staff['phone'] ?? '';
                                             raw['assigned_by_name'] =
-                                                upd['assigned_by_name'] ?? '';
+                                                newAssignedByName;
                                             raw['assigned_at'] =
-                                                upd['assigned_at'] ?? raw['assigned_at'];
+                                                newAssignedAt;
                                             raw['is_escalated']  = 0;
                                             raw['alert_pending'] = 0;
                                           }
@@ -991,6 +1034,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildServiceSlaBanner(),
+
+                  // Escalation context banner â€” shown when task is escalated.
+                  // Gives supervisor+ a clear view of the current stage,
+                  // notified personnel, and SLA countdown.
+                  if (_isEscalated) ...[
+                    const SizedBox(height: 12),
+                    _buildEscalatedBanner(),
+                  ],
 
                   if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
                     const SizedBox(height: 12),
@@ -1370,7 +1421,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (value == null) return null;
     final text = value.toString().trim();
     if (text.isEmpty || text == 'null') return null;
-    return DateTime.tryParse(text.replaceFirst(' ', 'T'))?.toLocal();
+    // MySQL timestamps should be shown as-is without UTC conversion
+    // since they represent the current server time
+    final parsed = DateTime.tryParse(text.replaceFirst(' ', 'T'));
+    return parsed;
   }
 
   int? _parseTaskInt(dynamic value) =>
@@ -1428,6 +1482,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final assigned = _parseTaskTimestamp(raw['assigned_at'] ?? raw['recent_reassigned_at']);
     final closed = _parseTaskTimestamp(_task['closed_at'] ?? raw['closed_at'] ?? raw['completed_at']);
 
+    // Get person names for display
+    final acceptedByName = (raw['accepted_by_user_name'] ?? '').toString().trim();
+    final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
+    final closedByName = (raw['closed_by_user_name'] ?? '').toString().trim();
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
       decoration: BoxDecoration(
@@ -1444,12 +1503,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         const SizedBox(height: 14),
         _timelineEntry('Created', created, done: created != null, color: AppColors.primary),
         _timelineEntry('Accepted', accepted, done: accepted != null,
-            detail: accepted != null && created != null ? 'took ${_timelineDuration(created, accepted)}' : null,
+            detail: accepted != null && created != null 
+                ? 'took ${_timelineDuration(created, accepted)}${acceptedByName.isNotEmpty ? ' by $acceptedByName' : ''}'
+                : acceptedByName.isNotEmpty ? 'by $acceptedByName' : null,
             color: AppColors.success),
         _timelineEntry('Assigned / Reassigned', assigned, done: assigned != null,
-            detail: assigned == null ? 'Not reassigned' : null, color: AppColors.info),
+            detail: assigned == null 
+                ? 'Not reassigned' 
+                : assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
+            color: AppColors.info),
         _timelineEntry('Completed', closed, done: _isClosed || closed != null,
-            detail: closed == null ? (_isClosed ? 'Closed' : 'Pending') : null,
+            detail: closed == null 
+                ? (_isClosed ? 'Closed' : 'Pending') 
+                : closedByName.isNotEmpty ? 'by $closedByName' : null,
             color: AppColors.success, last: true),
       ]),
     );
@@ -1480,7 +1546,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
               color: done ? AppColors.textPrimary : AppColors.textSecondary)),
           const SizedBox(height: 2),
-          Text(detail == null ? stamp : '$stamp  ·  $detail',
+          Text(detail == null ? stamp : '$stamp  ï¿½  $detail',
               style: TextStyle(fontSize: 12, color: done ? AppColors.textSecondary : AppColors.textDisabled)),
         ]),
       )),

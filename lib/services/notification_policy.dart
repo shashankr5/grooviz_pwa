@@ -10,22 +10,16 @@ class NotificationPolicy {
   static const Duration _duplicateWindow = Duration(seconds: 45);
 
   static bool shouldShowLocalNotification(Map<String, dynamic> data) {
+    // Only the 5 canonical backend types produce a user-visible notification.
+    // Everything else reconciles state silently.
     switch ((data['type'] ?? '').toString().toUpperCase()) {
       case 'NEW_FOOD_ORDER':
-      case 'NEW_SERVICE_TASK':
+      case 'SERVICE_ORDER':
       case 'NEW_SERVICE_REQUEST':
       case 'TASK_REASSIGNED':
       case 'ESCALATION':
-      case 'ESCALATION_ALERT':
-      case 'NEW_DELIVERY_TASK':
-      case 'ORDER_READY':
-      case 'FOOD_ORDER_READY':
-      case 'DELIVERY_READY':
-      case 'DELIVERY_NOTIFICATION':
         return !_isDuplicate(data);
       default:
-        // PULSE, accepted/closed/cancelled/status and all escalation events
-        // reconcile current state silently.
         return false;
     }
   }

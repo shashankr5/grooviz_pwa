@@ -56,13 +56,19 @@ class DateFormatter {
   }
 
   /// Formats timestamp as "H:MM • DD/MM" (used in home_service.dart)
+  /// Always converts to local timezone so MySQL UTC timestamps display correctly.
   static String formatTimeDayMonth(String? timestamp) {
     if (timestamp == null || timestamp.trim().isEmpty) return '-';
     try {
       String s = timestamp.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
       if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
-      final dt = DateTime.parse(s);
+      DateTime dt = DateTime.parse(s);
+      if (!timestamp.contains('Z') && !timestamp.contains('z') && !timestamp.contains('+')) {
+        dt = DateTime.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second).toLocal();
+      } else {
+        dt = dt.toLocal();
+      }
       final mm = dt.minute.toString().padLeft(2, '0');
       return '${dt.hour}:$mm • ${dt.day}/${dt.month}';
     } catch (_) {
@@ -71,13 +77,19 @@ class DateFormatter {
   }
 
   /// Formats timestamp as "H:MM • DD/MM/YYYY" (used in food_order_service.dart)
+  /// Always converts to local timezone so MySQL UTC timestamps display correctly.
   static String formatTimeDayMonthYear(String? timestamp) {
     if (timestamp == null || timestamp.trim().isEmpty) return '-';
     try {
       String s = timestamp.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
       if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
-      final dt = DateTime.parse(s);
+      DateTime dt = DateTime.parse(s);
+      if (!timestamp.contains('Z') && !timestamp.contains('z') && !timestamp.contains('+')) {
+        dt = DateTime.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second).toLocal();
+      } else {
+        dt = dt.toLocal();
+      }
       final mm = dt.minute.toString().padLeft(2, '0');
       return '${dt.hour}:$mm • ${dt.day}/${dt.month}/${dt.year}';
     } catch (_) {
@@ -86,13 +98,15 @@ class DateFormatter {
   }
 
   /// Formats timestamp as "DD/MM/YYYY • H:MM AM/PM" (used in ticket_details_page.dart)
+  /// Shows timestamps as current time without UTC conversion.
   static String formatDateTimeAmPm(String? ts) {
     if (ts == null || ts.trim().isEmpty) return '—';
     try {
       String s = ts.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
       if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
-      final d = DateTime.parse(s);
+      // Parse timestamp as-is without UTC conversion
+      DateTime d = DateTime.parse(s);
 
       final h = d.hour > 12
           ? d.hour - 12
@@ -125,13 +139,15 @@ class DateFormatter {
   }
 
   /// Formats timestamp as "H:MM AM/PM" (used in guest_checkout_page.dart)
+  /// Shows timestamps as current time without UTC conversion.
   static String formatTimeOnlyAmPm(String? ts) {
     if (ts == null || ts.trim().isEmpty) return '—';
     try {
       String s = ts.trim();
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
       if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
-      final d = DateTime.parse(s);
+      // Parse timestamp as-is without UTC conversion
+      DateTime d = DateTime.parse(s);
 
       final h = d.hour > 12
           ? d.hour - 12

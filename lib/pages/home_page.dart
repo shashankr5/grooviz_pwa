@@ -329,16 +329,25 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
 
 
-  /// Keeps the legacy KPI count available without restoring SLA cards,
-  /// escalation banners, sounds, or notifications.
+  /// Recalculates the escalated task list and badge count from the current
+  /// tasks list. Uses is_escalated == 1 as the canonical signal — this is
+  /// set directly by check_and_escalate_unified on the service_request row
+  /// and surfaced by get_all_services_mobile1. escalation_instance_id is
+  /// checked as a secondary signal for older SP versions that populate it.
   void _recalcEscalation() {
     escalatedTasks = tasks.where((task) {
+      // Skip food delivery tasks - they belong in Delivery page, not Service Requests
+      if (_isFoodDeliveryRequest(task)) return false;
+      
+      // Primary signal: is_escalated field set by check_and_escalate_unified
+      if (task['is_escalated'] == 1 || task['is_escalated'] == true) return true;
+      // Secondary: check inside raw map (some SP versions put it there)
       final raw = task['raw'] as Map? ?? const {};
-      return task['is_escalated'] == 1 ||
-          task['is_escalated'] == true ||
-          raw['is_escalated'] == 1 ||
-          raw['is_escalated'] == true ||
-          raw['escalation_instance_id'] != null;
+      if (raw['is_escalated'] == 1 || raw['is_escalated'] == true) return true;
+      // Tertiary: escalation_instance_id present means an escalation record exists
+      final instanceId = task['escalation_instance_id'] ?? raw['escalation_instance_id'];
+      if (instanceId != null && instanceId.toString().isNotEmpty && instanceId.toString() != '0') return true;
+      return false;
     }).toList();
     _escalationBadgeCount = escalatedTasks.length;
   }
@@ -369,26 +378,34 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
-    final foodSummaryId = request['food_order_summary_id'];
+    // Check for food_order_summary_id (most reliable indicator)
+    // Check both top-level and raw fields
+    final foodSummaryId = request['food_order_summary_id'] ?? request['raw']?['food_order_summary_id'];
     if (foodSummaryId != null &&
         foodSummaryId.toString().trim().isNotEmpty &&
         foodSummaryId.toString() != '0') {
       return true;
     }
 
-    if (request['is_from_order'] == 1 || request['is_from_order'] == true) {
+    // Check is_from_order flag in both locations
+    final isFromOrder = request['is_from_order'] ?? request['raw']?['is_from_order'];
+    if (isFromOrder == 1 || isFromOrder == true) {
       return true;
     }
 
-    final serviceOrderId = request['service_order_id'];
+    // Check service_order_id in both locations
+    final serviceOrderId = request['service_order_id'] ?? request['raw']?['service_order_id'];
     if (serviceOrderId != null &&
         serviceOrderId.toString().trim().isNotEmpty &&
         serviceOrderId.toString() != '0') {
       return true;
     }
 
-    final question = (request['question'] ?? '').toString().toLowerCase();
-    if (question.contains('food order') || question.contains('ready for delivery')) {
+    // Check question content from multiple possible fields
+    final question = (request['question'] ?? request['title'] ?? request['raw']?['question'] ?? '').toString().toLowerCase();
+    if (question.contains('food order') || 
+        question.contains('ready for delivery') ||
+        question.contains('food delivery')) {
       return true;
     }
 
@@ -452,12 +469,13 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
 
     setState(() {
+      // Map tasks and filter out food delivery tasks (they belong in Delivery page only)
       tasks = raw.map((t) => {
         ...t,
         "isAccepted":  t["status"] == "In Progress",
         "statusColor": getStatusColor(t["status"]),
         "assignedTo":  t["raw"]?["accepted_by_user_name"] ?? t["raw"]?["assigned_to_name"] ?? "-",
-      }).toList();
+      }).where((task) => !_isFoodDeliveryRequest(task)).toList();
 
       // Calculate escalatedTasks locally from the main feed list.
       // Only Supervisor+ roles receive the escalation badge and filter —
@@ -468,7 +486,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _isLoading = false;
     });
 
-    final openCount = tasks.where((t) => t["status"] == "Open").length;
+    // Calculate service request count (excluding food delivery tasks)
+    final openCount = tasks
+        .where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t))
+        .length;
     TaskAlertService.resetServiceCount(openCount);
   }
 
@@ -488,7 +509,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final grouped = groupFoodOrderRows(rawOrders);
       final ready = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'READY').toList();
       final accepted = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'PREPARING' || (o['status'] ?? '').toString().toUpperCase() == 'IN PROGRESS').toList();
-      final List deliveredRaw = (foodResult['delivered'] as List? ?? []);
+      final List deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
       final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
 
       final ordersWithTime = List<Map<String, dynamic>>.from(ready)
@@ -618,13 +639,13 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     List<Map<String, dynamic>> list;
     switch (selectedFilter) {
       case "Open":
-        list = tasks.where((t) => t["status"] == "Open").toList();
+        list = tasks.where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t)).toList();
         break;
       case "In Progress":
-        list = tasks.where((t) => t["status"] == "In Progress").toList();
+        list = tasks.where((t) => t["status"] == "In Progress" && !_isFoodDeliveryRequest(t)).toList();
         break;
       case "Closed":
-        list = tasks.where((t) => t["status"] == "Closed").toList()
+        list = tasks.where((t) => t["status"] == "Closed" && !_isFoodDeliveryRequest(t)).toList()
           ..sort((a, b) {
             final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
             final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
@@ -1025,9 +1046,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _buildContent() {
-    final openCount       = tasks.where((t) => t["status"] == "Open").length;
-    final inProgressCount = tasks.where((t) => t["status"] == "In Progress").length;
-    final closedCount     = tasks.where((t) => t["status"] == "Closed").length;
+    // Calculate counts excluding food delivery tasks (which belong in Delivery page)
+    final openCount       = tasks.where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t)).length;
+    final inProgressCount = tasks.where((t) => t["status"] == "In Progress" && !_isFoodDeliveryRequest(t)).length;
+    final closedCount     = tasks.where((t) => t["status"] == "Closed" && !_isFoodDeliveryRequest(t)).length;
 
     return RefreshIndicator(
       color: AppColors.primary,
@@ -1305,8 +1327,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     t["raw"]["service_request_id"] ==
                                     updatedTask["service_request_id"]);
                                 if (idx != -1) {
+                                  // Use assigned_to_name first (new SP key),
+                                  // fall back to legacy accepted_by_user_name.
                                   tasks[idx]["assignedTo"] =
-                                      updatedTask["accepted_by_user_name"] ?? updatedTask["assigned_to_name"] ?? "-";
+                                      updatedTask["assigned_to_name"] ??
+                                      updatedTask["accepted_by_user_name"] ??
+                                      updatedTask["assigned_to_user_name"] ?? "-";
                                   tasks[idx]["status"] =
                                       updatedTask["status"] ?? tasks[idx]["status"];
                                   tasks[idx]["statusColor"] =
@@ -1322,6 +1348,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     raw["accepted_by_user_name"] = updatedTask["accepted_by_user_name"];
                                     raw["assigned_to"] = updatedTask["assigned_to"];
                                     raw["assigned_to_name"] = updatedTask["assigned_to_name"];
+                                    // Persist the reassignment timestamp so the
+                                    // info card and timeline show it immediately.
+                                    if (updatedTask["assigned_at"] != null) {
+                                      raw["assigned_at"] = updatedTask["assigned_at"];
+                                    }
                                   }
                                 }
                               });

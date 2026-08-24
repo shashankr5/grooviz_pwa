@@ -22,6 +22,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'order_alert_service.dart';
 import 'task_alert_service.dart';
+import 'escalation_service.dart';
 import 'session_change_service.dart';
 import '../utils/user_session_helper.dart';
 
@@ -198,7 +199,7 @@ class WebSocketService {
         return;
       }
 
-      if (type == 'ORDER_STATUS_CHANGED' || type == 'ORDER_STATUS_UPDATED') {
+      if (type == 'ORDER_STATUS_CHANGED' || type == 'ORDER_STATUS_UPDATED' || type == 'FOOD_ORDER_STATUS') {
         final newStatus = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '').toString().toUpperCase();
         if (newStatus == 'READY') {
           TaskAlertService.ensureDeliveryRunning();
@@ -252,10 +253,16 @@ class WebSocketService {
         return;
       }
 
-      // Escalation is not an active client feature.  Ignore its transport
-      // events so they cannot create a sound, badge, stale list, or alert.
-      if (type == 'ESCALATION_ALERT' ||
-          type == 'ESCALATION_STARTED' ||
+      // ── Escalation events ──────────────────────────────────────────────────
+
+      if (type == 'ESCALATION_ALERT') {
+        // Forward to EscalationService for badge updates and list refresh
+        EscalationService.instance.handleEscalationAlert(data);
+        return;
+      }
+
+      // Ignore other escalation transport events that don't need client action
+      if (type == 'ESCALATION_STARTED' ||
           type == 'ESCALATION_STAGE_1' ||
           type == 'ESCALATION_PULSE') {
         return;
