@@ -25,10 +25,20 @@ import '../components/skeleton_loader.dart';
 
 // ── Shared veg helpers ────────────────────────────────────────────────────────
 
-bool resolveIsVeg(dynamic isVegFlag) {
-  if (isVegFlag == null) return false;
+bool resolveIsVeg(dynamic isVegFlag, [String name = '']) {
+  if (isVegFlag == null) {
+    final lowerName = name.toLowerCase();
+    return lowerName.contains('veg') &&
+        !lowerName.contains('non-veg') &&
+        !lowerName.contains('non veg') &&
+        !lowerName.contains('nonveg');
+  }
   final v = isVegFlag.toString().trim().toLowerCase();
-  return v == '1' || v == 'true' || v == 'veg';
+  if (v == '1' || v == 'true' || v == 'veg') return true;
+  if (v == '0' || v == 'false' || v == 'non-veg' || v == 'nonveg') {
+    return false;
+  }
+  return false;
 }
 
 /// Premium veg/non-veg indicator — refined square with inner dot.
@@ -80,6 +90,15 @@ class _DeliveryPageState extends State<DeliveryPage>
   final Set<String> _expandedTimelineOrders = <String>{};
 
   StreamSubscription<void>? _deliverySub;
+
+  // Cache for summaryId → serviceRequestId mapping
+  final Map<int, int> _summaryIdToSrId = {};
+  // Cache for summaryId → service request status ("Open" / "In Progress" / "Closed")
+  final Map<int, String> _summaryIdToSrStatus = {};
+  // The service request is the authority for the delivery acceptance/closure
+  // timestamps. Keep the complete row so those values survive food-order
+  // grouping (which intentionally only contains food summary fields).
+  final Map<int, Map<String, dynamic>> _summaryIdToService = {};
 
   @override
   void initState() {
@@ -142,6 +161,16 @@ class _DeliveryPageState extends State<DeliveryPage>
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
+  // ── Non-zero int resolver (mirrors order_grouping.dart helper) ───────────
+  // Returns v as a positive int, or null when v is null / 0 / unparseable.
+  // Prevents order_id=0 from ever reaching the accept/update APIs.
+  int? _nonZeroInt(dynamic v) {
+    if (v == null) return null;
+    final n = v is int ? v : int.tryParse(v.toString());
+    if (n == null || n <= 0) return null;
+    return n;
+  }
+
   Future<void> _loadAllOrders() async {
     if (mounted) {
       setState(() {
@@ -151,6 +180,7 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     try {
+      // ── 1. Fetch food orders ──────────────────────────────────────────
       final result = await FoodOrderService().getFoodOrders();
       if (!mounted) return;
       if (result['success'] != true) {
@@ -160,51 +190,133 @@ class _DeliveryPageState extends State<DeliveryPage>
         return;
       }
 
+      // ── 2. Fetch service requests to get food_order_summary_id → service_request_id mapping ──
+      // Clear caches before rebuilding
+      _summaryIdToSrId.clear();
+      _summaryIdToSrStatus.clear();
+      _summaryIdToService.clear();
+      try {
+        final svcResult = await TaskService().getAllServices();
+        if (svcResult['success'] == true) {
+          final services = svcResult['services'] as List? ?? [];
+          for (final svc in services) {
+            if (svc is! Map) continue;
+            final rawSrId = svc['service_request_id'];
+            final srId = _nonZeroInt(rawSrId);
+            if (srId == null) continue;
+
+            final rawFoodSummaryId = svc['food_order_summary_id'];
+            final foodSummaryId = _nonZeroInt(rawFoodSummaryId);
+            final srStatus = (svc['status'] ?? 'Open').toString();
+
+            if (foodSummaryId != null) {
+              _summaryIdToSrId[foodSummaryId] = srId;
+              _summaryIdToSrStatus[foodSummaryId] = srStatus;
+              _summaryIdToService[foodSummaryId] =
+                  Map<String, dynamic>.from(svc);
+            }
+          }
+        }
+      } catch (_) {
+        // Non-fatal: if getAllServices fails, tab split falls back to food order status
+      }
+
+      // ── 3. Group food orders ──────────────────────────────────────────
       final List rawOrders = (result['orders'] as List? ?? []);
       final grouped = groupFoodOrderRows(rawOrders);
 
       final List deliveredRaw = (result['deliveredOrders'] as List? ?? []);
       final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
 
+      int _byTimeDesc(Map<String, dynamic> a, Map<String, dynamic> b) {
+        final aT = a['_orderTimeDt'] as DateTime?;
+        final bT = b['_orderTimeDt'] as DateTime?;
+        if (aT == null && bT == null) return 0;
+        if (aT == null) return 1;
+        if (bT == null) return -1;
+        return bT.compareTo(aT);
+      }
+
+      Map<String, dynamic> _buildOrder(Map<String, dynamic> g) {
+        final order = _fromFoodGroupedOrder(g);
+        final summaryId = _nonZeroInt(order['summaryId']);
+        if (summaryId != null && _summaryIdToSrId.containsKey(summaryId)) {
+          // Inject service-request data into the food-order card. The food
+          // summary deliberately remains Ready while a rider is carrying it,
+          // so the card's delivery state must come from this linked request.
+          if (order['serviceRequestId'] == null) {
+            final srId = _summaryIdToSrId[summaryId];
+            order['serviceRequestId'] = srId;
+          }
+          if (order['raw'] is Map) {
+            final raw = order['raw'] as Map;
+            raw['service_request_id'] = order['serviceRequestId'];
+            final service = _summaryIdToService[summaryId];
+            if (service != null) {
+              for (final key in const [
+                'accepted_at',
+                'closed_at',
+                'accepted_by_user_id',
+                'accepted_by_user_name',
+                'closed_by_user_id',
+                'closed_by_user_name',
+                'status',
+              ]) {
+                raw[key] = service[key];
+              }
+            }
+          }
+          final serviceStatus =
+              _summaryIdToSrStatus[summaryId]?.trim().toLowerCase();
+          final foodStatus = (order['status'] ?? '').toString().toUpperCase();
+          if (foodStatus != 'DELIVERED' && serviceStatus == 'in progress') {
+            order['uiStatus'] = 'Accepted';
+          }
+        }
+        return order;
+      }
+
       final ready = grouped
-          .where((o) => (o['status'] ?? '').toString().toUpperCase() == 'READY')
-          .map(_fromFoodGroupedOrder)
+          .where((o) {
+            final foodStatus = (o['status'] ?? '').toString().toUpperCase();
+            if (foodStatus != 'READY') return false;
+            // Only show in Ready tab if the SR hasn't been accepted yet.
+            // If we have SR status for this order's summaryId, use it.
+            final summaryId = _nonZeroInt(o['summaryId'])
+                ?? _nonZeroInt((o['raw'] as Map?)?['summary_id']);
+            if (summaryId != null && _summaryIdToSrStatus.containsKey(summaryId)) {
+              final srStatus = _summaryIdToSrStatus[summaryId]!.toLowerCase();
+              // "open" → still waiting for a rider to accept
+              return srStatus == 'open';
+            }
+            // No SR found for this order yet → it belongs in Ready
+            return true;
+          })
+          .map(_buildOrder)
           .toList()
-        ..sort((a, b) {
-          final aTime = a['_orderTimeDt'] as DateTime?;
-          final bTime = b['_orderTimeDt'] as DateTime?;
-          if (aTime == null && bTime == null) return 0;
-          if (aTime == null) return 1;
-          if (bTime == null) return -1;
-          return bTime.compareTo(aTime);
-        });
+        ..sort(_byTimeDesc);
 
       final accepted = grouped
-          .where((o) =>
-              (o['status'] ?? '').toString().toUpperCase() == 'PREPARING' ||
-              (o['status'] ?? '').toString().toUpperCase() == 'IN PROGRESS')
-          .map(_fromFoodGroupedOrder)
+          .where((o) {
+            final foodStatus = (o['status'] ?? '').toString().toUpperCase();
+            if (foodStatus != 'READY') return false;
+            // Show in Accepted tab when a rider has accepted the SR.
+            final summaryId = _nonZeroInt(o['summaryId'])
+                ?? _nonZeroInt((o['raw'] as Map?)?['summary_id']);
+            if (summaryId != null && _summaryIdToSrStatus.containsKey(summaryId)) {
+              final srStatus = _summaryIdToSrStatus[summaryId]!.toLowerCase();
+              return srStatus == 'in progress';
+            }
+            return false;
+          })
+          .map(_buildOrder)
           .toList()
-        ..sort((a, b) {
-          final aTime = a['_orderTimeDt'] as DateTime?;
-          final bTime = b['_orderTimeDt'] as DateTime?;
-          if (aTime == null && bTime == null) return 0;
-          if (aTime == null) return 1;
-          if (bTime == null) return -1;
-          return bTime.compareTo(aTime);
-        });
+        ..sort(_byTimeDesc);
 
       final delivered = deliveredGrouped
-          .map(_fromFoodGroupedOrder)
+          .map(_buildOrder)
           .toList()
-        ..sort((a, b) {
-          final aTime = a['_orderTimeDt'] as DateTime?;
-          final bTime = b['_orderTimeDt'] as DateTime?;
-          if (aTime == null && bTime == null) return 0;
-          if (aTime == null) return 1;
-          if (bTime == null) return -1;
-          return bTime.compareTo(aTime);
-        });
+        ..sort(_byTimeDesc);
 
       setState(() {
         readyOrders
@@ -217,8 +329,9 @@ class _DeliveryPageState extends State<DeliveryPage>
           ..clear()
           ..addAll(delivered);
       });
-      // The looping delivery alert is only for food waiting at the hand-off.
-      TaskAlertService.resetDeliveryCount(ready.length);
+
+      // Delivery alert fires only for Ready orders that haven't been accepted yet.
+      TaskAlertService.resetDeliveryCount(ready.length, reconcileAlert: true);
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
@@ -243,19 +356,29 @@ class _DeliveryPageState extends State<DeliveryPage>
   Map<String, dynamic> _fromFoodGroupedOrder(Map<String, dynamic> grouped) {
     final raw = grouped['raw'] is Map ? Map<String, dynamic>.from(grouped['raw']) : grouped;
     final orderNo = (grouped['orderNo'] ?? grouped['orderNumber'] ?? '').toString();
-    final summaryId = grouped['summaryId'] ?? grouped['orderId'] ?? raw['summary_id'] ?? raw['order_id'];
+
+    // Resolve summaryId: prefer the already-resolved value from groupFoodOrderRows,
+    // but treat 0 as absent and fall through to raw fields.
+    final summaryId = _nonZeroInt(grouped['summaryId'])
+        ?? _nonZeroInt(raw['summary_id'])
+        ?? _nonZeroInt(raw['food_summary_id']);
+
+    // serviceRequestId should come ONLY from the service_request table.
+    final serviceRequestId = _nonZeroInt(raw['service_request_id']); // DO NOT fallback to summaryId
+
     final roomNo = (grouped['roomNo'] ?? grouped['roomNumber'] ?? grouped['room'] ?? raw['room_number'] ?? raw['room_id'] ?? '—').toString();
     final guestName = (grouped['customerName'] ?? grouped['guestName'] ?? raw['guest_name'] ?? '').toString();
     final guestPhone = (grouped['customerNumber'] ?? raw['guest_phone'] ?? raw['customer_number'] ?? '').toString();
     final status = (grouped['status'] ?? raw['order_status'] ?? '').toString();
     final items = (grouped['items'] as List? ?? []).map((it) {
       if (it is Map) {
+        final itemName = (it['name'] ?? it['food_name'] ?? 'Item').toString();
+        final vegFlag = it['is_veg'] ?? it['isVeg'];
         return {
-          'name': (it['name'] ?? it['food_name'] ?? 'Item').toString(),
+          'name': itemName,
           'qty': it['qty'] ?? it['quantity'] ?? 1,
           'price': it['price'] ?? it['total_price'] ?? 0,
-          'is_veg': it['is_veg'],
-          'isVegKnown': it.containsKey('is_veg'),
+          'is_veg': vegFlag,
         };
       }
       return {'name': it.toString(), 'qty': 1, 'price': 0, 'is_veg': null, 'isVegKnown': false};
@@ -265,7 +388,7 @@ class _DeliveryPageState extends State<DeliveryPage>
 
     return {
       'summaryId': summaryId,
-      'serviceRequestId': raw['service_request_id'] ?? summaryId,
+      'serviceRequestId': serviceRequestId, // safe – might be null (we'll inject later)
       'orderNumber': orderNo,
       'roomNumber': roomNo,
       'guestName': guestName,
@@ -305,61 +428,76 @@ class _DeliveryPageState extends State<DeliveryPage>
         context, message ?? 'Something went wrong. Please try again.', isError: true);
   }
 
+  /// ACCEPT ORDER — now uses the correct service request accept API.
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
     final orderNo = (order['orderNumber'] ?? '').toString();
-    final summaryId = order['summaryId'] ?? order['raw']?['summary_id'] ?? order['raw']?['order_id'];
-    final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
-
     if (_actionLoadingOrderNo != null || orderNo.isEmpty) {
       _showGenericError();
+      return;
+    }
+
+    // Extract the service request ID from the order data.
+    final serviceRequestId = _nonZeroInt(order['serviceRequestId'])
+        ?? _nonZeroInt(order['raw']?['service_request_id']);
+
+    if (serviceRequestId == null) {
+      _showGenericError('Service request ID not found. Please refresh and try again.');
       return;
     }
 
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      bool success = false;
-      String? errMsg;
-
-      if (summaryId != null) {
-        final parsedSummaryId = int.tryParse(summaryId.toString()) ?? 0;
-        final res = await FoodOrderService().acceptFoodOrder(summaryId: parsedSummaryId);
-        if (res['success'] == true || res['success'] == 1) {
-          success = true;
-        } else {
-          errMsg = res['message']?.toString();
-        }
-      }
-
-      if (!success && serviceRequestId != null) {
-        var res = await TaskService().acceptServiceRequest(serviceRequestId: serviceRequestId);
-        if (res['success'] != true && res['success'] != 1) {
-          res = await TaskService().updateServiceRequestStatus(serviceRequestId: serviceRequestId, status: 'IN_PROGRESS');
-        }
-        if (res['success'] == true || res['success'] == 1) {
-          success = true;
-        }
-      }
+      // ✅ Step 1: Accept the service request (delivery workflow only).
+      // acceptFoodOrder is kitchen workflow (Pending→Preparing) — do NOT call it here.
+      final res = await TaskService().acceptServiceRequest(
+        serviceRequestId: serviceRequestId,
+      );
 
       if (!mounted) return;
 
-      if (!success) {
-        _showGenericError(errMsg);
-        return;
+      if (res['success'] != true) {
+        // "already accepted by you" means we own it — treat as success
+        final msg = res['message']?.toString() ?? '';
+        final alreadyMine = msg.toLowerCase().contains('already accepted by you');
+        if (!alreadyMine) {
+          _showGenericError(msg.isNotEmpty ? msg : 'Failed to accept order');
+          return;
+        }
       }
 
-      // Show success message immediately after API success
       AppSnackBar.show(context, 'Order accepted ✅');
 
-      await TaskAlertService.stopOneDeliveryAlert();
-      await _loadAllOrders();
-
-      if (!mounted) return;
+      // ✅ Step 2: Optimistically move the card to Accepted tab immediately.
+      // The food order stays "Ready" in the DB — the split is now driven by
+      // SR status (Open vs In Progress), so we update the cached SR status
+      // locally so the next rebuild sees it in the right tab.
+      final summaryId = _nonZeroInt(order['summaryId'])
+          ?? _nonZeroInt(order['raw']?['summary_id'])
+          ?? _nonZeroInt(order['raw']?['food_summary_id']);
+      if (summaryId != null) {
+        _summaryIdToSrStatus[summaryId] = 'In Progress';
+      }
 
       setState(() {
+        // Re-bucket: remove from ready, add to accepted
+        readyOrders.removeWhere((o) => o['orderNumber'] == orderNo);
+        final updatedOrder = Map<String, dynamic>.from(order);
+        updatedOrder['uiStatus'] = 'Accepted';
+        // Use the server-returned acceptance time; never manufacture a local
+        // timestamp for an API-backed delivery event.
+        final acceptedAt = res['accepted_at'];
+        if (acceptedAt != null && updatedOrder['raw'] is Map) {
+          (updatedOrder['raw'] as Map)['accepted_at'] = acceptedAt;
+        }
+        acceptedOrders.insert(0, updatedOrder);
         selectedFilter = 'Accepted';
         _tabController.animateTo(1);
       });
+
+      // ✅ Step 3: Stop alert count for this accepted order, then reconcile.
+      await TaskAlertService.stopOneDeliveryAlert();
+      await _loadAllOrders();
     } finally {
       if (mounted) setState(() => _actionLoadingOrderNo = null);
     }
@@ -370,57 +508,72 @@ class _DeliveryPageState extends State<DeliveryPage>
     if (confirm != true) return;
 
     final orderNo = (order['orderNumber'] ?? '').toString();
-    final summaryId = order['summaryId'] ?? order['raw']?['summary_id'] ?? order['raw']?['order_id'];
-    final serviceRequestId = int.tryParse('${order['serviceRequestId'] ?? ''}');
 
     if (_actionLoadingOrderNo != null || orderNo.isEmpty) {
       _showGenericError();
       return;
     }
 
+    final raw = order['raw'] as Map? ?? const {};
+    final summaryId = _nonZeroInt(order['summaryId'])
+        ?? _nonZeroInt(raw['summary_id'])
+        ?? _nonZeroInt(raw['id'])
+        ?? _nonZeroInt(raw['order_id'])
+        ?? _nonZeroInt(raw['food_summary_id']);
+
+    final serviceRequestId = _nonZeroInt(order['serviceRequestId'])
+        ?? _nonZeroInt(raw['service_request_id']);
+
+    if (summaryId == null && serviceRequestId == null) {
+      _showGenericError('Order ID not found. Please refresh and try again.');
+      return;
+    }
+
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      bool success = false;
-      String? errMsg;
-
-      if (summaryId != null) {
-        final parsedSummaryId = int.tryParse(summaryId.toString()) ?? 0;
-        final res = await FoodOrderService().updateFoodOrderStatus(
-          summaryId: parsedSummaryId,
-          status: 'Delivered',
-        );
-        if (res['success'] == true || res['success'] == 1) {
-          success = true;
-        } else {
-          errMsg = res['message']?.toString();
-        }
-      }
-
-      if (!success && serviceRequestId != null) {
-        var res = await TaskService().closeService(serviceRequestId: serviceRequestId);
-        if (res['success'] != true && res['success'] != 1) {
-          res = await TaskService().updateServiceRequestStatus(serviceRequestId: serviceRequestId, status: 'CLOSED');
-        }
-        if (res['success'] == true || res['success'] == 1) {
-          success = true;
-        }
-      }
-
-      if (!mounted) return;
-
-      if (!success) {
-        _showGenericError(errMsg);
+      // A delivery has two persisted states.  The food summary owns the
+      // Delivered timestamp; its linked service request owns the delivery
+      // workflow state.  Both calls are required, in that order.
+      if (summaryId == null || serviceRequestId == null) {
+        _showGenericError('Delivery details are incomplete. Please refresh and try again.');
         return;
       }
 
-      // Show success message immediately after API success
-      AppSnackBar.show(context, 'Order delivered successfully 🎉');
+      final foodResult = await FoodOrderService().updateFoodOrderStatus(
+        summaryId: summaryId,
+        status: 'Delivered',
+      );
+      if (foodResult['success'] != true && foodResult['success'] != 1) {
+        _showGenericError(foodResult['message']?.toString());
+        return;
+      }
 
-      await _loadAllOrders();
+      var serviceResult = await TaskService().closeService(
+        serviceRequestId: serviceRequestId,
+      );
+      if (serviceResult['success'] != true && serviceResult['success'] != 1) {
+        serviceResult = await TaskService().updateServiceRequestStatus(
+          serviceRequestId: serviceRequestId,
+          status: 'CLOSED',
+        );
+      }
 
       if (!mounted) return;
 
+      if (serviceResult['success'] != true && serviceResult['success'] != 1) {
+        // The food order is already delivered, so reload to show the server
+        // truth; do not claim the complete delivery workflow succeeded.
+        await _loadAllOrders();
+        _showGenericError(serviceResult['message']?.toString() ??
+            'Food order delivered, but its delivery request could not be closed.');
+        return;
+      }
+
+      AppSnackBar.show(context, 'Order delivered successfully 🎉');
+      await _loadAllOrders();
+
+      if (!mounted) return;
       setState(() {
         selectedFilter = 'Delivered';
         _tabController.animateTo(2);
@@ -1245,19 +1398,16 @@ class _DeliveryPageState extends State<DeliveryPage>
 
               // ── Order Items List ──
               ...items.map<Widget>((item) {
-                final isVegKnown = item['isVegKnown'] == true;
-                final isVeg = resolveIsVeg(item['is_veg']);
                 final name = (item['name'] ?? '').toString();
+                final isVeg = resolveIsVeg(item['is_veg'], name);
                 final qty = item['qty'];
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 5),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      if (isVegKnown) ...[
-                        vegIndicator(isVeg),
-                        const SizedBox(width: 7),
-                      ],
+                      vegIndicator(isVeg),
+                      const SizedBox(width: 7),
                       Expanded(
                         child: Text(
                           name,
@@ -1412,7 +1562,10 @@ class _DeliveryPageState extends State<DeliveryPage>
       'room_service_accepted_at', 'accepted_time', 'accepted_at',
     ]);
     final deliveredAt = _firstTimelineDate(raw, const [
-      'closed_at', 'food_order_delivered_time', 'summary_delivered_time', 'delivered_time', 'delivered_at',
+      // The food summary is the source of truth for the Delivered event. The
+      // service request is closed immediately afterwards, so closed_at may be
+      // a few seconds later and must not replace the food-order timestamp.
+      'food_order_delivered_time', 'summary_delivered_time', 'delivered_time', 'delivered_at', 'closed_at',
     ]);
 
     var activeStage = 1; // Ready is the first state shown in Delivery Management.
@@ -1421,7 +1574,9 @@ class _DeliveryPageState extends State<DeliveryPage>
 
     String time(DateTime? value, int stage) {
       if (value != null) return DateFormatter.formatDateTimeOnlyAmPm(value);
-      return activeStage > stage ? 'Done' : (activeStage == stage ? 'Ongoing' : 'Pending');
+      // Do not present a synthetic "Done" value as a timestamp. A stage is
+      // only timestamped when that timestamp is supplied by its owning API.
+      return activeStage == stage ? 'Ongoing' : 'Pending';
     }
 
     final steps = <Map<String, dynamic>>[

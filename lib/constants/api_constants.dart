@@ -36,7 +36,6 @@ class ApiConstants {
   static const String addServiceNote = "$baseUrl/ScreenSync_add_service_note_mobile";
   static const String closeService = "$baseUrl/ScreenSync_close_service_mobile1";
   static const String reassignService      = "$baseUrl/ScreenSync_reassign_service_mobile1";
-  static const String escalationHistoryForTask = "$baseUrl/ScreenSync_get_escalation_history_for_task_mobile";
 
   // ── Task Operations Reporting ─────────────────────────────────
   // Role-aware operations report. Replaces the retired task summary,

@@ -48,6 +48,18 @@ class DeepLinkPayload {
               data['order_id'] ??
               data['instance_id'])
           ?.toString();
+    } else if (rawType == 'FOOD_ORDER_STATUS' ||
+      rawType == 'NEW_DELIVERY_TASK' ||
+      rawType == 'ORDER_READY' ||
+      rawType == 'FOOD_ORDER_READY' ||
+      rawType == 'DELIVERY_READY' ||
+      rawType == 'DELIVERY_NOTIFICATION') {
+      targetTab = 'delivery';
+      entityType = DeepLinkEntityType.delivery;
+      entityId = (data['service_request_id'] ??
+          data['order_id'] ??
+          data['order_number'])
+        ?.toString();
     } else if (rawType == 'ESCALATION') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.escalation;

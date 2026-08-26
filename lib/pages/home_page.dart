@@ -121,6 +121,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // Scroll-FAB inactivity timer — hides the FAB after 5s of no scroll.
   Timer? _scrollFabTimer;
 
+  // Per-second ticker so every SLA countdown chip on escalated cards
+  // refreshes without requiring the parent page's setState() to fire.
+  Timer? _escalationTicker;
+
   // ── Scroll-to-top/bottom FAB ─────────────────────────────────────────────
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<bool> _showScrollFabNotifier = ValueNotifier(false);
@@ -145,6 +149,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _subscribeToAlerts();
 
     _scrollController.addListener(_onScroll);
+
+    // Tick every second so SLA countdown chips on escalated cards update
+    // live without waiting for an external event to call setState().
+    _escalationTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && escalatedTasks.isNotEmpty) setState(() {});
+    });
   }
 
   void _onScroll() {
@@ -244,6 +254,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _escalationListSub?.cancel();
     _roleChangeSub?.cancel();
     _scrollFabTimer?.cancel();
+    _escalationTicker?.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _showScrollFabNotifier.dispose();
@@ -378,7 +389,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
-    // Check for food_order_summary_id (most reliable indicator)
+    // Primary check: food_order_summary_id (most reliable indicator for food deliveries)
     // Check both top-level and raw fields
     final foodSummaryId = request['food_order_summary_id'] ?? request['raw']?['food_order_summary_id'];
     if (foodSummaryId != null &&
@@ -387,25 +398,16 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return true;
     }
 
-    // Check is_from_order flag in both locations
-    final isFromOrder = request['is_from_order'] ?? request['raw']?['is_from_order'];
-    if (isFromOrder == 1 || isFromOrder == true) {
-      return true;
-    }
-
-    // Check service_order_id in both locations
-    final serviceOrderId = request['service_order_id'] ?? request['raw']?['service_order_id'];
-    if (serviceOrderId != null &&
-        serviceOrderId.toString().trim().isNotEmpty &&
-        serviceOrderId.toString() != '0') {
-      return true;
-    }
-
-    // Check question content from multiple possible fields
+    // REMOVED: is_from_order check - this catches regular service orders too!
+    // Service orders (amenities, room service items) also have is_from_order=1
+    // Only food deliveries should be filtered, not regular service orders
+    
+    // Check question content for explicit food delivery indicators
+    // Be very specific to avoid false positives
     final question = (request['question'] ?? request['title'] ?? request['raw']?['question'] ?? '').toString().toLowerCase();
     if (question.contains('food order') || 
-        question.contains('ready for delivery') ||
-        question.contains('food delivery')) {
+        question.contains('food delivery') ||
+        (question.contains('ready for delivery') && question.contains('food'))) {
       return true;
     }
 
@@ -507,27 +509,84 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (foodResult['success'] == true) {
       final List rawOrders = (foodResult['orders'] as List? ?? []);
       final grouped = groupFoodOrderRows(rawOrders);
-      final ready = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'READY').toList();
-      final accepted = grouped.where((o) => (o['status'] ?? '').toString().toUpperCase() == 'PREPARING' || (o['status'] ?? '').toString().toUpperCase() == 'IN PROGRESS').toList();
+
+      // Delivery Management splits food orders using their linked Room
+      // Service request (the food summary stays Ready during delivery). Use
+      // exactly the same API-backed rule here so Home never shows stale counts.
+      int? nonZeroInt(dynamic value) {
+        final parsed = value is int ? value : int.tryParse('$value');
+        return parsed != null && parsed > 0 ? parsed : null;
+      }
+
+      final serviceStatusBySummaryId = <int, String>{};
+      try {
+        final serviceResult = await TaskService().getAllServices();
+        if (serviceResult['success'] == true) {
+          for (final service in serviceResult['services'] as List? ?? const []) {
+            if (service is! Map) continue;
+            final summaryId = nonZeroInt(service['food_order_summary_id']);
+            if (summaryId != null) {
+              serviceStatusBySummaryId[summaryId] =
+                  (service['status'] ?? 'Open').toString().toLowerCase();
+            }
+          }
+        }
+      } catch (_) {
+        // The Delivery page has the same non-fatal fallback when the service
+        // request feed is temporarily unavailable.
+      }
+
+      int? summaryIdOf(Map<String, dynamic> order) {
+        final raw = order['raw'] as Map?;
+        return nonZeroInt(order['summaryId']) ??
+            nonZeroInt(raw?['summary_id']) ??
+            nonZeroInt(raw?['food_summary_id']);
+      }
+
+      final ready = grouped.where((order) {
+        if ((order['status'] ?? '').toString().toUpperCase() != 'READY') {
+          return false;
+        }
+        final serviceStatus = serviceStatusBySummaryId[summaryIdOf(order)];
+        return serviceStatus == null || serviceStatus == 'open';
+      }).toList();
+      final accepted = grouped.where((order) {
+        if ((order['status'] ?? '').toString().toUpperCase() != 'READY') {
+          return false;
+        }
+        return serviceStatusBySummaryId[summaryIdOf(order)] == 'in progress';
+      }).toList();
       final List deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
       final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
 
       final ordersWithTime = List<Map<String, dynamic>>.from(ready)
         ..sort((a, b) {
-          final da = a['orderDate'] as DateTime? ?? a['etaExpiresAt'] as DateTime? ?? DateTime.now();
-          final db = b['orderDate'] as DateTime? ?? b['etaExpiresAt'] as DateTime? ?? DateTime.now();
+          DateTime readyAt(Map<String, dynamic> order) {
+            final raw = order['raw'] as Map?;
+            return _parseTimestamp((raw?['summary_ready_time'] ??
+                    raw?['ready_time'] ?? raw?['created_at'] ?? '')
+                .toString());
+          }
+          final da = readyAt(a);
+          final db = readyAt(b);
           return da.compareTo(db); // oldest first
         });
 
       Map<String, dynamic>? oldestPreview;
       if (ordersWithTime.isNotEmpty) {
         final first = ordersWithTime.first;
+        final raw = first['raw'] as Map?;
+        final readyTime = raw?['summary_ready_time'] ??
+            raw?['ready_time'] ??
+            raw?['created_at'];
         oldestPreview = {
           'orderNumber': first['orderNo'] ?? first['orderNumber'],
           'roomNumber': first['roomNo'] ?? first['roomNumber'] ?? first['room'] ?? '—',
           'guestName': first['customerName'] ?? first['guestName'] ?? '',
-          'orderTime': first['orderTime'] ?? first['time'],
-          '_orderTimeDt': first['orderDate'] ?? first['etaExpiresAt'],
+          'orderTime': readyTime?.toString(),
+          '_orderTimeDt': readyTime == null
+              ? null
+              : _parseTimestamp(readyTime.toString()),
         };
       }
 
@@ -539,13 +598,35 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _deliveryCountsLoading = false;
       });
 
-      TaskAlertService.resetDeliveryCount(_readyOrderCount);
+      TaskAlertService.resetDeliveryCount(_readyOrderCount, reconcileAlert: true);
     } else {
       setState(() => _deliveryCountsLoading = false);
     }
   }
 
   // ── Accept task ───────────────────────────────────────────────────────────
+
+  /// Returns true if `task` was escalated at the time of the action.
+  bool _wasEscalated(Map<String, dynamic> task) {
+    if (task['is_escalated'] == 1 || task['is_escalated'] == true) return true;
+    final raw = task['raw'] as Map? ?? const {};
+    if (raw['is_escalated'] == 1 || raw['is_escalated'] == true) return true;
+    final instanceId = task['escalation_instance_id'] ?? raw['escalation_instance_id'];
+    return instanceId != null &&
+        instanceId.toString().isNotEmpty &&
+        instanceId.toString() != '0';
+  }
+
+  /// Shows a confirmation snackbar when an escalated task is resolved.
+  void _showEscalationResolvedToast(String action) {
+    if (!mounted) return;
+    final msg = switch (action) {
+      'accept'   => 'Escalation resolved — task accepted ✅',
+      'reassign' => 'Escalation resolved — task reassigned ✅',
+      _          => 'Escalation resolved ✅',
+    };
+    AppSnackBar.show(context, msg);
+  }
 
   Future<void> _acceptTask(Map<String, dynamic> task) async {
     final taskId       = task["raw"]?["service_request_id"] ?? task["task_id"] ?? task["id"];
@@ -582,9 +663,14 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // Optimistically decrement and stop if count hits zero, keep looping if > 0
     await TaskAlertService.stopOneServiceAlert();
     await OrderAlertService.stopOne();
+    final wasEsc = _wasEscalated(task);
     await _loadTasks();
     _resolveEscalationForTask(task, resolutionType: 'accept');
-    AppSnackBar.show(context, "Task Accepted 🎉");
+    if (wasEsc) {
+      _showEscalationResolvedToast('accept');
+    } else {
+      AppSnackBar.show(context, "Task Accepted 🎉");
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1320,6 +1406,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               // disappears from the Escalated tab immediately.
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task);
+                              if (_wasEscalated(task)) _showEscalationResolvedToast('close');
                             },
                             onReassign: (updatedTask) {
                               setState(() {
@@ -1359,6 +1446,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               // Refresh escalated list + stop pulse engine.
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
+                              if (_wasEscalated(task)) _showEscalationResolvedToast('reassign');
                             },
                           ),
                         ),
@@ -1450,7 +1538,14 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 builder: (_) => TicketDetailPage(
                   task:     task,
                   userRole: userRole,
-                  onClose:  () => _loadTasks(),
+                  onClose:  () {
+                    _showEscalationResolvedToast('close');
+                    _loadTasks();
+                  },
+                  onReassign: (updatedTask) {
+                    _showEscalationResolvedToast('reassign');
+                    _loadTasks();
+                  },
                   onNoteAdded: (note) {
                     setState(() {
                       final idx = escalatedTasks.indexWhere((t) =>

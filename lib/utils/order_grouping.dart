@@ -121,8 +121,16 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
           ? tapCountVal.toInt()
           : (int.tryParse(tapCountVal.toString()) ?? 0);
 
+      // Resolve a non-zero integer summaryId.  _safeInt in FoodOrderService
+      // converts null → 0, so we must treat 0 as "absent" here and fall through
+      // to the raw field so the accept / update calls never send order_id=0.
+      final rawSummaryId = o['summaryId'];
+      final resolvedSummaryId = _resolveNonZeroInt(rawSummaryId)
+          ?? _resolveNonZeroInt(raw?['summary_id'])
+          ?? _resolveNonZeroInt(raw?['food_summary_id']);
+
       grouped[orderNo] = {
-        'summaryId':    o['summaryId'] ?? raw?['summary_id'],
+        'summaryId':    resolvedSummaryId,
         'orderNo':      orderNo,
         'room':         o['roomNumber'],
         'guest':        (o['guestName'] ?? 'Guest').toString(),
@@ -152,4 +160,13 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
   }
 
   return grouped.values.toList();
+}
+
+/// Returns [v] as a positive (non-zero) int, or null when v is null / 0 / unparseable.
+/// Used everywhere we resolve summaryId so that order_id=0 is never sent to the API.
+int? _resolveNonZeroInt(dynamic v) {
+  if (v == null) return null;
+  final n = v is int ? v : int.tryParse(v.toString());
+  if (n == null || n <= 0) return null;
+  return n;
 }

@@ -3,12 +3,8 @@
 // CHANGES IN THIS VERSION:
 //  • AlertSoundKey.delivery  = 'delivery_notification'   (NEW)
 //  • AlertSoundKey.escalation = 'escalation_notification' (NEW)
-//  • Play-once mode: after the audio finishes the player is stopped but the
-//    foreground service stays alive as a silent watcher.
-//    The Lambda pulse job sends the next pulse as a fresh FCM → onStart()
-//    fires again → plays once. Eliminates the LoopMode.one fatigue problem.
-//  • Escalation sound always plays once (no loop), even if called from
-//    ensureEscalationRunning() — enforced by _playOnce flag.
+//  • Non-loop mode remains available for alert types that should play once.
+//  • Escalation uses loop mode and is stopped when its task is actioned.
 
 import 'dart:io';
 import 'package:flutter/services.dart';
@@ -96,8 +92,7 @@ class UnifiedAlertTaskHandler extends TaskHandler {
     try {
       final prefs     = await SharedPreferences.getInstance();
       final soundName = prefs.getString(AlertSoundKey.prefKey) ?? AlertSoundKey.food;
-      // shouldLoop=true  → food orders & service tasks (loop until explicit stop)
-      // shouldLoop=false → delivery & escalation (play once, service stays as watcher)
+      // shouldLoop=true → active alerts continue until their action clears them
       final shouldLoop = prefs.getString(AlertSoundKey.loopKey) == 'true';
 
       final assetPath = 'assets/audio/$soundName.wav';
@@ -135,7 +130,7 @@ class UnifiedAlertTaskHandler extends TaskHandler {
       _player = AudioPlayer();
       await _player!.setFilePath(file.path);
       // Loop mode: food/service alerts loop until explicitly stopped (stopAll/stopOneServiceAlert).
-      // Delivery/escalation play once and the service stays alive as a silent watcher.
+      // The service remains alive only while an alert state is active.
       await _player!.setLoopMode(shouldLoop ? LoopMode.one : LoopMode.off);
 
       await _player!.play();

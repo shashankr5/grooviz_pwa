@@ -37,23 +37,6 @@ void _initForegroundTask() {
   );
 }
 
-Future<void> _startServiceIfNeeded() async {
-  try {
-    final isRunning = await FlutterForegroundTask.isRunningService;
-    if (isRunning) {
-      await FlutterForegroundTask.restartService();
-    } else {
-      await FlutterForegroundTask.startService(
-        notificationTitle: 'New Alert',
-        notificationText: 'Tap to view',
-        callback: unifiedAlertStartCallback,
-      );
-    }
-  } catch (e) {
-    print('BG: _startServiceIfNeeded error: $e');
-  }
-}
-
 Future<void> _stopServiceIfRunning() async {
   try {
     final isRunning = await FlutterForegroundTask.isRunningService;
@@ -97,7 +80,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final type      = (data['type'] ?? '').toString();
   print('Background FCM | type=$type | role=$role | depts=$normalized');
 
-  // ── Only the 5 canonical types are handled. All legacy/stale types are
+  // ── Canonical alert and action types are handled. Legacy/stale types are
   // silently discarded so background isolates cannot start stale alerts.
   switch (type) {
 
@@ -107,37 +90,75 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         print('Background FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
         return;
       }
-      await _startServiceIfNeeded();
+      await OrderAlertService.ensureRunning();
       // Reconcile with the server so a stale FCM doesn't keep the alert alive.
       await AlertReloadCoordinator.instance.reloadFood();
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
+      case 'FOOD_ORDER_STATUS':
+        final status = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '')
+          .toString().toUpperCase();
+        if (status != 'READY') return;
+        await TaskAlertService.ensureDeliveryRunning();
+        await AlertReloadCoordinator.instance.reloadDelivery();
+        break;
+
     // ── SERVICE_ORDER ──────────────────────────────────────────────────────
     // TV service booking — treated identically to NEW_SERVICE_REQUEST.
     case 'SERVICE_ORDER':
-      await _startServiceIfNeeded();
+      await TaskAlertService.ensureServiceRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     // ── NEW_SERVICE_REQUEST ────────────────────────────────────────────────
     case 'NEW_SERVICE_REQUEST':
-      await _startServiceIfNeeded();
+      await TaskAlertService.ensureServiceRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     // ── TASK_REASSIGNED ────────────────────────────────────────────────────
     case 'TASK_REASSIGNED':
-      await _startServiceIfNeeded();
+      await TaskAlertService.ensureServiceRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
     // ── ESCALATION ─────────────────────────────────────────────────────────
-    // One-shot non-looping sound; reload so badge + highlights update.
+    // Looping sound; reload so badge + highlights update.
     case 'ESCALATION':
       await TaskAlertService.ensureEscalationRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
+
+    case 'ORDER_ACCEPTED':
+    case 'ORDER_CANCELLED':
+      OrderAlertService.notifyNewOrder();
+      await AlertReloadCoordinator.instance.reloadFood();
+      return;
+
+    case 'ORDER_DELIVERED':
+      await OrderAlertService.stop();
+      await TaskAlertService.stopAll();
+      return;
+
+    case 'SERVICE_TASK_ACCEPTED':
+    case 'ACCEPTED':
+      await TaskAlertService.stopEscalation();
+      TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      return;
+
+    case 'DELIVERY_ACCEPTED':
+    case 'DELIVERY_DELIVERED':
+      TaskAlertService.notifyNewDelivery();
+      await AlertReloadCoordinator.instance.reloadDelivery();
+      return;
+
+    case 'TASK_CLOSED':
+      await TaskAlertService.stopEscalation();
+      TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      return;
 
     default:
       // All other types (legacy delivery, order-accepted, pulses, etc.)

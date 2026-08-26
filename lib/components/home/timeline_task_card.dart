@@ -182,61 +182,73 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                 children: [
                   // Row 1: Room Pill, Request ID & Status Badge
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Row(
-                        children: [
-                          // Room Number Pill
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppColors.primaryLight,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.meeting_room_outlined,
-                                    color: AppColors.primary, size: 16),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'ROOM $roomStr',
-                                  style: AppTypography.title.copyWith(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.primary,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (requestId.isNotEmpty && requestId != '0') ...[
-                            const SizedBox(width: 8),
+                      Expanded(
+                        child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                          children: [
                             Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 5),
                               decoration: BoxDecoration(
-                                color: AppColors.bg,
+                                color: AppColors.primaryLight,
                                 borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                    color: AppColors.border
-                                        .withValues(alpha: 0.6)),
                               ),
-                              child: Text(
-                                '#$requestId',
-                                style: AppTypography.caption.copyWith(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textSecondary,
-                                ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.meeting_room_outlined,
+                                      color: AppColors.primary, size: 14),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'ROOM $roomStr',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTypography.title.copyWith(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.primary,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
+                            if (requestId.isNotEmpty && requestId != '0') ...[
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Container(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 90),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.bg,
+                                    borderRadius: BorderRadius.circular(7),
+                                    border: Border.all(
+                                        color: AppColors.border
+                                            .withValues(alpha: 0.6)),
+                                  ),
+                                  child: Text(
+                                    '#$requestId',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTypography.caption.copyWith(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
+                      const SizedBox(width: 6),
 
                       // Status Pill & Live Resolution Timer
                       Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -247,6 +259,8 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                             ),
                             child: Text(
                               statusStr.toUpperCase(),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: AppTypography.caption.copyWith(
                                 color: statusCol,
                                 fontSize: 10,

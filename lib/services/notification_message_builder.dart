@@ -54,6 +54,19 @@ class NotificationMessageBuilder {
           icon:      NotifIcon.food,
         );
 
+      case 'FOOD_ORDER_STATUS':
+        final ref = orderNumber.isNotEmpty ? '#$orderNumber' : (orderId.isNotEmpty ? '#$orderId' : '');
+        return NotifMessage(
+          title:     data['title']?.toString() ?? '🍽️ Food Order Ready',
+          body:      data['body']?.toString() ?? 'Food order $ref is ready',
+          bigText:   'Food order $ref is ready for delivery. Tap to review the delivery queue.',
+          ticker:    'Food order ready',
+          notifId:   NotifId.delivery,
+          channelId: NotifChannel.delivery,
+          color:     NotifColor.delivery,
+          icon:      NotifIcon.delivery,
+        );
+
       // ── Service Orders (TV booking) ───────────────────────────────────────
       case 'SERVICE_ORDER':
         final ref = orderNumber.isNotEmpty ? '#$orderNumber' : (orderId.isNotEmpty ? '#$orderId' : '');

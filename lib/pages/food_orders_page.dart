@@ -161,7 +161,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
         setState(() {
           foodOrders[index]['status']              = FoodOrderStatus.preparing.label;
           foodOrders[index]['raw']['order_status'] = 'ACCEPTED';
-          foodOrders[index]['acceptedAt']          = DateTime.now();
+          // REMOVED: foodOrders[index]['acceptedAt'] = DateTime.now();
+          // Let the server provide the correct accepted timestamp via _loadFoodOrders()
         });
       }
       _loadFoodOrders();
@@ -279,9 +280,30 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   // current_rush_hour is the configured total ETA while rush hour is active.
   int _rushEtaMinutes() => rushExtraMinutesSelected > 0 ? rushExtraMinutesSelected : 15;
 
+  /// Returns [v] as a positive (non-zero) int, or null when v is null / 0 / unparseable.
+  /// Prevents order_id=0 from ever being sent to accept / update / tap APIs.
+  int? _nonZeroInt(dynamic v) {
+    if (v == null) return null;
+    final n = v is int ? v : int.tryParse(v.toString());
+    if (n == null || n <= 0) return null;
+    return n;
+  }
+
+  /// Resolves the canonical summaryId for [order].
+  /// Treats 0 as absent and falls through to raw fields so the API
+  /// never receives order_id=0.
+  int? _resolveSummaryId(Map<String, dynamic> order) {
+    final raw = order['raw'] as Map? ?? const {};
+    return _nonZeroInt(order['summaryId'])
+        ?? _nonZeroInt(raw['summary_id'])
+        ?? _nonZeroInt(raw['id'])
+        ?? _nonZeroInt(raw['order_id'])
+        ?? _nonZeroInt(raw['food_summary_id']);
+  }
+
   // ====================== DATA LOADING ======================
-  Future<void> _loadFoodOrders() async {
-    if (mounted) setState(() { _isLoading = true; _hasError = false; });
+  Future<void> _loadFoodOrders({bool silent = false}) async {
+    if (mounted) setState(() { if (!silent) _isLoading = true; _hasError = false; });
     final result = await _foodOrderService.getFoodOrders();
     if (!mounted) return;
     if (result["success"] != true) {
@@ -640,8 +662,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       order['status']  = FoodOrderStatus.ready.label;
       order['readyAt'] = DateTime.now();
     });
-    final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
-    if (summaryId == 0) {
+    final summaryId = _resolveSummaryId(order);
+    if (summaryId == null) {
       _showError("Order ID missing. Please refresh.");
       setState(() { order['status'] = FoodOrderStatus.preparing.label; order.remove('readyAt'); });
       return;
@@ -660,7 +682,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       // Show success message immediately after API success
       AppSnackBar.show(context, "Order marked Ready");
       order["raw"]["order_status"] = "READY";
-      await _loadFoodOrders();
+      await _loadFoodOrders(silent: true);
     }
   }
 
@@ -1615,8 +1637,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               return;
                             }
                             HapticFeedback.selectionClick();
-                            final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
-                            if (summaryId == 0) {
+                            final summaryId = _resolveSummaryId(order);
+                            if (summaryId == null) {
                               _showError("Order ID missing. Please refresh.");
                               return;
                             }
@@ -1648,8 +1670,12 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               _showError(result["message"]);
                             } else {
                               order["raw"]["order_status"] = "ACCEPTED";
-                              await OrderAlertService.stopOne();
+                              // Show success immediately — before the reload
                               AppSnackBar.show(context, "Order accepted");
+                              await OrderAlertService.stopOne();
+                              // Reload silently (no skeleton flash) to reconcile
+                              // server state: ETA, accepted timestamp, etc.
+                              await _loadFoodOrders(silent: true);
                             }
                             setState(() => _acceptingIndex = null);
                           },
@@ -1698,8 +1724,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               ? () => _showError(
                                   "Maximum delay reached. Cannot add more time.")
                               : () async {
-                                   final summaryId = (order['summaryId'] as num?)?.toInt() ?? 0;
-                                   if (summaryId == 0) {
+                                   final summaryId = _resolveSummaryId(order);
+                                   if (summaryId == null) {
                                      _showError("Order ID missing. Please refresh.");
                                      return;
                                    }
@@ -1891,7 +1917,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
         'title': 'Preparing',
         'time': preparingAt != null
             ? DateFormatter.formatDateTimeOnlyAmPm(preparingAt)
-            : (activeStage > 1 ? 'Done' : '(Pending)'),
+            : '(Pending)',
         'isDone': activeStage >= 1 && !isCancelled,
         'isActive': activeStage == 1 && !isCancelled,
         'color': AppColors.warning,
@@ -1901,7 +1927,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
         'title': 'Ready',
         'time': readyAt != null
             ? DateFormatter.formatDateTimeOnlyAmPm(readyAt)
-            : (activeStage > 2 ? 'Done' : '(Pending)'),
+            : '(Pending)',
         'isDone': activeStage >= 2 && !isCancelled,
         'isActive': activeStage == 2 && !isCancelled,
         'color': AppColors.info,

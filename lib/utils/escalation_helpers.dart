@@ -87,10 +87,6 @@ class EscalationVisibility {
   static bool canTakeOver(EscalationRole role) =>
       role.isSupervisorOrAbove;
 
-  /// Whether this role sees the full escalation history timeline.
-  static bool canViewEscalationHistory(EscalationRole role) =>
-      role.isSupervisorOrAbove;
-
   /// Whether the escalation accent bar on a task card should be shown.
   /// Staff see a softer "Pending attention" variant; Supervisor+ see the
   /// full "SLA breached" message.
@@ -483,21 +479,5 @@ class EscalationDisplay {
         ),
       ]),
     );
-  }
-
-  // ── History timeline dot color ────────────────────────────────────────────
-
-  static Color historyDotColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'resolved':
-      case 'accepted':
-      case 'completed': return AppColors.success;
-      case 'open':
-      case 'timedout':
-      case 'cancelled': return AppColors.error;
-      case 'viewed':
-      case 'notified':  return AppColors.primary;
-      default:          return AppColors.warning;
-    }
   }
 }

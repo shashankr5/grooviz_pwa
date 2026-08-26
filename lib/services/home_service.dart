@@ -1,4 +1,5 @@
 // services/home_service.dart
+import 'dart:convert';
 import 'dart:developer' as dev;
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
@@ -43,7 +44,7 @@ class HomeService {
   }
 
 
-  // â”€â”€ GET TASKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET TASKS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> getTasks() async {
     try {
@@ -76,7 +77,7 @@ class HomeService {
       }
 
       // ScreenSync_get_all_services_mobile1 returns STATUS[] as the task rows
-      // (no separate sentinel object — STATUS IS the data).
+      // (no separate sentinel object â€” STATUS IS the data).
       // Fallback: if RESULT key exists and STATUS is a sentinel, use RESULT.
       final dynamic statusRaw  = rawData["STATUS"];
       final dynamic resultRaw  = rawData["RESULT"];
@@ -108,7 +109,7 @@ class HomeService {
     }
   }
 
-  // â”€â”€ FETCH TASKS FOR DATE RANGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ FETCH TASKS FOR DATE RANGE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> fetchTasksForRange(DateRange range) async {
     try {
@@ -170,7 +171,7 @@ class HomeService {
     }
   }
 
-  // â”€â”€ GENERATE EXECUTIVE REPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GENERATE EXECUTIVE REPORT Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> generateExecutiveReport({
     required String startDate,
@@ -223,12 +224,38 @@ class HomeService {
     return s.isEmpty ? null : s;
   }
 
+  static String? _latestNoteText(dynamic notes) {
+    final list = _decodeNotesList(notes);
+    if (list.isEmpty) return null;
+    for (final note in list.reversed) {
+      if (note is Map) {
+        final text = _nonEmpty(note['note_text']);
+        if (text != null) return text;
+      }
+    }
+    return null;
+  }
+
+  /// Decodes `notes` into a List regardless of whether it arrives as an
+  /// already-decoded List or as a raw JSON string from JSON_ARRAYAGG.
+  static List _decodeNotesList(dynamic notes) {
+    if (notes == null) return const [];
+    if (notes is List) return notes;
+    if (notes is String && notes.isNotEmpty && notes != 'null') {
+      try {
+        final decoded = jsonDecode(notes);
+        if (decoded is List) return decoded;
+      } catch (_) {}
+    }
+    return const [];
+  }
+
   static List<Map<String, dynamic>> _mapTasks(List raw) {
     return raw.map<Map<String, dynamic>>((t) {
       final m = Map<String, dynamic>.from(t);
 
-      // â”€â”€ Escalation derivation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // escalation_instance_id non-null â†’ task is currently escalated.
+      // Ã¢â€â‚¬Ã¢â€â‚¬ Escalation derivation Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+      // escalation_instance_id non-null Ã¢â€ â€™ task is currently escalated.
       // is_escalated flag is also checked for legacy rows that set it directly.
       final int? escalationInstanceId =
           m["escalation_instance_id"] as int?;
@@ -240,7 +267,7 @@ class HomeService {
       return {
         "service_request_id": m["service_request_id"],
         // room_number is the human-facing string (e.g. "101") from the SP.
-        // room_id is the integer FK â€” never show to the user.
+        // room_id is the integer FK Ã¢â‚¬â€ never show to the user.
         // Priority: room_number > requested_room > room_id fallback.
         "room": (m["room_number"] ?? m["requested_room"] ?? m["room_id"] ?? "-").toString(),
         "status":      _statusText(m["status"], m["closed"]),
@@ -262,8 +289,9 @@ class HomeService {
                 "-")
             .toString(),
         "accepted_by_user_id": m["accepted_by_user_id"],
-        "note":         m["note_text"],
-        // â”€â”€ Escalation fields (from get_all_services_mobile RESULT) â”€â”€â”€â”€â”€
+        "note":         m["note_text"] ?? _latestNoteText(m["notes"]),
+        "notes":        _decodeNotesList(m["notes"]),
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Escalation fields (from get_all_services_mobile RESULT) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         // These are read by EscalationBanner, SlaCountdownWidget, and the
         // urgency border system without any extra API call.
         "is_escalated":           isEscalated ? 1 : 0,
@@ -271,35 +299,35 @@ class HomeService {
         "escalation_instance_id": escalationInstanceId,
         "escalation_status":      m["escalation_status"],   // "Working" | null
         "current_stage_id":       m["current_stage_id"],
-        "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 â€“ Supervisor"
-        "current_stage_level":    m["current_stage_level"],  // numeric 1,2,3â€¦
-        "current_stage_users_json": m["current_stage_users_json"], // JSON â€” users being notified now
-        "next_escalation_at":     m["next_escalation_at"], // ISO-8601 â€” drives SLA countdown
+        "current_stage_name":     m["current_stage_name"], // e.g. "Level 2 Ã¢â‚¬â€œ Supervisor"
+        "current_stage_level":    m["current_stage_level"],  // numeric 1,2,3Ã¢â‚¬Â¦
+        "current_stage_users_json": m["current_stage_users_json"], // JSON Ã¢â‚¬â€ users being notified now
+        "next_escalation_at":     m["next_escalation_at"], // ISO-8601 Ã¢â‚¬â€ drives SLA countdown
         "escalation_time_minutes": m["escalation_time_minutes"],
-        // â”€â”€ Acceptance fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Acceptance fields Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "accepted_stage_level":   m["accepted_stage_level"], // level at which task was accepted
-        "accepted_stage_name":    m["accepted_stage_name"],  // e.g. "Level 2 â€“ Supervisor"
+        "accepted_stage_name":    m["accepted_stage_name"],  // e.g. "Level 2 Ã¢â‚¬â€œ Supervisor"
         "accepted_user_json":     m["accepted_user_json"],   // JSON user object of acceptor
-        // â”€â”€ Closure fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Closure fields Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "closed_by_user_id":      m["closed_by_user_id"],
         "closed_by_user_name":    m["closed_by_user_name"],
-        // â”€â”€ Recent escalated users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Recent escalated users Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "recent_escalation_level":  m["recent_escalation_level"],
         "recent_escalated_users_json": m["recent_escalated_users_json"],
-        // â”€â”€ Reassignment fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Reassignment fields Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "recent_reassigned_to_user_id":   m["recent_reassigned_to_user_id"],
         "recent_reassigned_to_user_name": m["recent_reassigned_to_user_name"],
         "recent_reassigned_by_user_id":   m["recent_reassigned_by_user_id"],
         "recent_reassigned_by_user_name": m["recent_reassigned_by_user_name"],
         "recent_reassigned_at":           m["recent_reassigned_at"],
-        // â”€â”€ Timestamps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Timestamps Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "accepted_at":   m["accepted_at"],
         "created_at":    m["created_at"],
         "timestamp":     m["timestamp"],
-        // â”€â”€ Identifiers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Identifiers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         "department_id": m["department_id"],
         "enterprise_id": m["enterprise_id"],
-        // Full raw row â€” any field not listed above is accessible via raw[key]
+        // Full raw row Ã¢â‚¬â€ any field not listed above is accessible via raw[key]
         "raw":           m,
       };
     }).toList();
@@ -340,73 +368,7 @@ class HomeService {
     return DateFormatter.formatDateTimeAmPm(timestamp);
   }
 
-  // â”€â”€ GET ESCALATION HISTORY FOR TASK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-  Future<Map<String, dynamic>> getEscalationHistoryForTask(
-      int serviceRequestId) async {
-    try {
-      final userId = await UserSessionHelper.getUserId();
-      if (userId == null) {
-        return {
-          "success": false,
-          "message": "User not logged in",
-          "history": []
-        };
-      }
-
-      final payload = {
-        "user_id":            userId,
-        "service_request_id": serviceRequestId,
-        "stage":              AppConfig.stage,
-      };
-
-      dev.log("ðŸ“¤ Fetching escalation history for sr=$serviceRequestId...");
-      final response = await _dio.post(
-        ApiConstants.escalationHistoryForTask,
-        data: payload,
-      );
-
-      if (response.statusCode != 200) {
-        return {
-          "success": false,
-          "message": "Server error: ${response.statusCode}",
-          "history": [],
-        };
-      }
-
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
-        return {
-          "success": false,
-          "message": "Invalid server response",
-          "history": [],
-        };
-      }
-
-      final statusFlag    = statusList[0]["status"] ?? "F";
-      final statusMessage = statusList[0]["message"] ?? "Unknown";
-
-      if (statusFlag != "S") {
-        return {"success": false, "message": statusMessage, "history": []};
-      }
-
-      final resultList = response.data["RESULT"] as List? ?? [];
-      return {
-        "success": true,
-        "message": statusMessage,
-        "history": resultList.cast<Map<String, dynamic>>(),
-      };
-    } catch (e) {
-      dev.log("ERROR (getEscalationHistoryForTask): $e");
-      return {
-        "success": false,
-        "message": ErrorHandler.friendlyMessage(e),
-        "history": [],
-      };
-    }
-  }
-
-  // â”€â”€ GET STAFF LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET STAFF LIST Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> getStaffList({required int requestId}) async {
     try {
@@ -421,7 +383,7 @@ class HomeService {
         "stage":      AppConfig.stage,
       };
 
-      dev.log("ðŸ“¤ Fetching staff list...");
+      dev.log("Ã°Å¸â€œÂ¤ Fetching staff list...");
       final response = await _dio.post(ApiConstants.staffList, data: payload);
 
       if (response.statusCode != 200) {
@@ -432,7 +394,15 @@ class HomeService {
         };
       }
 
-      final statusList = response.data["STATUS"] as List?;
+        final data = response.data is Map
+          ? Map<String, dynamic>.from(response.data as Map)
+          : <String, dynamic>{};
+        final rawStatus = data["STATUS"];
+        final statusList = rawStatus is List
+          ? rawStatus
+          : rawStatus is Map
+            ? [rawStatus]
+            : const <dynamic>[];
       if (statusList == null || statusList.isEmpty) {
         return {
           "success": false,
@@ -450,8 +420,8 @@ class HomeService {
 
       final resultList = response.data["RESULT"] as List?;
       if (resultList != null && resultList.isNotEmpty) {
-        dev.log("ðŸ“‹ Staff item keys: ${resultList.first.keys.toList()}");
-        dev.log("ðŸ“‹ Staff item sample: ${resultList.first}");
+        dev.log("Ã°Å¸â€œâ€¹ Staff item keys: ${resultList.first.keys.toList()}");
+        dev.log("Ã°Å¸â€œâ€¹ Staff item sample: ${resultList.first}");
       }
 
       final staff = resultList?.map((item) {
@@ -475,7 +445,7 @@ class HomeService {
       return {"success": true, "message": statusMessage, "staff": staff ?? []};
     } catch (e) {
       dev.log("Staff API Error: $e");
-      // FIX-11/12 (Bugs 11-12): was "Error: $e" â€” raw exception shown to user
+      // FIX-11/12 (Bugs 11-12): was "Error: $e" Ã¢â‚¬â€ raw exception shown to user
       return {
         "success": false,
         "message": ErrorHandler.friendlyMessage(e),
@@ -484,7 +454,7 @@ class HomeService {
     }
   }
 
-  // â”€â”€ REASSIGN TICKET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ REASSIGN TICKET Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> reassignTicket({
     required int ticketId,
@@ -546,7 +516,7 @@ class HomeService {
     }
   }
 
-  // â”€â”€ ACCEPT SERVICE REQUEST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ ACCEPT SERVICE REQUEST Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   Future<Map<String, dynamic>> acceptTask({
     required int taskId,
     int? departmentId,
@@ -562,7 +532,7 @@ class HomeService {
 
 
 
-  // â”€â”€ ADD NOTE (routes to new endpoint: ScreenSync_add_service_note_mobile) â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ ADD NOTE (routes to new endpoint: ScreenSync_add_service_note_mobile) Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> addNote({
     required int serviceRequestId,
@@ -592,8 +562,16 @@ class HomeService {
         return {"success": false, "message": "Server error", "note": null};
       }
 
-      final statusList = response.data["STATUS"] as List?;
-      if (statusList == null || statusList.isEmpty) {
+      final data = response.data is Map
+          ? Map<String, dynamic>.from(response.data as Map)
+          : <String, dynamic>{};
+      final rawStatus = data["STATUS"];
+      final statusList = rawStatus is List
+          ? rawStatus
+          : rawStatus is Map
+              ? [rawStatus]
+              : const <dynamic>[];
+      if (statusList.isEmpty) {
         return {
           "success": false,
           "message": "Invalid response",
@@ -601,18 +579,23 @@ class HomeService {
         };
       }
 
-      final flag = statusList[0]["status"];
+      final flag = statusList[0]["status"]?.toString().toUpperCase();
       final msg  = statusList[0]["message"];
 
       if (flag != "S") {
         return {"success": false, "message": msg ?? "Failed", "note": null};
       }
 
-      final resultList = response.data["RESULT"] as List?;
+      final rawResult = data["RESULT"] ?? data["RESULT2"] ?? data["RESULT_2"];
+      final resultList = rawResult is List
+          ? rawResult
+          : rawResult is Map
+              ? [rawResult]
+              : const <dynamic>[];
       return {
         "success": true,
         "message": msg,
-        "note": resultList?.isNotEmpty == true ? resultList![0] : null,
+        "note": resultList.isNotEmpty ? resultList[0] : null,
       };
     } catch (e) {
       dev.log("ERROR (addNote): $e");
@@ -624,7 +607,7 @@ class HomeService {
     }
   }
 
-  // â”€â”€ CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile1) â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ CLOSE SERVICE REQUEST (routes to new endpoint: ScreenSync_close_service_mobile1) Ã¢â€â‚¬Ã¢â€â‚¬
 
   /// Compatibility entry point. The close_service_mobile1 contract is owned by
   /// TaskService and derives enterprise/department from the service request.
@@ -637,7 +620,7 @@ class HomeService {
 
 
 
-  // â”€â”€ GET TEAM PERFORMANCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET TEAM PERFORMANCE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   /// Role-aware, rolling six-month operations report used by the Tasks page.
   Future<Map<String, dynamic>> getServiceOperationsReport() async {
@@ -742,34 +725,34 @@ class HomeService {
     return {
       'success': true,
       'message': report['message'] ?? 'Success',
-      // ── Team & user rows ─────────────────────────────────────────────────
+      // â”€â”€ Team & user rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'team': rows.map(_normaliseOperationsUserRow).toList(),
       'weeklyUsers': targetWeeklyUsers,
       'allMonthlyUsers': report['monthlyUsers'],
       'allWeeklyUsers': report['weeklyUsers'],
-      // ── RS3: Department overall benchmark ────────────────────────────────
+      // â”€â”€ RS3: Department overall benchmark â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'departments': report['departments'],
-      // ── RS7: Monthly department trends ───────────────────────────────────
+      // â”€â”€ RS7: Monthly department trends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'monthlyDepartments': report['monthlyDepartments'],
-      // ── RS6: Weekly department trends ────────────────────────────────────
+      // â”€â”€ RS6: Weekly department trends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'weeklyDepartments': report['weeklyDepartments'],
-      // ── RS4/RS10: Weekly enterprise service counts ───────────────────────
+      // â”€â”€ RS4/RS10: Weekly enterprise service counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'weeklyServices': report['weeklyServices'],
-      // ── RS5/RS11: Monthly enterprise service counts ──────────────────────
+      // â”€â”€ RS5/RS11: Monthly enterprise service counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'monthlyServices': report['monthlyServices'],
-      // ── RS12: Weekly food summary ────────────────────────────────────────
+      // â”€â”€ RS12: Weekly food summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'weeklyFood': report['weeklyFood'],
-      // ── RS13: Monthly food summary ───────────────────────────────────────
+      // â”€â”€ RS13: Monthly food summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'monthlyFood': report['monthlyFood'],
-      // ── RS14: Weekly food user (per-staff food stats) ────────────────────
+      // â”€â”€ RS14: Weekly food user (per-staff food stats) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'weeklyFoodUsers': report['weeklyFoodUsers'],
-      // ── RS15: Monthly food user (per-staff food stats) ───────────────────
+      // â”€â”€ RS15: Monthly food user (per-staff food stats) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'monthlyFoodUsers': report['monthlyFoodUsers'],
-      // ── RS16: Weekly guest check-in / check-out ──────────────────────────
+      // â”€â”€ RS16: Weekly guest check-in / check-out â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'weeklyGuests': report['weeklyGuests'],
-      // ── RS17: Monthly guest check-in / check-out ─────────────────────────
+      // â”€â”€ RS17: Monthly guest check-in / check-out â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'monthlyGuests': report['monthlyGuests'],
-      // ── RS1/RS2: Overall enterprise summary ──────────────────────────────
+      // â”€â”€ RS1/RS2: Overall enterprise summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       'overallSummary': report['overall'],
       // Legacy drill-down placeholder (not populated from this API)
       'drillDown': <dynamic>[],
@@ -823,7 +806,7 @@ class HomeService {
           row['name'] ??
           row['username'] ??
           row['staff_name'] ??
-          'â€”',
+          'Ã¢â‚¬â€',
       'department_name': row['department_name'] ??
           row['department'] ??
           row['dept_name'] ??
@@ -843,9 +826,9 @@ class HomeService {
 
 
 
-  // â”€â”€ GET READY ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET READY ORDERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-  // â”€â”€ UPDATE ROOM SERVICE STATUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ UPDATE ROOM SERVICE STATUS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   /* Deprecated Room Service API implementation retained as a reference only.
      Delivery now uses TaskService.getAllServices(), acceptServiceRequest(),
@@ -867,11 +850,11 @@ class HomeService {
         "stage":           AppConfig.stage,
       };
 
-      dev.log("ðŸ“¤ Updating Room Service Status â€” $action for $orderNumber");
+      dev.log("Ã°Å¸â€œÂ¤ Updating Room Service Status Ã¢â‚¬â€ $action for $orderNumber");
       final response = await _dio.post(
           ApiConstants.updateRoomServiceStatus,
           data: payload);
-      dev.log("ðŸ“¥ Update Response: ${response.data}");
+      dev.log("Ã°Å¸â€œÂ¥ Update Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -893,11 +876,11 @@ class HomeService {
              firstRow.containsKey("old_status") ||
              firstRow.containsKey("order_number"));
         if (hasNewStatus) {
-          dev.log("âœ… updateRoomServiceStatus succeeded (notification-style response)");
+          dev.log("Ã¢Å“â€¦ updateRoomServiceStatus succeeded (notification-style response)");
           return {"success": true, "message": "Status updated successfully"};
         }
 
-        dev.log("âœ… updateRoomServiceStatus: non-empty STATUS on 200 â†’ success");
+        dev.log("Ã¢Å“â€¦ updateRoomServiceStatus: non-empty STATUS on 200 Ã¢â€ â€™ success");
         return {"success": true, "message": "Status updated"};
       }
 
@@ -908,15 +891,15 @@ class HomeService {
         return {"success": flag == "S", "message": message};
       }
 
-      dev.log("âš ï¸ updateRoomServiceStatus: empty body on 200 â†’ treating as success");
+      dev.log("Ã¢Å¡Â Ã¯Â¸Â updateRoomServiceStatus: empty body on 200 Ã¢â€ â€™ treating as success");
       return {"success": true, "message": "Status updated"};
     } catch (e) {
-      dev.log("âŒ ERROR (updateRoomServiceStatus): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (updateRoomServiceStatus): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
 
-  // â”€â”€ GET ACCEPTED ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET ACCEPTED ORDERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> getAcceptedOrdersForRoomService() async {
     try {
@@ -927,10 +910,10 @@ class HomeService {
 
       final payload = {"user_id": userId, "stage": AppConfig.stage};
 
-      dev.log("ðŸ“¤ Fetching ACCEPTED Orders for Room Service");
+      dev.log("Ã°Å¸â€œÂ¤ Fetching ACCEPTED Orders for Room Service");
       final response =
           await _dio.post(ApiConstants.getAcceptedOrders, data: payload);
-      dev.log("ðŸ“¥ Accepted Orders Response: ${response.data}");
+      dev.log("Ã°Å¸â€œÂ¥ Accepted Orders Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -944,7 +927,7 @@ class HomeService {
       final resultList = response.data["RESULT"] as List? ?? [];
       return {"success": true, "orders": _mapAcceptedOrders(resultList)};
     } catch (e) {
-      dev.log("âŒ ERROR (getAcceptedOrdersForRoomService): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (getAcceptedOrdersForRoomService): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }
@@ -968,7 +951,7 @@ class HomeService {
     }).toList();
   }
 
-  // â”€â”€ GET DELIVERED ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GET DELIVERED ORDERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   Future<Map<String, dynamic>> getDeliveredOrdersForRoomService() async {
     try {
@@ -979,10 +962,10 @@ class HomeService {
 
       final payload = {"user_id": userId, "stage": AppConfig.stage};
 
-      dev.log("ðŸ“¤ Fetching DELIVERED Orders for Room Service");
+      dev.log("Ã°Å¸â€œÂ¤ Fetching DELIVERED Orders for Room Service");
       final response =
           await _dio.post(ApiConstants.getDeliveredOrders, data: payload);
-      dev.log("ðŸ“¥ Delivered Orders Response: ${response.data}");
+      dev.log("Ã°Å¸â€œÂ¥ Delivered Orders Response: ${response.data}");
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -996,7 +979,7 @@ class HomeService {
       final resultList = response.data["RESULT"] as List? ?? [];
       return {"success": true, "orders": _mapDeliveredOrders(resultList)};
     } catch (e) {
-      dev.log("âŒ ERROR (getDeliveredOrdersForRoomService): $e");
+      dev.log("Ã¢ÂÅ’ ERROR (getDeliveredOrdersForRoomService): $e");
       return {"success": false, "message": ErrorHandler.friendlyMessage(e)};
     }
   }

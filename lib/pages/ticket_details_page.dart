@@ -1,10 +1,6 @@
 // ticket_details_page.dart
 //
 // CHANGES IN THIS VERSION:
-//  • _loadEscalationHistory() — replaced getEscalatedTasks() + client-side
-//    filter with getEscalationHistoryForTask(). Now calls the dedicated SP
-//    that returns the full audit trail (including resolved entries) for a
-//    single service request ordered by escalation_level ASC, escalated_at ASC.
 //  • showClose condition — Close button now only shows if the viewer is
 //    Supervisor+ OR they are the staff member assigned to the task.
 //    Previously it showed for everyone on any in-progress task.
@@ -25,10 +21,12 @@
 //  • url_launcher used for tel: calls.
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
+import '../services/task_alert_service.dart';
 import '../services/websocket_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
@@ -84,13 +82,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   // resolution SLA banner and status timeline on in-progress tasks.
   Timer? _slaTicker;
 
-  List<Map<String, dynamic>> _staffList         = [];
-  List<Map<String, dynamic>> _escalationHistory = [];
-  bool _isLoadingEscHist = false;
+  List<Map<String, dynamic>> _staffList = [];
 
   int?   _loggedInUserId;
 
   String _assignedPhone = '';
+  String _latestNote = '';
 
   late Map<String, dynamic> _task;
 
@@ -100,6 +97,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   void initState() {
     super.initState();
     _task = Map<String, dynamic>.from(widget.task);
+    _latestNote = _readLatestNote(_task);
     _loadUserId();
 
     // Silently fetch fresh ticket data so stale notes / status from the
@@ -158,6 +156,33 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (mounted) setState(() => _loggedInUserId = id);
   }
 
+  String _readLatestNote(Map<String, dynamic> task) {
+    // 1. Direct flat field (set optimistically after addNote)
+    final direct = task['note']?.toString().trim() ?? '';
+    if (direct.isNotEmpty && direct != 'null') return direct;
+
+    // 2. Full notes array — may be a List (already decoded) or a raw JSON
+    //    string from JSON_ARRAYAGG when the task map came straight from the SP.
+    final raw = task['notes'];
+    List notesList = const [];
+    if (raw is List) {
+      notesList = raw;
+    } else if (raw is String && raw.isNotEmpty && raw != 'null') {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) notesList = decoded;
+      } catch (_) {}
+    }
+
+    for (final item in notesList.reversed) {
+      if (item is Map) {
+        final text = (item['note_text'] ?? '').toString().trim();
+        if (text.isNotEmpty && text != 'null') return text;
+      }
+    }
+    return '';
+  }
+
   // ── Fresh-data refresh on open ────────────────────────────────────────────
   //
   // Fetches the current server state for this ticket immediately when the
@@ -198,6 +223,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             // updates (e.g. a just-submitted reassign) are overwritten only
             // when the server actually reflects them.
             _task = Map<String, dynamic>.from(fresh);
+            final refreshedNote = _readLatestNote(_task);
+            if (refreshedNote.isNotEmpty) _latestNote = refreshedNote;
           });
           // Re-resolve the assigned phone from the fresh raw data.
           final rawFresh = _task['raw'] as Map<String, dynamic>? ?? {};
@@ -217,25 +244,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
     }
-  }
-
-  // ── Fetch escalation audit trail for task ─────────────────────────────────
-
-  Future<void> _loadEscalationHistory() async {
-    if (_serviceRequestId == 0) return;
-    setState(() => _isLoadingEscHist = true);
-    try {
-      final res =
-          await _homeService.getEscalationHistoryForTask(_serviceRequestId);
-      if (!mounted) return;
-      if (res['success'] == true) {
-        setState(() {
-          _escalationHistory =
-              (res['history'] as List? ?? []).cast<Map<String, dynamic>>();
-        });
-      }
-    } catch (_) {}
-    if (mounted) setState(() => _isLoadingEscHist = false);
   }
 
   // ── Resolve assignee phone ────────────────────────────────────────────────
@@ -343,7 +351,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   }
 
 
-  // ── Actions ───────────────────────────────────────────────────────────────
+  // ── Escalation resolution toast ───────────────────────────────────────────
+  // Called whenever an action on an escalated task resolves the escalation.
+
+  void _showEscalationResolvedToast(String action) {
+    if (!mounted) return;
+    final msg = switch (action) {
+      'accept'   => 'Escalation resolved — task accepted ✅',
+      'reassign' => 'Escalation resolved — task reassigned ✅',
+      'takeover' => 'Escalation resolved — task taken over ✅',
+      _          => 'Escalation resolved ✅',
+    };
+    AppSnackBar.show(context, msg);
+  }
 
   Future<void> _takeOver() async {
     final userId = _loggedInUserId;
@@ -378,6 +398,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       return;
     }
 
+    await TaskAlertService.stopEscalation();
+
     final updated = (result['updatedTask'] as Map<String, dynamic>?) ?? {};
     final newAssignedAt = result['assigned_at']?.toString() ??
         updated['assigned_at']?.toString() ??
@@ -401,6 +423,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     widget.onReassign?.call(updated);
 
     AppSnackBar.show(context, 'Task taken over ✅');
+    if (_isEscalated) _showEscalationResolvedToast('takeover');
   }
 
   // ── Unified status transition (Accept / Close) ───────────────────────────
@@ -463,6 +486,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       return;
     }
 
+    await TaskAlertService.stopEscalation();
+
     // ── Optimistic UI update from SP STATUS[0] response ─────────────────
     final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
     final escStatus        = result['escalation_status'] as String?;
@@ -513,9 +538,17 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
     if (isClose) {
       widget.onClose?.call();
-      AppSnackBar.show(context, 'Request closed ✅');
+      if (_isEscalated) {
+        _showEscalationResolvedToast('close');
+      } else {
+        AppSnackBar.show(context, 'Request closed ✅');
+      }
     } else {
-      AppSnackBar.show(context, 'Task accepted — In Progress ✅');
+      if (_isEscalated) {
+        _showEscalationResolvedToast('accept');
+      } else {
+        AppSnackBar.show(context, 'Task accepted — In Progress ✅');
+      }
     }
   }
 
@@ -544,9 +577,24 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     _noteController.clear();
-    // Use returned note_text from RESULT if available, else the local input
-    final savedNote = (result['note'] as Map?)?['note_text']?.toString() ?? text;
-    setState(() => _task['note'] = savedNote);
+    final returnedNote = result['note'] is Map
+        ? Map<String, dynamic>.from(result['note'] as Map)
+        : <String, dynamic>{};
+    final savedNote = returnedNote['note_text']?.toString() ?? text;
+    setState(() {
+      _latestNote = savedNote;
+      _task['note'] = savedNote;
+      final notes = _task['notes'];
+      if (notes is List) {
+        notes.add(returnedNote.isEmpty
+            ? {'note_text': savedNote}
+            : returnedNote);
+      } else {
+        _task['notes'] = [
+          returnedNote.isEmpty ? {'note_text': savedNote} : returnedNote,
+        ];
+      }
+    });
     widget.onNoteAdded?.call(savedNote);
     AppSnackBar.show(context, 'Note added');
   }
@@ -830,6 +878,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                               isError: true);
                                           return;
                                         }
+                                        await TaskAlertService.stopEscalation();
                                         final upd = (res['updatedTask']
                                                 as Map<String,
                                                     dynamic>?) ??
@@ -873,8 +922,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
                                         widget.onReassign?.call(upd);
 
-                                        AppSnackBar.show(context,
-                                            'Reassigned to ${staff['name']}');
+                                        // Show escalation-aware toast
+                                        if (_isEscalated) {
+                                          _showEscalationResolvedToast('reassign');
+                                        } else {
+                                          AppSnackBar.show(context,
+                                              'Reassigned to ${staff['name']}');
+                                        }
                                       },
                                       child: Container(
                                         margin: const EdgeInsets.only(
@@ -1487,6 +1541,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
     final closedByName = (raw['closed_by_user_name'] ?? '').toString().trim();
 
+    // ── Escalation info ──────────────────────────────────────────────────────
+    final esc = EscalationInfo.fromTask(_task);
+    final escalatedAt = _parseTaskTimestamp(raw['escalated_at'] ?? _task['escalated_at']);
+    // Derive stage and level info
+    final escStageLabel = esc.stageName?.isNotEmpty == true
+        ? esc.stageName!
+        : (esc.stageLevel != null ? 'Level ${esc.stageLevel}' : null);
+    final escFromRole = (raw['escalation_from_role_name'] ?? '').toString().trim();
+    final escToRole   = (raw['escalation_to_role_name']   ?? '').toString().trim();
+    final escDetail   = [
+      if (escFromRole.isNotEmpty) 'from $escFromRole',
+      if (escToRole.isNotEmpty)   'to $escToRole',
+    ].join(' → ');
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
       decoration: BoxDecoration(
@@ -1512,6 +1580,18 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 ? 'Not reassigned' 
                 : assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
             color: AppColors.info),
+        // ── Escalation step — only shown when the task is / was escalated ──
+        if (_isEscalated || esc.isEscalated || escalatedAt != null)
+          _timelineEntry(
+            escStageLabel != null ? 'Escalated · $escStageLabel' : 'Escalated',
+            escalatedAt,
+            done: true,
+            detail: escDetail.isNotEmpty
+                ? escDetail
+                : (esc.slaLabel.isNotEmpty ? esc.slaLabel : 'SLA breached'),
+            color: AppColors.error,
+            isEscalation: true,
+          ),
         _timelineEntry('Completed', closed, done: _isClosed || closed != null,
             detail: closed == null 
                 ? (_isClosed ? 'Closed' : 'Pending') 
@@ -1528,26 +1608,54 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   Widget _timelineEntry(String label, DateTime? time, {
     required bool done, required Color color, String? detail, bool last = false,
+    bool isEscalation = false,
   }) {
     final activeColor = done ? color : AppColors.textDisabled;
     final stamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       SizedBox(width: 24, child: Column(children: [
-        Container(width: 14, height: 14, decoration: BoxDecoration(
-          shape: BoxShape.circle, color: done ? activeColor : Colors.white,
-          border: Border.all(color: activeColor, width: 2),
-        )),
-        if (!last) Container(width: 2, height: 30, color: activeColor.withValues(alpha: 0.35)),
+        // Escalation node: coloured ring with a small warning icon inside
+        if (isEscalation)
+          Container(
+            width: 16, height: 16,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.error.withValues(alpha: 0.12),
+              border: Border.all(color: AppColors.error, width: 2),
+            ),
+            child: const Center(
+              child: Icon(Icons.warning_amber_rounded, size: 9, color: AppColors.error),
+            ),
+          )
+        else
+          Container(width: 14, height: 14, decoration: BoxDecoration(
+            shape: BoxShape.circle, color: done ? activeColor : Colors.white,
+            border: Border.all(color: activeColor, width: 2),
+          )),
+        if (!last) Container(width: 2, height: isEscalation ? 36 : 30,
+            color: activeColor.withValues(alpha: 0.35)),
       ])),
       const SizedBox(width: 10),
       Expanded(child: Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
-              color: done ? AppColors.textPrimary : AppColors.textSecondary)),
+          Text(label, style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: isEscalation
+                ? AppColors.error
+                : (done ? AppColors.textPrimary : AppColors.textSecondary),
+          )),
           const SizedBox(height: 2),
-          Text(detail == null ? stamp : '$stamp  �  $detail',
-              style: TextStyle(fontSize: 12, color: done ? AppColors.textSecondary : AppColors.textDisabled)),
+          Text(
+            detail == null ? stamp : '$stamp  \u00b7  $detail',
+            style: TextStyle(
+              fontSize: 12,
+              color: isEscalation
+                  ? AppColors.error.withValues(alpha: 0.75)
+                  : (done ? AppColors.textSecondary : AppColors.textDisabled),
+            ),
+          ),
         ]),
       )),
     ]);
@@ -1823,333 +1931,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     ]);
   }
 
-  // ── Escalation History Timeline Card ──────────────────────────────────────
-  // Visible to Supervisor and above only (EscalationVisibility.canViewEscalationHistory).
-  // Reads from ScreenSync_get_escalation_history_for_task_mobile (via
-  // HomeService.getEscalationHistoryForTask) loaded in _loadEscalationHistory().
-
-  Widget _buildEscalationHistoryCard() {
-    final role = escalationRoleFromName(widget.userRole);
-    if (!EscalationVisibility.canViewEscalationHistory(role)) {
-      return const SizedBox.shrink();
-    }
-    if (_escalationHistory.isEmpty && !_isLoadingEscHist) {
-      return const SizedBox.shrink();
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        color:        Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-            color: AppColors.primary.withValues(alpha: 0.15), width: 1.2),
-        boxShadow: [
-          BoxShadow(
-              color:      Colors.black.withValues(alpha: 0.04),
-              blurRadius: 10,
-              offset:     const Offset(0, 3)),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── Header ──────────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 0),
-            child: Row(children: [
-              Container(
-                padding: const EdgeInsets.all(7),
-                decoration: BoxDecoration(
-                  color:  AppColors.primaryLight,
-                  shape:  BoxShape.circle,
-                ),
-                child: const Icon(Icons.timeline_rounded,
-                    size: 15, color: AppColors.primary),
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  'Escalation History',
-                  style: TextStyle(
-                    fontSize:   14,
-                    fontWeight: FontWeight.w700,
-                    color:      AppColors.textPrimary,
-                  ),
-                ),
-              ),
-              if (_isLoadingEscHist)
-                const SizedBox(
-                  width: 14, height: 14,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 1.8, color: AppColors.primary),
-                )
-              else
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 9, vertical: 3),
-                  decoration: BoxDecoration(
-                    color:        AppColors.primaryLight,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${_escalationHistory.length} stage${_escalationHistory.length == 1 ? '' : 's'}',
-                    style: const TextStyle(
-                      fontSize:   11,
-                      fontWeight: FontWeight.w600,
-                      color:      AppColors.primary,
-                    ),
-                  ),
-                ),
-            ]),
-          ),
-
-          const SizedBox(height: 10),
-          const Divider(height: 1, color: AppColors.borderLight),
-          const SizedBox(height: 4),
-
-          // ── Timeline entries ─────────────────────────────────────────
-          if (_escalationHistory.isEmpty && !_isLoadingEscHist)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(14, 8, 14, 14),
-              child: Text(
-                'No escalation events recorded for this request.',
-                style: TextStyle(
-                    fontSize: 12, color: AppColors.textSecondary),
-              ),
-            )
-          else
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
-              child: Column(
-                children: _escalationHistory.asMap().entries.map((entry) {
-                  final idx    = entry.key;
-                  final item   = entry.value;
-                  final isLast = idx == _escalationHistory.length - 1;
-
-                  final levelNum = (item['escalation_level'] ?? idx + 1).toString();
-                  final roleName = (item['escalated_to_role'] ??
-                          item['stage_name'] ??
-                          item['escalation_stage_name'] ??
-                          '').toString().trim();
-                  final stageLabel = roleName.isNotEmpty
-                      ? 'Level $levelNum — $roleName'
-                      : 'Level $levelNum';
-
-                  final notifiedName = () {
-                    var n = (item['escalated_to_name'] ??
-                            item['notified_user_name'] ??
-                            item['user_name'] ??
-                            '').toString().trim();
-                    if (n.isEmpty || n == '—') {
-                      n = (_task['assignedTo'] ??
-                              (_task['raw'] as Map?)?['assigned_to_name'] ??
-                              '').toString().trim();
-                    }
-                    return n;
-                  }();
-
-                  final deptName = (item['department_name'] ??
-                          item['dept_name'] ??
-                          item['department'] ??
-                          (_task['raw'] as Map?)?['department_name'] ??
-                          '').toString().trim();
-
-                  final origName   = (item['original_assignee_name'] ?? '').toString().trim();
-                  final resolvedBy = (item['resolved_by_name'] ?? '').toString().trim();
-                  final statusStr  = (item['escalation_status'] ??
-                          item['response_status'] ??
-                          item['status'] ??
-                          'Pending').toString();
-                  final timestampStr = (item['escalated_at'] ??
-                          item['notified_at'] ??
-                          item['created_at'] ??
-                          item['timestamp'] ??
-                          '').toString();
-
-                  final dotColor = EscalationDisplay.historyDotColor(statusStr);
-
-                  return IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Timeline spine
-                        SizedBox(
-                          width: 20,
-                          child: Column(children: [
-                            Container(
-                              width:  10,
-                              height: 10,
-                              margin: const EdgeInsets.only(top: 3),
-                              decoration: BoxDecoration(
-                                color:  dotColor,
-                                shape:  BoxShape.circle,
-                                border: Border.all(
-                                    color: dotColor.withValues(alpha: 0.4),
-                                    width: 2),
-                              ),
-                            ),
-                            if (!isLast)
-                              Expanded(
-                                child: Container(
-                                  width:  1.5,
-                                  margin: const EdgeInsets.only(top: 3),
-                                  color:  AppColors.borderLight,
-                                ),
-                              ),
-                          ]),
-                        ),
-                        const SizedBox(width: 10),
-
-                        // Content
-                        Expanded(
-                          child: Padding(
-                            padding:
-                                EdgeInsets.only(bottom: isLast ? 0 : 16),
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                              children: [
-                                // Stage label + status pill
-                                Row(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        stageLabel,
-                                        style: const TextStyle(
-                                          fontSize:   13,
-                                          fontWeight: FontWeight.w700,
-                                          color: AppColors.textPrimary,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding:
-                                          const EdgeInsets.symmetric(
-                                              horizontal: 7,
-                                              vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: dotColor.withValues(
-                                            alpha: 0.1),
-                                        borderRadius:
-                                            BorderRadius.circular(6),
-                                        border: Border.all(
-                                            color: dotColor.withValues(
-                                                alpha: 0.3)),
-                                      ),
-                                      child: Text(
-                                        statusStr,
-                                        style: TextStyle(
-                                          fontSize:   10,
-                                          fontWeight: FontWeight.w700,
-                                          color:      dotColor,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-
-                                const SizedBox(height: 4),
-
-                                // Notified user · role · dept tags
-                                if (notifiedName.isNotEmpty ||
-                                    roleName.isNotEmpty ||
-                                    deptName.isNotEmpty) ...[
-                                  Wrap(
-                                    spacing:   4,
-                                    runSpacing: 2,
-                                    crossAxisAlignment:
-                                        WrapCrossAlignment.center,
-                                    children: [
-                                      const Icon(
-                                          Icons.person_outline_rounded,
-                                          size:  12,
-                                          color: AppColors.textSecondary),
-                                      if (notifiedName.isNotEmpty)
-                                        Text(notifiedName,
-                                            style: const TextStyle(
-                                              fontSize:   12,
-                                              fontWeight: FontWeight.w600,
-                                              color: AppColors.textPrimary,
-                                            )),
-                                      if (roleName.isNotEmpty)
-                                        _historyTag(roleName,
-                                            AppColors.primaryLight,
-                                            AppColors.primary),
-                                      if (deptName.isNotEmpty)
-                                        _historyTag(deptName,
-                                            AppColors.infoLight,
-                                            AppColors.info),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 3),
-                                ],
-
-                                if (origName.isNotEmpty && origName != '—')
-                                  _historySubline(
-                                      Icons.swap_horiz_rounded,
-                                      'Originally: $origName',
-                                      AppColors.textSecondary),
-
-                                if (resolvedBy.isNotEmpty)
-                                  _historySubline(
-                                      Icons.check_circle_outline_rounded,
-                                      'Resolved by: $resolvedBy',
-                                      AppColors.success),
-
-                                if (timestampStr.isNotEmpty)
-                                  _historySubline(
-                                      Icons.access_time_rounded,
-                                      _formatTs(timestampStr),
-                                      AppColors.textSecondary
-                                          .withValues(alpha: 0.7)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _historyTag(String label, Color bg, Color fg) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color:        bg,
-          borderRadius: BorderRadius.circular(5),
-        ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 10, fontWeight: FontWeight.w600, color: fg)),
-      );
-
-  Widget _historySubline(IconData icon, String text, Color color) =>
-      Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Row(children: [
-          Icon(icon, size: 11, color: color),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(text,
-                style: TextStyle(fontSize: 11, color: color),
-                maxLines:  2,
-                overflow:  TextOverflow.ellipsis),
-          ),
-        ]),
-      );
+  // ── Note display card ─────────────────────────────────────────────────────
 
   // ── Note display card ─────────────────────────────────────────────────────
 
   Widget _buildNoteCard() {
-    final note = (_task['note'] ?? '').toString();
+    final note = _latestNote;
     if (note.isEmpty) return const SizedBox.shrink();
 
     return Container(
@@ -2258,10 +2045,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       ]),
     );
   }
-
-  // ── Escalation History ────────────────────────────────────────────────────
-
-
 
   // ── Action Buttons ────────────────────────────────────────────────────────
   //

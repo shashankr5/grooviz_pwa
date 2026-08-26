@@ -155,12 +155,12 @@ All five types are treated identically — they are aliases for "a food order is
 
 **What it does:**
 
-- Starts the foreground service with `escalation_notification.wav` in **play-once mode** (no loop).
-- After the sound finishes playing, the audio player stops but the foreground service stays alive as a silent watcher.
+- Starts the foreground service with `escalation_notification.wav` in **loop mode**.
+- The sound continues until the escalated task is accepted, closed, or reassigned.
 - Updates `TaskAlertService._escalationCount` from `badge_count` in the payload.
 - Emits the count on `TaskAlertService.onEscalation` stream → `HomePage` and `TasksPage` update their escalation badge in real time without a manual reload.
 
-**Alert sound:** `escalation_notification.wav` — plays **once only**. No repeat. If the Lambda sends another pulse for the same task, the service's `onStart()` fires again and plays it once more.
+**Alert sound:** `escalation_notification.wav` — loops continuously until the escalation is resolved.
 
 **Notification tap:**
 
@@ -233,7 +233,7 @@ Delivery Orders (delivery_notification)
     ↓
 Service Tasks (task_notification)
     ↓  lowest priority
-Escalation (escalation_notification) — always play-once, separate from count system
+Escalation (escalation_notification) — loops until the escalated task is actioned
 ```
 
 **How priority is enforced in `TaskAlertService._reevaluate()`:**

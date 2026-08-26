@@ -86,7 +86,7 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
 
   // ── Elapsed helper ────────────────────────────────────────────────────────
 
-  /// Returns a human-readable elapsed string ("5 min ago", "1h 12m ago").
+  /// Returns a compact elapsed string using minutes, then hours, then days.
   /// Returns null if [dt] is null so callers can skip rendering.
   String? _elapsed(DateTime? dt) {
     if (dt == null) return null;
@@ -94,9 +94,10 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
     if (diff.isNegative) return null;
     if (diff.inMinutes < 1)  return 'just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
-    final h = diff.inHours;
-    final m = diff.inMinutes.remainder(60);
-    return m > 0 ? '${h}h ${m}m ago' : '${h}h ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    final days = diff.inDays;
+    if (days < 7) return '${days}d ago';
+    return '${days ~/ 7}w ago';
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────

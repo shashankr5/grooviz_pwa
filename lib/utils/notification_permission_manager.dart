@@ -98,6 +98,8 @@ class NotificationPermissionManager {
       context: context,
       isDismissible: true,
       enableDrag: true,
+      isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (_) => const _BatteryExplainerSheet(),
     );

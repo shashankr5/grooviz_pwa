@@ -465,11 +465,25 @@ class TaskService {
         },
       );
 
-      final data = response.data;
-      List<dynamic> statusList = data['STATUS'] ?? [];
-      List<dynamic> resultList = data['RESULT'] ?? [];
+        final data = response.data is Map
+          ? Map<String, dynamic>.from(response.data as Map)
+          : <String, dynamic>{};
+        final rawStatus = data['STATUS'];
+        final statusList = rawStatus is List
+          ? rawStatus
+          : rawStatus is Map
+            ? [rawStatus]
+            : const <dynamic>[];
+        final rawResult = data['RESULT'] ?? data['RESULT2'] ?? data['RESULT_2'];
+        final resultList = rawResult is List
+          ? rawResult
+          : rawResult is Map
+            ? [rawResult]
+            : const <dynamic>[];
 
-      if (statusList.isNotEmpty && statusList[0]['status'] == 'S') {
+        if (statusList.isNotEmpty &&
+          statusList[0] is Map &&
+          statusList[0]['status']?.toString().toUpperCase() == 'S') {
         return {
           'success': true,
           'message': statusList[0]['message'] ?? 'Note added successfully',

@@ -228,12 +228,16 @@ class WebSocketService {
       }
 
       if (type == 'SERVICE_TASK_ACCEPTED' || type == 'ACCEPTED') {
+        TaskAlertService.stopEscalation();
         TaskAlertService.resetServiceCount(0, reconcileAlert: true);
         TaskAlertService.notifyNewTask();
         return;
       }
 
       if (type == 'SERVICE_STATUS_CHANGED' || type == 'SERVICE_STATUS_UPDATE' || type == 'TASK_REASSIGNED') {
+        if (type == 'TASK_REASSIGNED') {
+          TaskAlertService.stopEscalation();
+        }
         TaskAlertService.notifyNewTask();
         return;
       }
@@ -278,6 +282,7 @@ class WebSocketService {
       // ── Task closed ────────────────────────────────────────────────────
 
       if (type == 'TASK_CLOSED') {
+        TaskAlertService.stopEscalation();
         TaskAlertService.notifyNewTask();
         return;
       }

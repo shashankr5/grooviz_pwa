@@ -8,6 +8,7 @@ import '../services/notification_navigation_coordinator.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/alert_reload_coordinator.dart';
+import '../services/escalation_service.dart';
 import '../utils/user_session_helper.dart';
 import 'notification_constants.dart';
 import 'notification_message_builder.dart';
@@ -210,7 +211,7 @@ Future<void> _showNotification(RemoteMessage message) async {
 
   print('🎯 Foreground FCM | type=$type | role=$role | depts=$normalized | isRoomService=$isRoomService | isFnB=$isFoodBeverage');
 
-  // ── Only the 5 canonical types from the new backend are handled. ──────────
+  // ── Canonical alert types and action events are handled here. ─────────────
   // All legacy delivery/order-accepted/pulse/escalation-legacy events are
   // silently dropped so stale alerts cannot accumulate.
   switch (type) {
@@ -230,6 +231,15 @@ Future<void> _showNotification(RemoteMessage message) async {
       await AlertReloadCoordinator.instance.reloadFood();
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
+
+      case 'FOOD_ORDER_STATUS':
+        final status = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '')
+          .toString().toUpperCase();
+        if (status != 'READY') return;
+        await TaskAlertService.ensureDeliveryRunning();
+        TaskAlertService.notifyNewDelivery();
+        await AlertReloadCoordinator.instance.reloadDelivery();
+        break;
 
     // ── SERVICE_ORDER ──────────────────────────────────────────────────────
     // TV device places a service booking → notify Service dept staff.
@@ -261,12 +271,46 @@ Future<void> _showNotification(RemoteMessage message) async {
 
     // ── ESCALATION ─────────────────────────────────────────────────────────
     // Scheduler fired — SLA breached, task climbed the hierarchy.
-    // One-shot non-looping escalation sound + reload so the escalated
+    // Looping escalation sound + reload so the escalated
     // badge count and red card highlight update immediately.
     case 'ESCALATION':
       await TaskAlertService.ensureEscalationRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
+      // Emit escalation streams so HomePage and TasksPage refresh instantly
+      // without needing a WebSocket event. The badge count is recomputed
+      // from the task list by each page, so an empty map is sufficient here.
+      EscalationService.instance.handleEscalationAlert(data);
       break;
+
+    case 'ORDER_ACCEPTED':
+    case 'ORDER_CANCELLED':
+      OrderAlertService.notifyNewOrder();
+      await AlertReloadCoordinator.instance.reloadFood();
+      return;
+
+    case 'ORDER_DELIVERED':
+      await OrderAlertService.stop();
+      await TaskAlertService.stopAll();
+      return;
+
+    case 'SERVICE_TASK_ACCEPTED':
+    case 'ACCEPTED':
+      await TaskAlertService.stopEscalation();
+      TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      return;
+
+    case 'DELIVERY_ACCEPTED':
+    case 'DELIVERY_DELIVERED':
+      TaskAlertService.notifyNewDelivery();
+      await AlertReloadCoordinator.instance.reloadDelivery();
+      return;
+
+    case 'TASK_CLOSED':
+      await TaskAlertService.stopEscalation();
+      TaskAlertService.notifyNewTask();
+      await AlertReloadCoordinator.instance.reloadTasks();
+      return;
 
     default:
       // All other types (legacy delivery, order-accepted, pulses, etc.)

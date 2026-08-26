@@ -18,6 +18,7 @@ class TaskAlertService {
 
   static int _pendingServiceCount  = 0;
   static int _pendingDeliveryCount = 0;
+  static bool _escalationActive = false;
 
   static int get totalPending =>
       _pendingServiceCount + _pendingDeliveryCount;
@@ -50,14 +51,22 @@ class TaskAlertService {
         notificationText:  'Tap to view pending tasks',
       );
 
-  /// Escalations are urgent one-time alerts. They never join the normal
-  /// service/delivery loop and therefore cannot be restarted by a queue refresh.
-  static Future<bool> ensureEscalationRunning() => _ensureRunning(
-        soundName: AlertSoundKey.escalation,
-        shouldLoop: false,
-        notificationTitle: 'Escalation Requires Attention',
-        notificationText: 'Tap to review the escalated service request',
-      );
+  /// Escalations remain audible until the escalated task is actioned.
+  static Future<bool> ensureEscalationRunning() async {
+    _escalationActive = true;
+    return _ensureRunning(
+      soundName: AlertSoundKey.escalation,
+      shouldLoop: true,
+      notificationTitle: 'Escalation Requires Attention',
+      notificationText: 'Tap to review the escalated service request',
+    );
+  }
+
+  /// Stops an escalation alert after its task is accepted, closed, or reassigned.
+  static Future<void> stopEscalation() async {
+    _escalationActive = false;
+    await _reevaluate();
+  }
 
   /// ACCEPTOR DEVICE ONLY — optimistic decrement.
   static Future<void> stopOneServiceAlert() async {
@@ -134,6 +143,7 @@ class TaskAlertService {
   static Future<void> stopAll() async {
     _pendingServiceCount  = 0;
     _pendingDeliveryCount = 0;
+    _escalationActive     = false;
     await _stopService();
   }
 
@@ -195,6 +205,7 @@ class TaskAlertService {
     //   • post-accept reload (_acceptTask → _loadTasks → resetServiceCount)
     //   • cold-launch reconciliation (AlertReloadCoordinator.reloadTasks)
     if (OrderAlertService.pendingOrderCount > 0) return; // Food pending — service still running
+    if (_escalationActive) return; // Escalation remains active until explicitly resolved
     if (totalPending == 0) {
       await _stopService(); // All clear — stop the foreground service
     }

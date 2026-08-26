@@ -60,7 +60,7 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
 
   /// Helper method to identify food delivery tasks that should not appear in Service Requests
   bool _isFoodDeliveryTask(Map<String, dynamic> task) {
-    // Check for food_order_summary_id (most reliable indicator)
+    // Primary check: food_order_summary_id (most reliable indicator for food deliveries)
     final foodSummaryId = task['food_order_summary_id'] ?? task['raw']?['food_order_summary_id'];
     if (foodSummaryId != null &&
         foodSummaryId.toString().trim().isNotEmpty &&
@@ -68,25 +68,16 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
       return true;
     }
 
-    // Check is_from_order flag
-    final isFromOrder = task['is_from_order'] ?? task['raw']?['is_from_order'];
-    if (isFromOrder == 1 || isFromOrder == true) {
-      return true;
-    }
+    // REMOVED: is_from_order and service_order_id checks
+    // These catch regular service orders (amenities, room service items) too
+    // Only actual food deliveries should be filtered out
 
-    // Check service_order_id (alternative identifier)
-    final serviceOrderId = task['service_order_id'] ?? task['raw']?['service_order_id'];
-    if (serviceOrderId != null &&
-        serviceOrderId.toString().trim().isNotEmpty &&
-        serviceOrderId.toString() != '0') {
-      return true;
-    }
-
-    // Check question content for food delivery indicators
+    // Check question content for explicit food delivery indicators
+    // Be very specific to avoid false positives with regular service orders
     final question = ((task['question'] ?? task['title'] ?? task['raw']?['question'] ?? '').toString().toLowerCase());
     if (question.contains('food order') || 
-        question.contains('ready for delivery') ||
-        question.contains('food delivery')) {
+        question.contains('food delivery') ||
+        (question.contains('ready for delivery') && question.contains('food'))) {
       return true;
     }
 

@@ -30,6 +30,7 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
 import '../services/profile_service.dart';
+import '../services/escalation_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/report_pdf_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -158,6 +159,10 @@ class TasksPageState extends State<TasksPage> {
   bool _velocityWeekly       = true; // true = weekly, false = monthly
   bool _isFbUser             = false; // derived after dept load
 
+  // ── Escalation refresh subscriptions ──────────────────────────────────────
+  StreamSubscription<void>? _escalationListSub;
+  StreamSubscription<int>?  _escalationBadgeSub;
+
 
   static const _monthNames = [
     '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -170,10 +175,20 @@ class TasksPageState extends State<TasksPage> {
   void initState() {
     super.initState();
     _init();
+    // Refresh personal stats when an escalation FCM arrives so the badge
+    // count and task list update without manual pull-to-refresh.
+    _escalationListSub = EscalationService.instance.onListRefresh.listen((_) {
+      if (mounted) _loadMyStats();
+    });
+    _escalationBadgeSub = EscalationService.instance.onBadgeUpdate.listen((_) {
+      if (mounted) _loadMyStats();
+    });
   }
 
   @override
   void dispose() {
+    _escalationListSub?.cancel();
+    _escalationBadgeSub?.cancel();
     super.dispose();
   }
 
@@ -277,7 +292,30 @@ class TasksPageState extends State<TasksPage> {
       if (allTasksList.isEmpty && _isStaff(_userRoleId)) {
         final tasksResult = await _homeService.getTasks();
         if (tasksResult['success'] == true) {
-          allTasksList = (tasksResult['tasks'] as List?) ?? [];
+          final rawTasks = (tasksResult['tasks'] as List?) ?? [];
+          // Filter by the departments this staff member is actually mapped to
+          // so Recent Activity only shows tasks from their own department(s),
+          // not tasks from every department in the enterprise.
+          final userDeptNames = _availableFilterDepts
+              .map((d) => d.toLowerCase().trim())
+              .toSet();
+          allTasksList = rawTasks.where((task) {
+            final taskMap = task as Map<String, dynamic>;
+            if (!_isTaskAssignedToUser(taskMap)) return false;
+            // If we have no dept info on this user, show all their tasks.
+            if (userDeptNames.isEmpty) return true;
+            // Match on department_name from raw or top-level task map.
+            final raw = taskMap['raw'] as Map<String, dynamic>? ?? taskMap;
+            final deptName = (raw['department_name'] ??
+                    taskMap['department_name'] ??
+                    taskMap['department'] ??
+                    '')
+                .toString()
+                .toLowerCase()
+                .trim();
+            if (deptName.isEmpty) return true; // can't determine dept — include
+            return userDeptNames.contains(deptName);
+          }).toList();
         }
       }
 
@@ -2731,7 +2769,9 @@ class TasksPageState extends State<TasksPage> {
 
     final canTap = _isSupervisorOrAboveByName(_userRole);
 
-    final rowContent = Container(
+    // ── Escalation accent: wrap the row content in a red left-border container
+    // when the task is escalated so it matches the home page card treatment.
+    Widget rowContent = Container(
       decoration: BoxDecoration(
         border: Border(
           left: BorderSide(
@@ -2746,115 +2786,171 @@ class TasksPageState extends State<TasksPage> {
           ),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            // Room badge
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Escalation accent strip (top of row, only for escalated) ────
+          if (isEsc)
             Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: isEsc
-                    ? AppColors.error.withValues(alpha: 0.1)
-                    : AppColors.primary.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                room,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: isEsc ? AppColors.error : AppColors.primary,
-                  fontWeight: FontWeight.w800,
-                  fontSize: room.length > 4 ? 9.5 : 11,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            // Title + meta
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+              color: AppColors.error.withValues(alpha: 0.07),
+              child: Row(children: [
+                const Icon(Icons.warning_amber_rounded,
+                    size: 11, color: AppColors.error),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    stageName.isNotEmpty
+                        ? 'SLA BREACHED  ·  $stageName'
+                        : 'SLA BREACHED — ESCALATED',
                     style: const TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.error,
+                      letterSpacing: 0.3,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 3),
-                  Row(
+                ),
+              ]),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Room badge
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isEsc
+                        ? AppColors.error.withValues(alpha: 0.1)
+                        : AppColors.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    room,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: isEsc ? AppColors.error : AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                      fontSize: room.length > 4 ? 9.5 : 11,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // Title + meta
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (timeAgo.isNotEmpty)
-                        Text(
-                          timeAgo,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textSecondary
-                                .withValues(alpha: 0.7),
-                          ),
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: isEsc ? AppColors.textPrimary : AppColors.textPrimary,
                         ),
-                      if (isEsc) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 5, vertical: 1.5),
-                          decoration: BoxDecoration(
-                            color: AppColors.error.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'SLA Breach',
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.error,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          if (timeAgo.isNotEmpty)
+                            Text(
+                              timeAgo,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: AppColors.textSecondary.withValues(alpha: 0.7),
+                              ),
                             ),
-                          ),
-                        ),
-                      ],
+                          if (isEsc) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: AppColors.error.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'SLA Breach',
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.error,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ],
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            // Status pill
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-              decoration: BoxDecoration(
-                color: statusBg,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                displayStatus,
-                style: TextStyle(
-                  color: statusColor,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 11,
                 ),
-              ),
+                const SizedBox(width: 8),
+                // Status pill
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: statusBg,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    displayStatus,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+                if (canTap) ...[
+                  const SizedBox(width: 4),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    size: 15,
+                    color: AppColors.textDisabled,
+                  ),
+                ],
+              ],
             ),
-            if (canTap) ...[
-              const SizedBox(width: 4),
-              const Icon(
-                Icons.chevron_right_rounded,
-                size: 15,
-                color: AppColors.textDisabled,
-              ),
-            ],
-          ],
-        ),
+          ),
+        ],
       ),
     );
 
-    if (!canTap) return rowContent;
+    // Wrap in an escalation-aware container: red border + subtle shadow when escalated.
+    final wrappedContent = isEsc
+        ? Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border.all(
+                color: AppColors.error.withValues(alpha: 0.35),
+                width: 1.5,
+              ),
+              borderRadius: BorderRadius.circular(4),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.error.withValues(alpha: 0.06),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: rowContent,
+            ),
+          )
+        : rowContent;
+
+    if (!canTap) return wrappedContent;
 
     return InkWell(
       onTap: () {
@@ -2864,13 +2960,15 @@ class TasksPageState extends State<TasksPage> {
             builder: (_) => TicketDetailPage(
               task: task,
               userRole: _userRole,
-              onClose: () => _onRefresh(),
+              onClose: () {
+                _onRefresh();
+              },
               onReassign: (_) => _onRefresh(),
             ),
           ),
         );
       },
-      child: rowContent,
+      child: wrappedContent,
     );
   }
 

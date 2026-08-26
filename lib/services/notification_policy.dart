@@ -14,6 +14,7 @@ class NotificationPolicy {
     // Everything else reconciles state silently.
     switch ((data['type'] ?? '').toString().toUpperCase()) {
       case 'NEW_FOOD_ORDER':
+      case 'FOOD_ORDER_STATUS':
       case 'SERVICE_ORDER':
       case 'NEW_SERVICE_REQUEST':
       case 'TASK_REASSIGNED':
