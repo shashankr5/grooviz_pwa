@@ -1,5 +1,6 @@
-// food_orders_page.dart
+﻿// food_orders_page.dart
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -49,16 +50,23 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   late Animation<double> _blinkAnimation;
 
   // ── Rush Hour state (server-backed) ─────────────────────────────────────
-  // These are derived from ent_dept_mapping and kept in sync via WebSocket.
+  // These are derived from enterprise_food_service_rule and kept in sync via WebSocket.
   // Never set rushHourActive = true locally without calling _setRushHour().
   bool rushHourActive           = false;
   int  rushExtraMinutesSelected = 0;
+  int  _configuredRushHourMinutes = 0;
   Timer?    _rushTimer;
   DateTime? _rushHourEndsAt;
   bool      _rushHourLoading = false; // prevents double-taps during API call
 
-  // ETA tap limit from enterprise_food_service_rule (loaded from session at init)
-  int _maxTapCountFromSession = 5; // safe default; overwritten in initState
+  // ETA tap config from enterprise_food_service_rule (loaded from session at init).
+  // 0 = not configured — tap button disabled; real cap enforced server-side.
+  int _maxTapCountFromSession     = 0;
+  int _tapCountMinutesFromSession = 0;
+
+  // Fallback local ETA guard used when server tap state is unavailable.
+  // Real cap is always enforced server-side via max_tap_count.
+  static const int _kMaxExtraEta = 14;
 
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -77,7 +85,6 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   final Set<String> _maxDelayReachedOrders = {};
   final Set<String> _expandedTimelineOrders = {};
 
-  static const int _kMaxExtraEta = 14;
 
   // ====================== WEBSOCKET ======================
   Future<void> _initializeWebSocket() async {
@@ -230,7 +237,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     data['rush_hour_active'] == 1    ||
                     data['rush_hour_active'] == '1';
     final endsAt  = data['rush_hour_ends_at']?.toString();
-    final extra   = int.tryParse((data['current_rush_hour'] ?? data['rush_hour_extra_min'] ?? 15).toString()) ?? 15;
+    // Use server-broadcast value. Fall back to local configured value, not 15.
+    final extra   = int.tryParse(
+      (data['current_rush_hour'] ?? data['rush_hour_extra_min'] ?? _configuredRushHourMinutes).toString(),
+    ) ?? _configuredRushHourMinutes;
 
     DateTime? parsedEndsAt;
     if (active && endsAt != null && endsAt.isNotEmpty) {
@@ -277,8 +287,14 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     'Other',
   ];
 
-  // current_rush_hour is the configured total ETA while rush hour is active.
-  int _rushEtaMinutes() => rushExtraMinutesSelected > 0 ? rushExtraMinutesSelected : 15;
+  /// Returns the active rush hour ETA in minutes.
+  /// Backed by the server-confirmed rushExtraMinutesSelected (set by _applyRushHourState)
+  /// or the enterprise-configured _configuredRushHourMinutes loaded at login.
+  /// Returns 0 when enterprise has not configured rush hour — callers must guard on this.
+  int _rushEtaMinutes() {
+    if (rushExtraMinutesSelected > 0) return rushExtraMinutesSelected;
+    return _configuredRushHourMinutes; // 0 when not configured by enterprise
+  }
 
   /// Returns [v] as a positive (non-zero) int, or null when v is null / 0 / unparseable.
   /// Prevents order_id=0 from ever being sent to accept / update / tap APIs.
@@ -364,7 +380,14 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                         result["rush_hour_active"] == 1    ||
                         result["rush_hour_active"] == '1';
         final endsAt  = result["rush_hour_ends_at"]?.toString();
-        final extra   = int.tryParse((result["current_rush_hour"] ?? result["rush_hour_extra_min"] ?? 15).toString()) ?? 15;
+        // Use the active current_rush_hour; never fall back to a hardcoded 15.
+        // 0 is a valid value meaning "enterprise has not activated rush hour".
+        final extra   = int.tryParse(
+          (result["current_rush_hour"] ?? result["configured_rush_hour_minutes"] ?? 0).toString(),
+        ) ?? 0;
+        // Refresh the local configured-minutes cache from session data.
+        final cfgMin = (result["configured_rush_hour_minutes"] as num?)?.toInt() ?? 0;
+        if (cfgMin > 0 && mounted) setState(() => _configuredRushHourMinutes = cfgMin);
 
         DateTime? parsedEndsAt;
         if (active && endsAt != null && endsAt.isNotEmpty) {
@@ -425,21 +448,40 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     }
   }
 
-  // ── NEW: tell the server to toggle rush hour ON or OFF ─────────────────
-  // Duration is now determined by the server from enterprise_food_service_rule.
-  // The old 'durationMinutes' parameter has been removed.
+  // ── Tell the server to toggle rush hour ON or OFF ───────────────────────
+  // Duration comes from enterprise_food_service_rule via _configuredRushHourMinutes.
+  // Activating is blocked if enterprise has not configured the duration.
   Future<void> _setRushHour({required bool active}) async {
     if (_rushHourLoading) return;
+
+    // Guard: cannot activate rush hour without an enterprise-configured duration.
+    if (active && _configuredRushHourMinutes <= 0) {
+      _showError(
+        "Rush hour duration is not configured for this enterprise. "
+        "Please contact your administrator.",
+      );
+      return;
+    }
+
     if (mounted) setState(() => _rushHourLoading = true);
 
     try {
-      final result = await _foodOrderService.setRushHour(active: active);
+      final result = await _foodOrderService.setRushHour(
+        active: active,
+        rushHourMinutes: active ? _configuredRushHourMinutes : 0,
+      );
 
       if (!mounted) return;
 
       if (result["success"] == true) {
-        final newActive = result["rush_hour_active"] == true || result["rush_hour_active"] == 1 || result["rush_hour_active"] == '1';
-        final rushMinutes = int.tryParse((result["current_rush_hour"] ?? 15).toString()) ?? 15;
+        final newActive   = result["rush_hour_active"] == true ||
+                            result["rush_hour_active"] == 1    ||
+                            result["rush_hour_active"] == '1';
+        // Server returns the committed current_rush_hour.
+        // Fall back to our cached configured value, never to a hardcoded 15.
+        final rushMinutes = int.tryParse(
+          (result["current_rush_hour"] ?? _configuredRushHourMinutes).toString(),
+        ) ?? _configuredRushHourMinutes;
         _applyRushHourState(active: newActive, extraMin: rushMinutes);
         // WebSocket broadcast is done server-side; other devices update via WS.
       } else {
@@ -454,10 +496,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
 
   void _addNewOrder(Map<String, dynamic> order) {
     setState(() {
-      if (rushHourActive) {
+      if (rushHourActive && _configuredRushHourMinutes > 0) {
         final rushEta       = _rushEtaMinutes();
         order['etaMinutes'] = rushEta;
-        order['extraEta']   = rushEta - 15;
+        order['extraEta']   = (rushEta - 15).clamp(0, rushEta);
       }
       foodOrders.insert(0, order);
     });
@@ -533,9 +575,20 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     _orderSubscription = OrderAlertService.onNewOrder.listen((_) {
       if (mounted) _loadFoodOrders();
     });
-    // Load max tap count from session (saved at login from enterprise_food_service_rule)
+    // Load enterprise_food_service_rule config saved at login.
+    // Values are stored regardless of whether they are >0:
+    //   0 correctly signals "not configured by enterprise".
     UserSessionHelper.getMaxTapCount().then((v) {
-      if (mounted && v > 0) setState(() => _maxTapCountFromSession = v);
+      if (mounted) setState(() => _maxTapCountFromSession = v);
+    });
+    UserSessionHelper.getTapCountMin().then((v) {
+      if (mounted) setState(() => _tapCountMinutesFromSession = v);
+    });
+    // Load the configured rush hour duration (rush_hour_data.Duration) from session.
+    _foodOrderService.getRushHourState().then((r) {
+      if (!mounted) return;
+      final configured = (r["configured_rush_hour_minutes"] as num?)?.toInt() ?? 0;
+      if (configured > 0) setState(() => _configuredRushHourMinutes = configured);
     });
   }
 
@@ -643,9 +696,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   bool _isMaxDelayReached(Map<String, dynamic> order) {
     if (order['etaLocked'] == true) return true;
     final tapCount = (order['etaTapCount'] as num?)?.toInt() ?? 0;
-    // Use server-configured max from enterprise_food_service_rule (via session).
-    // Falls back to 5 if not configured.
-    if (tapCount >= _maxTapCountFromSession && _maxTapCountFromSession > 0) return true;
+    // max_tap_count=0 means enterprise has not configured a tap limit.
+    // In that case we do NOT lock locally — only the server enforces the cap.
+    if (_maxTapCountFromSession > 0 && tapCount >= _maxTapCountFromSession) return true;
     final orderNo = order['orderNo']?.toString() ?? '';
     if (_maxDelayReachedOrders.contains(orderNo)) return true;
     return (order['extraEta'] ?? 0) as int >= _kMaxExtraEta;
@@ -1119,13 +1172,28 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                         : AppColors.textPrimary,
                   ),
                 ),
-                if (rushHourActive)
+                if (rushHourActive) ...[  
                   Text(
-                    "${_rushEtaMinutes()} min ETA • ${_rushTimeLeftText()} left",
+                    "${_rushEtaMinutes()} min ETA  •  ${_rushTimeLeftText()} left",
                     style: TextStyle(
                         fontSize: 11,
                         color: AppColors.error.withOpacity(0.7)),
                   ),
+                ] else if (_configuredRushHourMinutes > 0) ...[  
+                  Text(
+                    "Configured: ${_configuredRushHourMinutes} min",
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary),
+                  ),
+                ] else ...[  
+                  const Text(
+                    "Not configured by enterprise",
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textDisabled),
+                  ),
+],
               ],
             ),
           ),
@@ -1642,8 +1710,13 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               _showError("Order ID missing. Please refresh.");
                               return;
                             }
-                            final initialExpires = DateTime.now().add(Duration(
-                                minutes: rushHourActive ? _rushEtaMinutes() : 15));
+                            // Optimistic ETA: use configured rush hour when active.
+                            // Server will correct the real ETA after _loadFoodOrders.
+                            final etaBase = (rushHourActive && _configuredRushHourMinutes > 0)
+                                ? _configuredRushHourMinutes
+                                : 15;
+                            final initialExpires = DateTime.now().add(
+                                Duration(minutes: etaBase));
                             setState(() {
                               _acceptingIndex = index;
                               order["status"] = FoodOrderStatus.preparing.label;
@@ -1651,10 +1724,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               order["etaExpiresAt"] = initialExpires;
                               order["etaTapCount"] = 0;
                               order["etaLocked"] = false;
-                              if (rushHourActive) {
-                                final rushEta = _rushEtaMinutes();
-                                order['etaMinutes'] = rushEta;
-                                order['extraEta'] = rushEta - 15;
+                              if (rushHourActive && _configuredRushHourMinutes > 0) {
+                                order['etaMinutes'] = _configuredRushHourMinutes;
+                                order['extraEta'] = (_configuredRushHourMinutes - 15).clamp(0, _configuredRushHourMinutes);
                               }
                             });
                             final result =
@@ -1722,7 +1794,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                         child: GestureDetector(
                           onTap: maxDelayReached
                               ? () => _showError(
-                                  "Maximum delay reached. Cannot add more time.")
+                                  _maxTapCountFromSession > 0
+                                      ? "Maximum delay reached (${_maxTapCountFromSession} taps allowed). Cannot add more time."
+                                      : "ETA tapping is not configured for this enterprise.")
                               : () async {
                                    final summaryId = _resolveSummaryId(order);
                                    if (summaryId == null) {
@@ -1781,19 +1855,33 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                                    });
                                  },
                           child: Container(
-                            padding: const EdgeInsets.all(11),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                             decoration: BoxDecoration(
                               color: maxDelayReached
                                   ? AppColors.textDisabled
                                   : AppColors.textPrimary,
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: Icon(
-                              maxDelayReached
-                                  ? Icons.block_rounded
-                                  : Icons.add_rounded,
-                              color: Colors.white,
-                              size: 20,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  maxDelayReached
+                                      ? Icons.block_rounded
+                                      : Icons.add_rounded,
+                                  color: Colors.white,
+                                  size: 18,
+                                ),
+                                if (_tapCountMinutesFromSession > 0)
+                                  Text(
+                                    "+${_tapCountMinutesFromSession}m",
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
@@ -1890,7 +1978,14 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     final cancelledAt =
         cancelledTimeStr.isNotEmpty ? parseOrderDate(cancelledTimeStr) : null;
 
-    final elapsedMins = DateTime.now().difference(createdAt).inMinutes.clamp(0, 9999);
+    final elapsedMins =
+        DateTime.now().difference(createdAt).inMinutes.clamp(0, 9999);
+    String elapsedLabel(int minutes) {
+      if (minutes < 60) return '$minutes min elapsed';
+      if (minutes < 24 * 60) return '${minutes ~/ 60}h elapsed';
+      final days = minutes ~/ (24 * 60);
+      return '${days}d elapsed';
+    }
 
     // Determine active index: 0 = Placed, 1 = Preparing, 2 = Ready, 3 = Delivered / Cancelled
     int activeStage = 0;
@@ -2024,7 +2119,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     const Icon(Icons.timer_outlined, size: 11, color: AppColors.textSecondary),
                     const SizedBox(width: 4),
                     Text(
-                      "$elapsedMins min elapsed",
+                      elapsedLabel(elapsedMins),
                       style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -2230,12 +2325,19 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary)),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 0, 20, 16),
-              child: Text(
-                'Rush hour duration and extra ETA are set by your enterprise configuration.',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
-              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: _configuredRushHourMinutes > 0
+                  ? Text(
+                      "All orders will show a ${_configuredRushHourMinutes}-min ETA "
+                      "during rush hour.",
+                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                    )
+                  : const Text(
+                      "Rush hour duration is not configured. "
+                      "Contact your administrator.",
+                      style: TextStyle(fontSize: 13, color: AppColors.error),
+                    ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -2259,10 +2361,13 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        _setRushHour(active: true);
-                      },
+                      // Disabled if enterprise has not configured rush_hour_data.Duration
+                      onPressed: _configuredRushHourMinutes <= 0
+                          ? null
+                          : () {
+                              Navigator.pop(context);
+                              _setRushHour(active: true);
+                            },
                       icon: const Icon(Icons.local_fire_department_rounded,
                           size: 16, color: Colors.white),
                       label: const Text('Enable',

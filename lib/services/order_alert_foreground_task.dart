@@ -15,10 +15,10 @@ class OrderAlertTaskHandler extends TaskHandler {
 
       // 🔥 Copy asset to temp file (background isolate safe)
       final byteData =
-          await rootBundle.load('assets/audio/bell_notification.wav');
+          await rootBundle.load('assets/audio/alert.wav');
 
       final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/bell_notification.wav');
+      final file = File('${tempDir.path}/alert.wav');
       await file.writeAsBytes(byteData.buffer.asUint8List());
 
       await _player.setFilePath(file.path);

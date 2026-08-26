@@ -1,10 +1,6 @@
 // services/unified_alert_foreground_task.dart
 //
-// CHANGES IN THIS VERSION:
-//  • AlertSoundKey.delivery  = 'delivery_notification'   (NEW)
-//  • AlertSoundKey.escalation = 'escalation_notification' (NEW)
-//  • Non-loop mode remains available for alert types that should play once.
-//  • Escalation uses loop mode and is stopped when its task is actioned.
+// Operational requests share alert.wav; escalation uses escalation.wav.
 
 import 'dart:io';
 import 'package:flutter/services.dart';
@@ -19,17 +15,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AlertSoundKey {
   AlertSoundKey._();
 
-  static const String food       = 'bell_notification';        // existing
-  static const String task       = 'task_notification';        // existing
-  static const String delivery   = 'delivery_notification';    // NEW
-  static const String escalation = 'escalation_notification';  // NEW
+  static const String food       = 'alert';
+  static const String task       = 'alert';
+  static const String delivery   = 'alert';
+  static const String escalation = 'escalation';
 
   /// SharedPreferences key — written by _ensureRunning() BEFORE startService()
   /// so the handler can read it synchronously in onStart().
   static const String prefKey = 'active_alert_sound';
 
-  /// Flag stored alongside the sound to indicate "play once, no loop".
-  /// Set to 'true' for escalation and delivery sounds.
+  /// Flag stored alongside the sound to indicate whether the clip loops.
   static const String loopKey = 'active_alert_loop';
 }
 
@@ -105,7 +100,7 @@ class UnifiedAlertTaskHandler extends TaskHandler {
         try {
           byteData = await rootBundle.load(assetPath);
         } catch (_) {
-          byteData = await rootBundle.load('assets/audio/bell_notification.wav');
+          byteData = await rootBundle.load('assets/audio/alert.wav');
         }
         await file.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
       }

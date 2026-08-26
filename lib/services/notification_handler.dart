@@ -112,7 +112,7 @@ Future<void> createNotificationChannel() async {
     description: 'Incoming food orders requiring staff acceptance',
     importance: Importance.max, playSound: true, enableVibration: false,
     vibrationPattern: zeroVibration,
-    sound: const RawResourceAndroidNotificationSound('bell_notification'),
+    sound: const RawResourceAndroidNotificationSound('notification'),
   ));
 
   await plugin?.createNotificationChannel(AndroidNotificationChannel(
@@ -120,7 +120,7 @@ Future<void> createNotificationChannel() async {
     description: 'Housekeeping, engineering and maintenance requests',
     importance: Importance.max, playSound: true, enableVibration: false,
     vibrationPattern: zeroVibration,
-    sound: const RawResourceAndroidNotificationSound('task_notification'),
+    sound: const RawResourceAndroidNotificationSound('notification'),
   ));
 
   await plugin?.createNotificationChannel(AndroidNotificationChannel(
@@ -135,7 +135,7 @@ Future<void> createNotificationChannel() async {
     description: 'Orders ready and waiting for delivery assignment',
     importance: Importance.max, playSound: true, enableVibration: false,
     vibrationPattern: zeroVibration,
-    sound: const RawResourceAndroidNotificationSound('delivery_notification'),
+    sound: const RawResourceAndroidNotificationSound('notification'),
   ));
 
   await plugin?.createNotificationChannel(AndroidNotificationChannel(
@@ -143,7 +143,7 @@ Future<void> createNotificationChannel() async {
     description: 'SLA-breached tasks requiring management review',
     importance: Importance.max, playSound: true, enableVibration: false,
     vibrationPattern: zeroVibration,
-    sound: const RawResourceAndroidNotificationSound('escalation_notification'),
+    sound: const RawResourceAndroidNotificationSound('notification'),
   ));
 }
 
@@ -170,7 +170,10 @@ NotificationDetails _buildDetails(NotifMessage msg, {bool isGroupSummary = false
     autoCancel:        true,
     enableVibration:   false,
     vibrationPattern:  Int64List.fromList([0]),
-    playSound:         false, // audio handled by foreground service
+    // Notification.wav plays once for the visible notification. Operational
+    // request alerts continue separately in the foreground service.
+    playSound:         true,
+    sound:             const RawResourceAndroidNotificationSound('notification'),
   );
 
   const ios = DarwinNotificationDetails(

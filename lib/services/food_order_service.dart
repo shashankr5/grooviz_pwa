@@ -381,14 +381,20 @@ class FoodOrderService {
   /// Input: { user_id, status: ACTIVE|INACTIVE, rush_hour: minutes, stage }.
   Future<Map<String, dynamic>> setRushHour({
     required bool active,
-    int rushHourMinutes = 30,
+    required int rushHourMinutes,
   }) async {
     try {
       final userId = await UserSessionHelper.getUserId();
       if (userId == null || userId == 0) {
         return {'success': false, 'message': 'User not logged in'};
       }
-      final requestedMinutes = active ? rushHourMinutes.clamp(0, 24 * 60) : 0;
+      if (active && rushHourMinutes <= 0) {
+        return {
+          'success': false,
+          'message': 'Rush hour is not set by the enterprise.',
+        };
+      }
+      final requestedMinutes = active ? rushHourMinutes.clamp(1, 24 * 60) : 0;
       final payload = <String, dynamic>{
         'user_id': userId,
         'status': active ? 'ACTIVE' : 'INACTIVE',
@@ -434,12 +440,20 @@ class FoodOrderService {
       final returnedMinutes = int.tryParse((merged['current_rush_hour'] ?? requestedMinutes).toString()) ?? requestedMinutes;
       final returnedStatus = (merged['rush_hour_status'] ?? (active ? 'ACTIVE' : 'INACTIVE')).toString().toUpperCase();
       final rushActive = returnedStatus == 'ACTIVE';
+      final savedRushData = await UserSessionHelper.getRushHourData();
+      Map<String, dynamic> rushData = <String, dynamic>{};
+      if (savedRushData.isNotEmpty) {
+        try {
+          rushData = Map<String, dynamic>.from(jsonDecode(savedRushData) as Map);
+        } catch (_) {}
+      }
+      rushData['current_rush_hour'] = returnedMinutes;
       await UserSessionHelper.saveRushHourConfig(
         rushHourActive: rushActive ? 1 : 0,
         maxTapCount: await UserSessionHelper.getMaxTapCount(),
         tapCountMin: await UserSessionHelper.getTapCountMin(),
         rushHourStatus: returnedStatus,
-        rushHourData: jsonEncode({'current_rush_hour': returnedMinutes}),
+        rushHourData: jsonEncode(rushData),
       );
       return {
         'success': true,
@@ -468,11 +482,23 @@ class FoodOrderService {
           config = Map<String, dynamic>.from(jsonDecode(rawConfig) as Map);
         } catch (_) {}
       }
+      int configuredMinutes = 0;
+      if (rawConfig.isNotEmpty) {
+        final value = config['Duration'] ??
+            config['duration'] ??
+            config['duration_minutes'] ??
+            config['rush_hour_minutes'];
+        configuredMinutes = int.tryParse('$value') ?? 0;
+      }
+      final currentMinutes = config['current_rush_hour'] is num
+          ? (config['current_rush_hour'] as num).toInt()
+          : int.tryParse('${config['current_rush_hour']}') ?? 0;
       return {
         "success": true,
         "rush_hour_active": active,
         "rush_hour_status": status,
-        "current_rush_hour": config['current_rush_hour'],
+        "current_rush_hour": currentMinutes,
+        "configured_rush_hour_minutes": configuredMinutes,
       };
     } catch (e) {
       dev.log("❌ ERROR (getRushHourState): $e");

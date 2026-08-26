@@ -183,6 +183,24 @@ Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
     final title = data['title']?.toString().trim();
     final body = data['body']?.toString().trim();
 
+    // A background FCM can arrive before the foreground startup has created
+    // the channel. Register it here too so Android resolves notification.wav
+    // instead of falling back to the device default sound.
+    final androidPlugin = plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    await androidPlugin?.createNotificationChannel(
+      AndroidNotificationChannel(
+        msg.channelId,
+        'ScreenSync Alerts',
+        description: 'ScreenSync operational notifications',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: false,
+        sound: const RawResourceAndroidNotificationSound('notification'),
+      ),
+    );
+
     final androidDetails = AndroidNotificationDetails(
       msg.channelId,
       msg.channelId,
@@ -194,7 +212,10 @@ Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
       styleInformation: BigTextStyleInformation(msg.bigText, contentTitle: msg.title),
       groupKey:         NotifGroup.key,
       autoCancel:       true,
-      playSound:        false,
+      // The notification itself plays notification.wav once. Any actionable
+      // request loop is owned by the foreground alert service.
+      playSound:        true,
+      sound:            const RawResourceAndroidNotificationSound('notification'),
     );
 
     await plugin.show(

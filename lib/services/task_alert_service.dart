@@ -107,13 +107,12 @@ class TaskAlertService {
 
   // ── Delivery API ─────────────────────────────────────────────────────────
   //
-  // CHANGE: now uses AlertSoundKey.delivery ('delivery_notification')
-  // instead of AlertSoundKey.task so delivery orders play their own
-  // distinct ascending-triad sound.
+  // Delivery is an operational request, so it shares alert.wav with service
+  // and food requests. The existing loop/stop lifecycle remains unchanged.
 
   static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
   static Future<bool> ensureDeliveryRunning() => _ensureRunning(
-        soundName:         AlertSoundKey.delivery,   // CHANGED from .task
+        soundName:         AlertSoundKey.delivery,
         // A Ready order remains actionable until Room Service accepts it.
         // _reevaluate() stops this loop when the Ready queue becomes empty.
         shouldLoop:        true,

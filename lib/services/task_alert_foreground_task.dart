@@ -3,7 +3,7 @@
 // Foreground task handler for SERVICE TASK and DELIVERY TASK alerts.
 // Mirrors order_alert_foreground_task.dart exactly.
 //
-// Audio asset: assets/audio/task_notification.wav
+// Legacy handler retained for compatibility; use the shared request alert.
 // (can be the same bell or a different tone — your choice)
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -21,10 +21,10 @@ class TaskAlertTaskHandler extends TaskHandler {
       _player = AudioPlayer();
 
       final byteData =
-          await rootBundle.load('assets/audio/task_notification.wav');
+          await rootBundle.load('assets/audio/alert.wav');
 
       final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/task_notification.wav');
+      final file = File('${tempDir.path}/alert.wav');
       await file.writeAsBytes(byteData.buffer.asUint8List());
 
       await _player.setFilePath(file.path);

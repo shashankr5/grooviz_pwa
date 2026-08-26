@@ -15,7 +15,7 @@ class OrderAlertSound {
 
     try {
       await _player.stop();
-      await _player.setAsset('assets/audio/bell_notification.wav');
+      await _player.setAsset('assets/audio/alert.wav');
       await _player.setLoopMode(LoopMode.all);
       await _player.play();
       _isPlaying = true;

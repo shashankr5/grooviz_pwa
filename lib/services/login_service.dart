@@ -163,7 +163,10 @@ class LoginService {
         final maxTap     = _readInt(user['max_tap_count'])     ?? 0;
         final tapMin     = _readInt(user['tap_count_min'])     ?? 0;
         final rushStatus = (user['rush_hour_status'] ?? 'INACTIVE').toString();
-        final rushData   = user['rush_hour_data']?.toString() ?? '';
+        final rawRushData = user['rush_hour_data'];
+        final rushData = rawRushData is Map || rawRushData is List
+            ? jsonEncode(rawRushData)
+            : rawRushData?.toString() ?? '';
         await UserSessionHelper.saveRushHourConfig(
           rushHourActive: rushActive,
           maxTapCount:    maxTap,

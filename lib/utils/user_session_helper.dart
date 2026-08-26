@@ -111,7 +111,14 @@ class UserSessionHelper {
 
   static Future<bool> getRushHourActive() async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getInt(StorageKeys.rushHourActive) ?? 0) == 1;
+    // current_rush_hour is a minute value (for example, 30), not a boolean.
+    // Prefer the explicit server status and retain the numeric check only for
+    // sessions saved by older app versions that did not persist the status.
+    final status = (prefs.getString(StorageKeys.rushHourStatus) ?? '')
+        .trim()
+        .toUpperCase();
+    if (status.isNotEmpty) return status == 'ACTIVE';
+    return (prefs.getInt(StorageKeys.rushHourActive) ?? 0) > 0;
   }
 
   static Future<int> getMaxTapCount() async {
