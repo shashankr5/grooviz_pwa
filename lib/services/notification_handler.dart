@@ -34,36 +34,40 @@ Future<void> setupFirebaseNotifications() async {
     _showNotification(message);
   });
 
-  // Cold start from FCM push notification tap
+  // ── Cold start from FCM push notification tap ────────────────────────────
+  // When the app is opened from a killed state by tapping a notification,
+  // navigate to the correct page and then reconcile the live queue counts.
+  // We do NOT blindly stop alerts here — the queue may still have open items.
+  // AlertReloadCoordinator.reload* stops the foreground service only if the
+  // reconciled pending count drops to zero.
   final initialMessage = await messaging.getInitialMessage();
   if (initialMessage != null) {
-    _handleMessage(initialMessage); // navigate to correct page
-    // User tapped the notification to open the app — stop the looping alert.
-    // AlertReloadCoordinator will re-evaluate true pending counts when the page loads.
-    // If tasks remain open, the NEXT Lambda FCM pulse will restart the alert.
-    await TaskAlertService.stopAll();
-    await OrderAlertService.stop();
+    _handleMessage(initialMessage);
+    await _reconcileAlertsAfterTap(initialMessage.data);
   }
 
-  // Resume/Foreground from FCM push notification tap
-  FirebaseMessaging.onMessageOpenedApp.listen(_handleMessage);
+  // ── Resume/Foreground from FCM push notification tap ─────────────────────
+  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+    _handleMessage(message);
+    _reconcileAlertsAfterTap(message.data);
+  });
 
-  // Cold start from Local Notification tap
+  // ── Cold start from Local Notification tap ───────────────────────────────
   try {
     final launchDetails = await localNotifications.getNotificationAppLaunchDetails();
     if (launchDetails?.didNotificationLaunchApp ?? false) {
       final payload = launchDetails?.notificationResponse?.payload;
       if (payload != null && payload.isNotEmpty) {
+        Map<String, dynamic> data = {};
         try {
-          final Map<String, dynamic> data = Map<String, dynamic>.from(jsonDecode(payload));
+          data = Map<String, dynamic>.from(jsonDecode(payload));
           _handleMessage(RemoteMessage(data: data));
         } catch (_) {
-          _handleMessage(RemoteMessage(data: {'type': payload}));
+          data = {'type': payload};
+          _handleMessage(RemoteMessage(data: data));
         }
+        await _reconcileAlertsAfterTap(data);
       }
-      // Stop the looping alert — user acknowledged by tapping the local notification.
-      await TaskAlertService.stopAll();
-      await OrderAlertService.stop();
     }
   } catch (e) {
     print('⚠️ localNotifications launch details check error: $e');
@@ -80,12 +84,17 @@ Future<void> _initializeLocalNotifications() async {
       final payload = response.payload;
       if (payload != null && payload.isNotEmpty) {
         print('👆 Local notification tapped | payload=$payload');
+        Map<String, dynamic> data = {};
         try {
-          final Map<String, dynamic> data = Map<String, dynamic>.from(jsonDecode(payload));
+          data = Map<String, dynamic>.from(jsonDecode(payload));
           _handleMessage(RemoteMessage(data: data));
         } catch (_) {
-          _handleMessage(RemoteMessage(data: {'type': payload}));
+          data = {'type': payload};
+          _handleMessage(RemoteMessage(data: data));
         }
+        // Reconcile queue after tap — stop alert only if the server confirms
+        // the queue is truly empty. Do not blindly call stopAll().
+        _reconcileAlertsAfterTap(data);
       }
     },
   );
@@ -235,14 +244,23 @@ Future<void> _showNotification(RemoteMessage message) async {
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
-      case 'FOOD_ORDER_STATUS':
-        final status = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '')
-          .toString().toUpperCase();
-        if (status != 'READY') return;
-        await TaskAlertService.ensureDeliveryRunning();
-        TaskAlertService.notifyNewDelivery();
-        await AlertReloadCoordinator.instance.reloadDelivery();
-        break;
+    // ── FOOD_ORDER_STATUS ──────────────────────────────────────────────────
+    // Food order status changed to Ready → notify delivery staff.
+    // notification+data payload — reconcile-after-tap covers the background gap.
+    case 'FOOD_ORDER_STATUS': {
+      final rawStatus = (
+        data['new_status'] ??
+        data['food_order_status'] ??
+        data['order_status'] ??
+        data['status'] ??
+        ''
+      ).toString().toUpperCase();
+      if (rawStatus != 'READY') return;
+      await TaskAlertService.ensureDeliveryRunning();
+      TaskAlertService.notifyNewDelivery();
+      await AlertReloadCoordinator.instance.reloadDelivery();
+      break;
+    }
 
     // ── SERVICE_ORDER ──────────────────────────────────────────────────────
     // TV device places a service booking → notify Service dept staff.
@@ -422,4 +440,104 @@ void _handleMessage(RemoteMessage message) {
 
   final payload = DeepLinkPayload.fromData(data, source: 'fcm');
   NotificationNavigationCoordinator.instance.handleDeepLink(payload);
+}
+
+// ── Queue reconciliation after notification tap ──────────────────────────────
+//
+// Called whenever a notification is tapped (cold-start, resume, local).
+//
+// DESIGN CONTRACT:
+//  • For data-only payloads (SERVICE_ORDER, NEW_SERVICE_REQUEST):
+//    onBackgroundMessage fires reliably → alert is already running.
+//    silentReconcile=true stops the service if the queue emptied while the
+//    user was away, but never starts a fresh alert.
+//
+//  • For notification+data payloads (TASK_REASSIGNED, ESCALATION,
+//    NEW_FOOD_ORDER, FOOD_ORDER_STATUS):
+//    Android in background/killed state shows the OS tray notification and
+//    onBackgroundMessage may be SKIPPED — the alert sound never started.
+//    On tap, we must actively start the appropriate alert sound, then
+//    reload from the server. If the work was already handled on another
+//    device, the reload count comes back 0 and the sound stops immediately.
+Future<void> _reconcileAlertsAfterTap(Map<String, dynamic> data) async {
+  final String type = (data['type'] ?? '').toString().toUpperCase();
+  print('🔄 Reconciling alerts after tap | type=$type');
+
+  try {
+    switch (type) {
+      // ── Data-only payloads — silently reconcile only ─────────────────────
+      // onBackgroundMessage ran, alert is already started.
+      // Reconcile so we stop if another device already handled the task.
+      case 'SERVICE_ORDER':
+      case 'NEW_SERVICE_REQUEST':
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      // ── TASK_REASSIGNED ──────────────────────────────────────────────────
+      // notification+data → onBackgroundMessage may have been skipped.
+      // Restart service alert so the reassigned user hears the sound.
+      // Reconcile to stop if the task was already accepted elsewhere.
+      case 'TASK_REASSIGNED':
+        await TaskAlertService.ensureServiceRunning();
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      // ── ESCALATION ───────────────────────────────────────────────────────
+      // notification+data → onBackgroundMessage may have been skipped.
+      // Restart the LOOPING escalation sound (loop until accept — confirmed).
+      // Reconcile to stop if the escalated task was already resolved.
+      case 'ESCALATION':
+        await TaskAlertService.ensureEscalationRunning();
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      // ── Food order types ─────────────────────────────────────────────────
+      case 'NEW_FOOD_ORDER':
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        break;
+
+      // ── Delivery / Ready queue ───────────────────────────────────────────
+      case 'FOOD_ORDER_STATUS':
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        break;
+
+      // ── Order action events ──────────────────────────────────────────────
+      case 'ORDER_ACCEPTED':
+      case 'ORDER_CANCELLED':
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        break;
+
+      case 'ORDER_DELIVERED':
+        // Delivery stops all food and task alerts
+        await OrderAlertService.stop();
+        await TaskAlertService.stopAll();
+        break;
+
+      case 'SERVICE_TASK_ACCEPTED':
+      case 'ACCEPTED':
+        await TaskAlertService.stopEscalation();
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      case 'DELIVERY_ACCEPTED':
+      case 'DELIVERY_DELIVERED':
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        break;
+
+      case 'TASK_CLOSED':
+        await TaskAlertService.stopEscalation();
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      default:
+        // For truly unknown types, do a full reconciliation across all queues.
+        // This fallback is rarely reached now that action types are handled.
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        break;
+    }
+  } catch (e) {
+    print('⚠️ _reconcileAlertsAfterTap error: $e');
+  }
 }

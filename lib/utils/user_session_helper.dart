@@ -167,6 +167,38 @@ class UserSessionHelper {
     return prefs.getInt(StorageKeys.completionMinutes) ?? 30;
   }
 
+  // ---------- ESCALATION PERMISSIONS (from json_data) ----------
+
+  /// Saves escalation permission flags from `enterprise_escalation_user_rule.json_data`
+  static Future<void> saveEscalationPermissions({
+    required bool isAccept,
+    required bool reassign,
+    required bool isDecline,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(StorageKeys.isAccept, isAccept);
+    await prefs.setBool(StorageKeys.reassign, reassign);
+    await prefs.setBool(StorageKeys.isDecline, isDecline);
+  }
+
+  /// Returns true if the user can accept escalated tasks (`is_accept: "Y"`)
+  static Future<bool> isAccept() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(StorageKeys.isAccept) ?? false;
+  }
+
+  /// Returns true if the user can reassign escalated tasks (`reassign: "Y"`)
+  static Future<bool> reassign() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(StorageKeys.reassign) ?? false;
+  }
+
+  /// Returns true if the user can decline escalated tasks (`is_decline: "Y"`) – not used in UI.
+  static Future<bool> isDecline() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(StorageKeys.isDecline) ?? false;
+  }
+
   // ---------- ROLE ID (numeric, from DB roles table) ----------
   // Role ID mapping (must match DB):
   //   1 = Admin
@@ -328,6 +360,10 @@ class UserSessionHelper {
     await prefs.remove(StorageKeys.supervisorUserId);
     await prefs.remove(StorageKeys.supervisorName);
     await prefs.remove(StorageKeys.supervisorDeptId);
+    // Escalation permissions
+    await prefs.remove(StorageKeys.isAccept);
+    await prefs.remove(StorageKeys.reassign);
+    await prefs.remove(StorageKeys.isDecline);
 
     // Restore installation ID and device identifier
     if (installationId != null) {

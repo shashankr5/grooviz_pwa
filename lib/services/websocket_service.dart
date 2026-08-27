@@ -140,16 +140,16 @@ class WebSocketService {
   // ── Disconnect (call on logout) ────────────────────────────────────────
 
   void disconnect() {
-    print('WebSocket: disconnecting (logout)');
-    _isDisposed = false;
-    _subscription?.cancel();
-    _subscription = null;
-    _channel?.sink.close(status.normalClosure);
-    _channel = null;
-    isConnected.value = false;
-    _userId       = null;
-    _enterpriseId = null;
-  }
+  print('WebSocket: disconnecting (logout)');
+  _isDisposed = true;    // ✅ FIX: tells the reconnect loop to STOP
+  _subscription?.cancel();
+  _subscription = null;
+  _channel?.sink.close(status.normalClosure);
+  _channel = null;
+  isConnected.value = false;
+  _userId       = null;
+  _enterpriseId = null;
+}
 
   // ── Send ───────────────────────────────────────────────────────────────
 

@@ -13,7 +13,7 @@ import '../services/notification_handler.dart';
 import '../services/notification_constants.dart';
 import '../utils/date_formatter.dart';
 import '../utils/user_session_helper.dart';
-import '../utils/app_snackbar.dart';
+import '../utils/app_snackbar.dart' show AppSnackBar;
 import '../utils/order_grouping.dart';
 import '../utils/escalation_helpers.dart';
 import '../theme/app_colors.dart';
@@ -76,17 +76,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   bool  _isLoading       = true;
   bool  _deptLoaded      = false;
-  // CHANGE: Added _roleLoaded guard so Manager/GM/Admin never flash "All"
-  // before defaulting to the "Escalated" filter. The loading spinner stays
-  // up until both dept AND role are resolved.
   bool  _roleLoaded      = false;
   int?  _acceptingTaskId;
   String? _errorMessage;
 
-  // Guards didChangeAppLifecycleState so notification-shade pulls
-  // (inactive → resumed, no paused) never trigger an API refresh.
-  // Only set to true when AppLifecycleState.paused is observed,
-  // cleared on resumed. A real background→foreground always passes through paused.
   bool _didPause = false;
 
   bool isFrontOfficeUser = false;
@@ -96,36 +89,25 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<Map<String, dynamic>> escalatedTasks = [];
   int  _escalationBadgeCount = 0;
 
-  // Search Bar Filter
   bool _isSearchExpanded = false;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
-  // Delivery counts cached from summary cards
   int _readyOrderCount     = 0;
   int _acceptedOrderCount  = 0;
   int _deliveredOrderCount = 0;
-  /// True while the first delivery counts fetch is in flight — shows skeleton.
   bool _deliveryCountsLoading = true;
-  /// Oldest grouped Ready order for the DeliveryCommandCard preview row.
-  /// Null when no ready orders exist or when timestamp is missing.
   Map<String, dynamic>? _oldestReadyOrder;
 
-  // Alert stream subscriptions
   StreamSubscription<void>? _newTaskSub;
   StreamSubscription<void>? _newDeliverySub;
-  StreamSubscription<int>?  _escalationSub;     // badge count
-  StreamSubscription<void>? _escalationListSub; // list refresh (always)
+  StreamSubscription<int>?  _escalationSub;
+  StreamSubscription<void>? _escalationListSub;
   StreamSubscription<String>? _roleChangeSub;
 
-  // Scroll-FAB inactivity timer — hides the FAB after 5s of no scroll.
   Timer? _scrollFabTimer;
-
-  // Per-second ticker so every SLA countdown chip on escalated cards
-  // refreshes without requiring the parent page's setState() to fire.
   Timer? _escalationTicker;
 
-  // ── Scroll-to-top/bottom FAB ─────────────────────────────────────────────
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<bool> _showScrollFabNotifier = ValueNotifier(false);
   final ValueNotifier<bool> _scrollAtBottomNotifier = ValueNotifier(false);
@@ -150,8 +132,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     _scrollController.addListener(_onScroll);
 
-    // Tick every second so SLA countdown chips on escalated cards update
-    // live without waiting for an external event to call setState().
     _escalationTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && escalatedTasks.isNotEmpty) setState(() {});
     });
@@ -163,7 +143,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final offset = pos.pixels;
     final max    = pos.maxScrollExtent;
 
-    // Show FAB only after scrolling past ~3-4 cards (380px) and before bottom edge
     const edge = 380.0;
     final show = max > edge * 1.5 && offset > edge && offset < max - 80.0;
     final atBtm = offset >= max / 2;
@@ -176,7 +155,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (!_showScrollFabNotifier.value) {
         _showScrollFabNotifier.value = true;
       }
-      // Reset the 5-second inactivity timer
       _scrollFabTimer?.cancel();
       _scrollFabTimer = Timer(const Duration(seconds: 5), () {
         if (mounted) {
@@ -191,8 +169,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-
-  /// Scroll smoothly down to the Service Requests list header.
   void _scrollToTasksList() {
     if (_scrollController.hasClients) {
       final offset = isRoomServiceUser ? 420.0 : 260.0;
@@ -210,8 +186,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (loggedInUserId != null) _loadUserName();
   }
 
-  // ── Subscribe to FCM-driven streams ──────────────────────────────────────
-
   void _subscribeToAlerts() {
     _newTaskSub = TaskAlertService.onNewTask.listen((_) {
       if (mounted) {
@@ -223,16 +197,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted && isRoomServiceUser) _loadDeliveryCounts();
     });
 
-    // Badge count stream — from EscalationService, not TaskAlertService.
     _escalationSub = EscalationService.instance.onBadgeUpdate.listen((_) {
       if (mounted) {
         _loadTasks();
       }
     });
 
-    // List refresh stream — always reload, no selectedFilter guard.
-    // Previously this only ran when selectedFilter == "Escalated",
-    // leaving the list stale when the user was on another filter tab.
     _escalationListSub = EscalationService.instance.onListRefresh.listen((_) {
       if (mounted) _loadTasks();
     });
@@ -263,10 +233,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // FIX-9 (Bug 9): On resume, re-pull tasks/deliveries/badge and make sure
-  // the websocket is (re)connected. IndexedStack keeps HomePage alive
-  // permanently, so initState never re-fires — this is the only lifecycle
-  // hook that catches "backgrounded, dropped socket, resumed" cleanly.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
@@ -280,8 +246,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (isRoomServiceUser) _loadDeliveryCounts();
     }
   }
-
-  // ── Loaders ───────────────────────────────────────────────────────────────
 
   Future<void> _loadUserId() async {
     loggedInUserId = await UserSessionHelper.getUserId();
@@ -306,8 +270,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       userRole = role ?? "";
-      // Escalation filtering is disabled; always show the normal task queue.
-      if (selectedFilter == "Escalated") selectedFilter = "All";
       _roleLoaded = true;
     });
   }
@@ -319,43 +281,23 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       isFrontOfficeUser =
           normalized.any((d) => (d.contains("front") && d.contains("office")) || d.contains("frontoffice"));
-      // Match "Room Service", "room service", "roomservice" etc.
       isRoomServiceUser =
           normalized.any((d) => (d.contains("room") && d.contains("service")) || d.contains("roomservice"));
       _deptLoaded = true;
     });
-    // Load delivery counts only after we know whether this user is Room
-    // Service. Calling _loadDeliveryCounts() from initState races with
-    // _loadUserDepartments() and can leave _deliveryCountsLoading = false
-    // before isRoomServiceUser is set, producing a blank orange card.
     if (isRoomServiceUser) {
       _loadDeliveryCounts();
     } else {
-      // Not a Room Service user — mark loading done so the card is never
-      // shown in skeleton state if isRoomServiceUser later becomes true
-      // (it won't, but guards future-proofing).
       if (mounted) setState(() => _deliveryCountsLoading = false);
     }
   }
 
-
-
-  /// Recalculates the escalated task list and badge count from the current
-  /// tasks list. Uses is_escalated == 1 as the canonical signal — this is
-  /// set directly by check_and_escalate_unified on the service_request row
-  /// and surfaced by get_all_services_mobile1. escalation_instance_id is
-  /// checked as a secondary signal for older SP versions that populate it.
   void _recalcEscalation() {
     escalatedTasks = tasks.where((task) {
-      // Skip food delivery tasks - they belong in Delivery page, not Service Requests
       if (_isFoodDeliveryRequest(task)) return false;
-      
-      // Primary signal: is_escalated field set by check_and_escalate_unified
       if (task['is_escalated'] == 1 || task['is_escalated'] == true) return true;
-      // Secondary: check inside raw map (some SP versions put it there)
       final raw = task['raw'] as Map? ?? const {};
       if (raw['is_escalated'] == 1 || raw['is_escalated'] == true) return true;
-      // Tertiary: escalation_instance_id present means an escalation record exists
       final instanceId = task['escalation_instance_id'] ?? raw['escalation_instance_id'];
       if (instanceId != null && instanceId.toString().isNotEmpty && instanceId.toString() != '0') return true;
       return false;
@@ -363,9 +305,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _escalationBadgeCount = escalatedTasks.length;
   }
 
-  /// Calls sp_resolve_escalation_mobile to stop the pulse engine and escalation
-  /// climb for a task after accept / close / reassign.
-  /// Non-fatal: main SP already cleared flags; this nulls next_escalation_at.
   Future<void> _resolveEscalationForTask(
     Map<String, dynamic> task, {
     String resolutionType = 'close',
@@ -382,15 +321,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         resolutionType:   resolutionType,
       );
     } catch (e) {
-      // Non-fatal — log only, never surface to the user.
-      // ignore: avoid_print
       print('_resolveEscalationForTask (non-fatal): $e');
     }
   }
 
   bool _isFoodDeliveryRequest(Map<String, dynamic> request) {
-    // Primary check: food_order_summary_id (most reliable indicator for food deliveries)
-    // Check both top-level and raw fields
     final foodSummaryId = request['food_order_summary_id'] ?? request['raw']?['food_order_summary_id'];
     if (foodSummaryId != null &&
         foodSummaryId.toString().trim().isNotEmpty &&
@@ -398,12 +333,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return true;
     }
 
-    // REMOVED: is_from_order check - this catches regular service orders too!
-    // Service orders (amenities, room service items) also have is_from_order=1
-    // Only food deliveries should be filtered, not regular service orders
-    
-    // Check question content for explicit food delivery indicators
-    // Be very specific to avoid false positives
     final question = (request['question'] ?? request['title'] ?? request['raw']?['question'] ?? '').toString().toLowerCase();
     if (question.contains('food order') || 
         question.contains('food delivery') ||
@@ -442,11 +371,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
-    // Service requests shown AS IS
     final List<Map<String, dynamic>> rawList =
         List<Map<String, dynamic>>.from(result["tasks"]);
 
-    // Deduplicate by service_request_id, preferring rows with a real room
     final Map<int, Map<String, dynamic>> uniqueMap = {};
     for (final t in rawList) {
       final id = t["service_request_id"];
@@ -471,7 +398,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
 
     setState(() {
-      // Map tasks and filter out food delivery tasks (they belong in Delivery page only)
       tasks = raw.map((t) => {
         ...t,
         "isAccepted":  t["status"] == "In Progress",
@@ -479,16 +405,10 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         "assignedTo":  t["raw"]?["accepted_by_user_name"] ?? t["raw"]?["assigned_to_name"] ?? "-",
       }).where((task) => !_isFoodDeliveryRequest(task)).toList();
 
-      // Calculate escalatedTasks locally from the main feed list.
-      // Only Supervisor+ roles receive the escalation badge and filter —
-      // Staff should not see tasks marked escalated at their own level
-      // (the scheduler notifies the correct hierarchy level via push).
       _recalcEscalation();
-
       _isLoading = false;
     });
 
-    // Calculate service request count (excluding food delivery tasks)
     final openCount = tasks
         .where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t))
         .length;
@@ -497,308 +417,123 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ── Delivery order grouping ──────────────────────────────────────────────
 
+  // ── Timestamp parser ──────────────────────────────────────────────────────
+  DateTime _parseTimestamp(String raw) {
+    if (raw.isEmpty) return DateTime(2000);
+    try {
+      return DateTime.parse(raw).toLocal();
+    } catch (_) {
+      return DateTime(2000);
+    }
+  }
+
+  // ── Non-zero int resolver ────────────────────────────────────────────────
+  int? _nonZeroInt(dynamic v) {
+    if (v == null) return null;
+    final n = v is int ? v : int.tryParse(v.toString());
+    if (n == null || n <= 0) return null;
+    return n;
+  }
+
+  // ── FIXED: _loadDeliveryCounts using getAllServices as primary source ──
   Future<void> _loadDeliveryCounts() async {
     if (!mounted) return;
     if (_readyOrderCount == 0 && _acceptedOrderCount == 0 && _deliveredOrderCount == 0) {
       setState(() => _deliveryCountsLoading = true);
     }
 
-    final foodResult = await FoodOrderService().getFoodOrders();
-    if (!mounted) return;
-
-    if (foodResult['success'] == true) {
-      final List rawOrders = (foodResult['orders'] as List? ?? []);
-      final grouped = groupFoodOrderRows(rawOrders);
-
-      // Delivery Management splits food orders using their linked Room
-      // Service request (the food summary stays Ready during delivery). Use
-      // exactly the same API-backed rule here so Home never shows stale counts.
-      int? nonZeroInt(dynamic value) {
-        final parsed = value is int ? value : int.tryParse('$value');
-        return parsed != null && parsed > 0 ? parsed : null;
+    try {
+      // ── 1. Fetch SERVICE REQUESTS (primary data source) ──────────────────
+      // ✅ FIX: Changed from FoodOrderService.getFoodOrders() to TaskService.getAllServices()
+      // This ensures Home page counts match Delivery page counts
+      final svcResult = await TaskService().getAllServices();
+      if (!mounted) return;
+      if (svcResult['success'] != true) {
+        setState(() => _deliveryCountsLoading = false);
+        return;
       }
 
-      final serviceStatusBySummaryId = <int, String>{};
+      final services = svcResult['services'] as List? ?? [];
+
+      // ── 2. Filter for food delivery service requests ──────────────────────
+      final foodDeliverySRs = services.where((svc) {
+        if (svc is! Map) return false;
+        final foodSummaryId = svc['food_order_summary_id'];
+        return foodSummaryId != null &&
+            foodSummaryId.toString().trim().isNotEmpty &&
+            foodSummaryId.toString() != '0' &&
+            foodSummaryId.toString() != 'null';
+      }).cast<Map<String, dynamic>>().toList();
+
+      // ── 3. Split by SR status for counts ─────────────────────────────────
+      final readyCount = foodDeliverySRs.where((sr) {
+        final status = (sr['status'] ?? 'Open').toString().toLowerCase();
+        return status == 'open' || status == 'pending';
+      }).length;
+
+      final acceptedCount = foodDeliverySRs.where((sr) {
+        final status = (sr['status'] ?? '').toString().toLowerCase();
+        return status == 'in progress' || status == 'inprogress';
+      }).length;
+
+      // ── 4. Get oldest ready order for preview ────────────────────────────
+      Map<String, dynamic>? oldestPreview;
+      if (foodDeliverySRs.isNotEmpty) {
+        final sorted = List<Map<String, dynamic>>.from(foodDeliverySRs)
+          ..sort((a, b) {
+            final aTime = a['created_at']?.toString() ?? '';
+            final bTime = b['created_at']?.toString() ?? '';
+            return aTime.compareTo(bTime);
+          });
+
+        final oldest = sorted.firstWhere(
+          (sr) {
+            final status = (sr['status'] ?? 'Open').toString().toLowerCase();
+            return status == 'open' || status == 'pending';
+          },
+          orElse: () => {},
+        );
+
+        if (oldest.isNotEmpty) {
+          final roomNo = (oldest['room_number'] ?? oldest['requested_room'] ?? '—').toString();
+          final guestName = (oldest['guest_name'] ?? oldest['name'] ?? 'Guest').toString();
+          final orderNumber = oldest['order_number']?.toString() ?? 'SR-${oldest['service_request_id']}';
+          final readyTime = oldest['created_at'] ?? oldest['timestamp'];
+
+          oldestPreview = {
+            'orderNumber': orderNumber,
+            'roomNumber': roomNo,
+            'guestName': guestName,
+            'orderTime': readyTime?.toString(),
+            '_orderTimeDt': readyTime == null ? null : _parseTimestamp(readyTime.toString()),
+          };
+        }
+      }
+
+      // ── 5. Fetch delivered count from food orders API ────────────────────
+      int deliveredCount = 0;
       try {
-        final serviceResult = await TaskService().getAllServices();
-        if (serviceResult['success'] == true) {
-          for (final service in serviceResult['services'] as List? ?? const []) {
-            if (service is! Map) continue;
-            final summaryId = nonZeroInt(service['food_order_summary_id']);
-            if (summaryId != null) {
-              serviceStatusBySummaryId[summaryId] =
-                  (service['status'] ?? 'Open').toString().toLowerCase();
-            }
-          }
+        final foodResult = await FoodOrderService().getFoodOrders();
+        if (foodResult['success'] == true) {
+          final deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
+          deliveredCount = deliveredRaw.length;
         }
       } catch (_) {
-        // The Delivery page has the same non-fatal fallback when the service
-        // request feed is temporarily unavailable.
-      }
-
-      int? summaryIdOf(Map<String, dynamic> order) {
-        final raw = order['raw'] as Map?;
-        return nonZeroInt(order['summaryId']) ??
-            nonZeroInt(raw?['summary_id']) ??
-            nonZeroInt(raw?['food_summary_id']);
-      }
-
-      final ready = grouped.where((order) {
-        if ((order['status'] ?? '').toString().toUpperCase() != 'READY') {
-          return false;
-        }
-        final serviceStatus = serviceStatusBySummaryId[summaryIdOf(order)];
-        return serviceStatus == null || serviceStatus == 'open';
-      }).toList();
-      final accepted = grouped.where((order) {
-        if ((order['status'] ?? '').toString().toUpperCase() != 'READY') {
-          return false;
-        }
-        return serviceStatusBySummaryId[summaryIdOf(order)] == 'in progress';
-      }).toList();
-      final List deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
-      final deliveredGrouped = groupFoodOrderRows(deliveredRaw);
-
-      final ordersWithTime = List<Map<String, dynamic>>.from(ready)
-        ..sort((a, b) {
-          DateTime readyAt(Map<String, dynamic> order) {
-            final raw = order['raw'] as Map?;
-            return _parseTimestamp((raw?['summary_ready_time'] ??
-                    raw?['ready_time'] ?? raw?['created_at'] ?? '')
-                .toString());
-          }
-          final da = readyAt(a);
-          final db = readyAt(b);
-          return da.compareTo(db); // oldest first
-        });
-
-      Map<String, dynamic>? oldestPreview;
-      if (ordersWithTime.isNotEmpty) {
-        final first = ordersWithTime.first;
-        final raw = first['raw'] as Map?;
-        final readyTime = raw?['summary_ready_time'] ??
-            raw?['ready_time'] ??
-            raw?['created_at'];
-        oldestPreview = {
-          'orderNumber': first['orderNo'] ?? first['orderNumber'],
-          'roomNumber': first['roomNo'] ?? first['roomNumber'] ?? first['room'] ?? '—',
-          'guestName': first['customerName'] ?? first['guestName'] ?? '',
-          'orderTime': readyTime?.toString(),
-          '_orderTimeDt': readyTime == null
-              ? null
-              : _parseTimestamp(readyTime.toString()),
-        };
+        // Non-fatal: if food orders API fails, delivered count shows 0
       }
 
       setState(() {
-        _readyOrderCount       = ready.length;
-        _acceptedOrderCount    = accepted.length;
-        _deliveredOrderCount   = deliveredGrouped.length;
-        _oldestReadyOrder      = oldestPreview;
+        _readyOrderCount = readyCount;
+        _acceptedOrderCount = acceptedCount;
+        _deliveredOrderCount = deliveredCount;
+        _oldestReadyOrder = oldestPreview;
         _deliveryCountsLoading = false;
       });
 
-      TaskAlertService.resetDeliveryCount(_readyOrderCount, reconcileAlert: true);
-    } else {
+      TaskAlertService.resetDeliveryCount(readyCount, reconcileAlert: true);
+    } catch (e) {
       setState(() => _deliveryCountsLoading = false);
     }
-  }
-
-  // ── Accept task ───────────────────────────────────────────────────────────
-
-  /// Returns true if `task` was escalated at the time of the action.
-  bool _wasEscalated(Map<String, dynamic> task) {
-    if (task['is_escalated'] == 1 || task['is_escalated'] == true) return true;
-    final raw = task['raw'] as Map? ?? const {};
-    if (raw['is_escalated'] == 1 || raw['is_escalated'] == true) return true;
-    final instanceId = task['escalation_instance_id'] ?? raw['escalation_instance_id'];
-    return instanceId != null &&
-        instanceId.toString().isNotEmpty &&
-        instanceId.toString() != '0';
-  }
-
-  /// Shows a confirmation snackbar when an escalated task is resolved.
-  void _showEscalationResolvedToast(String action) {
-    if (!mounted) return;
-    final msg = switch (action) {
-      'accept'   => 'Escalation resolved — task accepted ✅',
-      'reassign' => 'Escalation resolved — task reassigned ✅',
-      _          => 'Escalation resolved ✅',
-    };
-    AppSnackBar.show(context, msg);
-  }
-
-  Future<void> _acceptTask(Map<String, dynamic> task) async {
-    final taskId       = task["raw"]?["service_request_id"] ?? task["task_id"] ?? task["id"];
-    final departmentId = task["raw"]?["department_id"] ?? task["department_id"];
-    final enterpriseId = task["raw"]?["enterprise_id"] ?? task["enterprise_id"];
-    final orderId      = task["raw"]?["order_id"] ?? task["order_id"];
-    if (taskId == null) return;
-
-    final intId = int.tryParse(taskId.toString()) ?? 0;
-    final parsedOrderId = orderId != null ? int.tryParse(orderId.toString()) : null;
-    setState(() => _acceptingTaskId = intId);
-
-    final result = await HomeService().acceptTask(
-      taskId:       intId,
-      departmentId: departmentId ?? 0,
-      enterpriseId: enterpriseId ?? 0,
-      orderId:      parsedOrderId,
-    );
-    if (!mounted) return;
-    setState(() => _acceptingTaskId = null);
-
-    if (!result["success"]) {
-      final serverMsg = result["message"]?.toString();
-      AppSnackBar.show(
-        context,
-        (serverMsg != null && serverMsg.isNotEmpty)
-            ? serverMsg
-            : "Failed to accept task. Please try again.",
-        isError: true,
-      );
-      return;
-    }
-
-    // Optimistically decrement and stop if count hits zero, keep looping if > 0
-    await TaskAlertService.stopOneServiceAlert();
-    await OrderAlertService.stopOne();
-    final wasEsc = _wasEscalated(task);
-    await _loadTasks();
-    _resolveEscalationForTask(task, resolutionType: 'accept');
-    if (wasEsc) {
-      _showEscalationResolvedToast('accept');
-    } else {
-      AppSnackBar.show(context, "Task Accepted 🎉");
-    }
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  Color getStatusColor(String status) => AppColors.statusColor(status);
-
-  void _showGenericError() {
-    if (!mounted) return;
-    AppSnackBar.show(context, "Something went wrong. Please try again.", isError: true);
-  }
-
-  DateTime _parseTimestamp(String? ts) {
-    if (ts == null || ts.trim().isEmpty) return DateTime.now();
-    try {
-      String fixed = ts.trim();
-      if (fixed.contains(" ") && !fixed.contains("T")) {
-        fixed = fixed.replaceFirst(" ", "T");
-      }
-      return DateTime.parse(fixed);
-    } catch (_) {
-      return DateTime.now();
-    }
-  }
-
-  bool isToday(DateTime date) {
-    final now = DateTime.now();
-    return date.year == now.year && date.month == now.month && date.day == now.day;
-  }
-
-  bool isYesterday(DateTime date) {
-    final yesterday = DateTime.now().subtract(const Duration(days: 1));
-    return date.year == yesterday.year &&
-        date.month == yesterday.month &&
-        date.day == yesterday.day;
-  }
-
-  String formatDateTime(String ts) {
-    return DateFormatter.formatDateTimeAmPm(ts);
-  }
-
-  Color getTaskPriorityColor(String createdAt) {
-    final taskTime = _parseTimestamp(createdAt);
-    final diff     = DateTime.now().difference(taskTime);
-    if (diff.inHours < 1) return AppColors.success;
-    if (diff.inHours < 8) return AppColors.warning;
-    return AppColors.error;
-  }
-
-  // ── Filter ────────────────────────────────────────────────────────────────
-
-  List<Map<String, dynamic>> get filteredTasks {
-    List<Map<String, dynamic>> list;
-    switch (selectedFilter) {
-      case "Open":
-        list = tasks.where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t)).toList();
-        break;
-      case "In Progress":
-        list = tasks.where((t) => t["status"] == "In Progress" && !_isFoodDeliveryRequest(t)).toList();
-        break;
-      case "Closed":
-        list = tasks.where((t) => t["status"] == "Closed" && !_isFoodDeliveryRequest(t)).toList()
-          ..sort((a, b) {
-            final da = _parseTimestamp(a["raw"]["created_at"] ?? "");
-            final db = _parseTimestamp(b["raw"]["created_at"] ?? "");
-            return db.compareTo(da);
-          });
-        break;
-      case "Escalated":
-        // Handled separately — returns escalatedTasks list directly.
-        return [];
-      default:
-        // "All" filter includes Open, In Progress, and Closed tasks.
-        // Escalated tasks sort to top first before date sorting.
-        list = List<Map<String, dynamic>>.from(tasks)
-          ..sort((a, b) {
-            final aEsc = ((a["is_escalated"] ??
-                        (a["raw"] as Map?)?["is_escalated"] ??
-                        0) ==
-                    1)
-                ? 0
-                : 1;
-            final bEsc = ((b["is_escalated"] ??
-                        (b["raw"] as Map?)?["is_escalated"] ??
-                        0) ==
-                    1)
-                ? 0
-                : 1;
-            // Escalated tasks come first; within each group sort by date desc.
-            if (aEsc != bEsc) return aEsc.compareTo(bEsc);
-            final da = _parseTimestamp(
-                (a["raw"] as Map?)?["created_at"] ?? "");
-            final db = _parseTimestamp(
-                (b["raw"] as Map?)?["created_at"] ?? "");
-            return db.compareTo(da);
-          });
-    }
-    final dateFiltered = list.where((t) {
-      final createdAt = (t["raw"]?["created_at"] ?? t["raw"]?["timestamp"] ?? "").toString();
-      if (createdAt.isEmpty) return false;
-      final date      = _parseTimestamp(createdAt);
-      if (selectedDateFilter == "Custom" && selectedCustomDate != null) {
-        return date.year == selectedCustomDate!.year &&
-               date.month == selectedCustomDate!.month &&
-               date.day == selectedCustomDate!.day;
-      }
-      switch (selectedDateFilter) {
-        case "Today":     return isToday(date);
-        case "Yesterday": return isYesterday(date);
-        default:          return true;
-      }
-    }).toList();
-
-    if (_searchQuery.isEmpty) return dateFiltered;
-    return dateFiltered.where((t) => _matchesQuery(t, _searchQuery)).toList();
-  }
-
-  bool _matchesQuery(Map<String, dynamic> t, String q) {
-    if (q.isEmpty) return true;
-    final cleanQ = q.replaceAll('#', '').toLowerCase();
-    final room  = (t['room'] ?? t['room_number'] ?? t['requested_room'] ?? '').toString().toLowerCase();
-    final guest = (t['guest'] ?? t['guest_name'] ?? t['full_name'] ?? '').toString().toLowerCase();
-    final reqId = (t['service_request_id'] ?? t['task_id'] ?? t['id'] ?? t['raw']?['service_request_id'] ?? '').toString().toLowerCase();
-    final title = (t['title'] ?? t['name'] ?? t['service_name'] ?? t['question'] ?? '').toString().toLowerCase();
-
-    return room.contains(cleanQ) ||
-           guest.contains(cleanQ) ||
-           reqId.contains(cleanQ) ||
-           title.contains(cleanQ);
   }
 
   // ── Date filter bottom sheet ──────────────────────────────────────────────
@@ -1132,7 +867,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _buildContent() {
-    // Calculate counts excluding food delivery tasks (which belong in Delivery page)
     final openCount       = tasks.where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t)).length;
     final inProgressCount = tasks.where((t) => t["status"] == "In Progress" && !_isFoodDeliveryRequest(t)).length;
     final closedCount     = tasks.where((t) => t["status"] == "Closed" && !_isFoodDeliveryRequest(t)).length;
@@ -1146,7 +880,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Executive Header Card
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: ExecutiveHeaderCard(
@@ -1158,7 +891,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
           const SizedBox(height: 16),
 
-          // KPI Command Center 4-Grid Dashboard
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: KpiCommandGrid(
@@ -1178,7 +910,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
           const SizedBox(height: 16),
 
-          // ── Delivery Command Card (Room Service users only) ──────────
           if (isRoomServiceUser) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1204,7 +935,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
             const SizedBox(height: 16),
           ],
 
-          // Header row with count & date filter trigger
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: Row(
@@ -1236,7 +966,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Expandable Square Search Container
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 250),
                       curve: Curves.easeInOut,
@@ -1316,7 +1045,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                     if (!_isSearchExpanded && selectedFilter != "Escalated") ...[
                       const SizedBox(width: 8),
-                      // Days Picker Container
                       GestureDetector(
                         onTap: _showDateFilterSheet,
                         child: Container(
@@ -1354,9 +1082,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
 
-          // Task list — Escalated or normal TimelineTaskCard.
-          // The Escalated view is only available to Supervisor and above;
-          // Staff always see the normal filtered list.
           if (selectedFilter == "Escalated" &&
               EscalationVisibility.canViewEscalatedTab(
                   escalationRoleFromName(userRole)))
@@ -1392,8 +1117,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   tasks[idx]["statusColor"] =
                                       getStatusColor("Closed");
                                   tasks[idx]["isAccepted"] = false;
-                                  // Clear escalation flags locally so the red
-                                  // border disappears instantly without a reload.
                                   tasks[idx]["is_escalated"] = 0;
                                   tasks[idx]["alert_pending"] = 0;
                                   if (tasks[idx]["raw"] is Map) {
@@ -1402,8 +1125,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   }
                                 }
                               });
-                              // Refresh escalated list so the closed task
-                              // disappears from the Escalated tab immediately.
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task);
                               if (_wasEscalated(task)) _showEscalationResolvedToast('close');
@@ -1414,8 +1135,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     t["raw"]["service_request_id"] ==
                                     updatedTask["service_request_id"]);
                                 if (idx != -1) {
-                                  // Use assigned_to_name first (new SP key),
-                                  // fall back to legacy accepted_by_user_name.
                                   tasks[idx]["assignedTo"] =
                                       updatedTask["assigned_to_name"] ??
                                       updatedTask["accepted_by_user_name"] ??
@@ -1435,15 +1154,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     raw["accepted_by_user_name"] = updatedTask["accepted_by_user_name"];
                                     raw["assigned_to"] = updatedTask["assigned_to"];
                                     raw["assigned_to_name"] = updatedTask["assigned_to_name"];
-                                    // Persist the reassignment timestamp so the
-                                    // info card and timeline show it immediately.
                                     if (updatedTask["assigned_at"] != null) {
                                       raw["assigned_at"] = updatedTask["assigned_at"];
                                     }
                                   }
                                 }
                               });
-                              // Refresh escalated list + stop pulse engine.
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
                               if (_wasEscalated(task)) _showEscalationResolvedToast('reassign');
@@ -1467,8 +1183,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // ── Escalated task list ───────────────────────────────────────────────────
-  // Visible to Supervisor and above. Manager+ see all dept escalations;
-  // Supervisors and Dept Heads see only their mapped department.
 
   Widget _buildEscalatedList() {
     final displayList = _searchQuery.isEmpty
@@ -1586,6 +1300,8 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final esc        = EscalationInfo.fromTask(task);
     final accentStyle = EscalationVisibility.accentStyle(role);
 
+    final bool isInProgress = status.toLowerCase() == 'in progress';
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -1597,7 +1313,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Accent bar ───────────────────────────────────────────────────
           Container(
             width:   double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
@@ -1622,18 +1337,18 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(width: 8),
-              EscalationDisplay.countdownChip(esc),
+              if (isInProgress) ...[
+                const SizedBox(width: 8),
+                EscalationDisplay.countdownChip(esc),
+              ],
             ]),
           ),
 
-          // ── Body ─────────────────────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Row 1: Room pill, request ID, escalated pill
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -1646,18 +1361,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                             textColor: AppColors.textSecondary),
                       ],
                     ]),
-                    // Status + escalated pill
-                    Row(mainAxisSize: MainAxisSize.min, children: [
-                      _statusPill(status, AppColors.statusColor(status)),
-                      const SizedBox(width: 6),
-                      EscalationDisplay.statusPill(),
-                    ]),
+                    _statusPill(status, AppColors.statusColor(status)),
                   ],
                 ),
 
                 const SizedBox(height: 10),
 
-                // Title
                 Text(
                   cleanTitle,
                   style: const TextStyle(
@@ -1671,7 +1380,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 const SizedBox(height: 8),
 
-                // Meta row: guest · dept · stage pill
                 Wrap(
                   spacing:   8,
                   runSpacing: 4,
@@ -1690,43 +1398,65 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 const Divider(height: 1, color: AppColors.borderLight),
                 const SizedBox(height: 10),
 
-                // Footer: SLA label + assigned staff
-                Row(children: [
-                  Icon(
-                    esc.isOverdue
-                        ? Icons.timer_off_rounded
-                        : Icons.timer_outlined,
-                    size: 13,
-                    color: esc.isOverdue ? AppColors.error : AppColors.warning,
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    esc.slaLabel,
-                    style: TextStyle(
-                      fontSize:   12,
-                      fontWeight: FontWeight.w700,
+                if (isInProgress) ...[
+                  Row(children: [
+                    Icon(
+                      esc.isOverdue
+                          ? Icons.timer_off_rounded
+                          : Icons.timer_outlined,
+                      size: 13,
                       color: esc.isOverdue ? AppColors.error : AppColors.warning,
                     ),
-                  ),
-                  const Spacer(),
-                  if (assignedTo.isNotEmpty && assignedTo != '-') ...[
-                    const Icon(Icons.badge_outlined,
-                        size: 13, color: AppColors.textSecondary),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        assignedTo,
-                        style: const TextStyle(
-                          fontSize:   12,
-                          fontWeight: FontWeight.w500,
-                          color:      AppColors.textSecondary,
-                        ),
-                        maxLines:  1,
-                        overflow:  TextOverflow.ellipsis,
+                    const SizedBox(width: 5),
+                    Text(
+                      esc.slaLabel,
+                      style: TextStyle(
+                        fontSize:   12,
+                        fontWeight: FontWeight.w700,
+                        color: esc.isOverdue ? AppColors.error : AppColors.warning,
                       ),
                     ),
-                  ],
-                ]),
+                    const Spacer(),
+                    if (assignedTo.isNotEmpty && assignedTo != '-') ...[
+                      const Icon(Icons.badge_outlined,
+                          size: 13, color: AppColors.textSecondary),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          assignedTo,
+                          style: const TextStyle(
+                            fontSize:   12,
+                            fontWeight: FontWeight.w500,
+                            color:      AppColors.textSecondary,
+                          ),
+                          maxLines:  1,
+                          overflow:  TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ]),
+                ] else ...[
+                  if (assignedTo.isNotEmpty && assignedTo != '-')
+                    Row(
+                      children: [
+                        const Icon(Icons.badge_outlined,
+                            size: 13, color: AppColors.textSecondary),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            assignedTo,
+                            style: const TextStyle(
+                              fontSize:   12,
+                              fontWeight: FontWeight.w500,
+                              color:      AppColors.textSecondary,
+                            ),
+                            maxLines:  1,
+                            overflow:  TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
               ],
             ),
           ),
@@ -1751,8 +1481,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ),
     ]);
   }
-
-  // ── Task card ─────────────────────────────────────────────────────────────
 
   Widget _buildTaskCard(Map<String, dynamic> task) {
     final createdAt   = task["raw"]["created_at"] ?? task["created_at"] ?? "";
@@ -1854,7 +1582,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
               const Icon(Icons.calendar_today_rounded, size: 12,
                   color: AppColors.textSecondary),
               const SizedBox(width: 4),
-              Text(formatDateTime(createdAt),
+              Text(DateFormatter.formatDateTime(createdAt),
                   style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
               const Spacer(),
               if (status == "Open")
@@ -1906,6 +1634,131 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
           style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 11)),
     );
   }
+
+  // ── Filtered task list getter ─────────────────────────────────────────────
+
+  List<Map<String, dynamic>> get filteredTasks {
+    List<Map<String, dynamic>> list = List.from(tasks);
+
+    if (selectedFilter == "Open") {
+      list = list.where((t) => t["status"] == "Open").toList();
+    } else if (selectedFilter == "In Progress") {
+      list = list.where((t) => t["status"] == "In Progress").toList();
+    } else if (selectedFilter == "Closed") {
+      list = list.where((t) => t["status"] == "Closed").toList();
+    } else if (selectedFilter == "Escalated") {
+      list = escalatedTasks;
+    }
+
+    if (selectedDateFilter != "All Days") {
+      final now = DateTime.now();
+      list = list.where((t) {
+        final raw = t['raw'] as Map? ?? {};
+        final dt = _parseTimestamp(
+            (raw['created_at'] ?? t['created_at'] ?? '').toString());
+        if (selectedDateFilter == "Today") {
+          return dt.year == now.year &&
+              dt.month == now.month &&
+              dt.day == now.day;
+        } else if (selectedDateFilter == "Yesterday") {
+          final yesterday = now.subtract(const Duration(days: 1));
+          return dt.year == yesterday.year &&
+              dt.month == yesterday.month &&
+              dt.day == yesterday.day;
+        } else if (selectedDateFilter == "Custom" &&
+            selectedCustomDate != null) {
+          return dt.year == selectedCustomDate!.year &&
+              dt.month == selectedCustomDate!.month &&
+              dt.day == selectedCustomDate!.day;
+        }
+        return true;
+      }).toList();
+    }
+
+    if (_searchQuery.isNotEmpty) {
+      list = list.where((t) => _matchesQuery(t, _searchQuery)).toList();
+    }
+
+    return list;
+  }
+
+  // ── Status colour ─────────────────────────────────────────────────────────
+
+  Color getStatusColor(String? status) {
+    switch ((status ?? '').toLowerCase()) {
+      case 'open':        return AppColors.warning;
+      case 'in progress': return AppColors.info;
+      case 'closed':      return AppColors.success;
+      case 'escalated':   return AppColors.error;
+      default:            return AppColors.textSecondary;
+    }
+  }
+
+  // ── Escalation helpers ────────────────────────────────────────────────────
+
+  bool _wasEscalated(Map<String, dynamic> task) {
+    final raw = task['raw'] as Map? ?? {};
+    return task['is_escalated'] == 1 ||
+        task['is_escalated'] == true ||
+        raw['is_escalated'] == 1 ||
+        raw['is_escalated'] == true;
+  }
+
+  void _showEscalationResolvedToast(String type) {
+    final msg = type == 'reassign'
+        ? 'Escalated task reassigned successfully'
+        : 'Escalated task closed successfully';
+    if (mounted) {
+      AppSnackBar.show(context, msg);
+    }
+  }
+
+  // ── Search query matcher ──────────────────────────────────────────────────
+
+  bool _matchesQuery(Map<String, dynamic> task, String query) {
+    final q = query.toLowerCase().trim();
+    if (q.isEmpty) return true;
+    final raw   = task['raw'] as Map? ?? {};
+    final room  = (task['room'] ?? task['room_number'] ?? raw['room_number'] ?? '').toString().toLowerCase();
+    final title = (task['title'] ?? task['name'] ?? raw['request_name'] ?? '').toString().toLowerCase();
+    final guest = (task['guest_name'] ?? raw['guest_name'] ?? raw['request_name'] ?? '').toString().toLowerCase();
+    final id    = (task['service_request_id'] ?? raw['service_request_id'] ?? '').toString();
+    return room.contains(q) || title.contains(q) || guest.contains(q) || id.contains(q);
+  }
+
+  // ── Accept task ───────────────────────────────────────────────────────────
+
+  Future<void> _acceptTask(Map<String, dynamic> task) async {
+    final taskId = int.tryParse(
+        (task["raw"]?["service_request_id"] ??
+                task["task_id"] ?? task["id"] ?? 0)
+            .toString()) ?? 0;
+    if (taskId == 0) return;
+
+    setState(() => _acceptingTaskId = taskId);
+
+    final result = await TaskService().acceptServiceRequest(serviceRequestId: taskId);
+    if (!mounted) return;
+
+    setState(() => _acceptingTaskId = null);
+
+    if (result['success'] == true) {
+      setState(() {
+        final idx = tasks.indexWhere((t) =>
+            (t["raw"]?["service_request_id"] ?? t["task_id"] ?? t["id"]) == taskId);
+        if (idx != -1) {
+          tasks[idx]["status"]     = "In Progress";
+          tasks[idx]["isAccepted"] = true;
+          tasks[idx]["statusColor"] = getStatusColor("In Progress");
+        }
+      });
+       AppSnackBar.show(context, "Task accepted");
+    } else {
+       AppSnackBar.show(context,
+          result['message'] as String? ?? "Failed to accept task",
+          isError: true);
+    }
+  }
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -1927,4 +1780,3 @@ Widget vegIndicator(bool isVeg) {
     ),
   );
 }
-

@@ -76,8 +76,7 @@ extension EscalationRoleX on EscalationRole {
 
 class EscalationVisibility {
   /// Whether this role should see the "Escalated" KPI tile and filter.
-  static bool canViewEscalatedTab(EscalationRole role) =>
-      role.isSupervisorOrAbove;
+  static bool canViewEscalatedTab(EscalationRole role) => true;
 
   /// Whether this role defaults to the Escalated filter on home page open.
   static bool defaultsToEscalated(EscalationRole role) =>
@@ -125,7 +124,7 @@ class EscalationInfo {
   final String? stageName;        // current_stage_name  e.g. "Level 2 – Supervisor"
   final int?    stageLevel;       // current_stage_level  e.g. 2
   final String? escalationStatus; // "Working" | "Completed" | null
-  final DateTime? nextEscalationAt;
+  final DateTime? nextEscalationAt; // <-- ALWAYS IN UTC (from server)
   final int?    escalationTimeMinutes;
 
   // ── Who is currently being notified ──────────────────────────────────────
@@ -170,6 +169,7 @@ class EscalationInfo {
 
   /// Build from the task map produced by HomeService._mapTasks().
   /// Returns [EscalationInfo.none] when the task is not escalated.
+  /// All timestamps are kept in UTC (no conversion) to avoid timezone errors.
   factory EscalationInfo.fromTask(Map<String, dynamic> task) {
     final raw = task['raw'] as Map? ?? {};
 
@@ -186,14 +186,28 @@ class EscalationInfo {
     if (!isEscalated) return EscalationInfo.none;
 
     // ── SLA countdown ────────────────────────────────────────────────────
+    // Try to get next_escalation_at from the task; fallback to accepted_at + escalation_time_minutes.
+    // All times are kept in UTC (no .toLocal()) to avoid timezone errors.
+    DateTime? nextAtUtc;
     final nextRaw = (task['next_escalation_at'] ??
             raw['next_escalation_at'] ?? '').toString();
-    DateTime? nextAt;
     if (nextRaw.isNotEmpty && nextRaw != 'null') {
       final parsed = DateTime.tryParse(nextRaw.replaceAll(' ', 'T'));
       if (parsed != null) {
-        // Show timestamps as current time without UTC conversion for consistency
-        nextAt = parsed;
+        nextAtUtc = parsed;
+      }
+    }
+
+    // If next_escalation_at is missing, compute from accepted_at + escalation_time_minutes (UTC).
+    if (nextAtUtc == null) {
+      final acceptedAtRaw = (task['accepted_at'] ?? raw['accepted_at'] ?? '').toString();
+      final mins = _parseInt(task['escalation_time_minutes'] ?? raw['escalation_time_minutes']);
+      if (acceptedAtRaw.isNotEmpty && acceptedAtRaw != 'null' && mins != null && mins > 0) {
+        final parsed = DateTime.tryParse(acceptedAtRaw.replaceAll(' ', 'T'));
+        if (parsed != null) {
+          // Keep as UTC (do not convert to local)
+          nextAtUtc = parsed.add(Duration(minutes: mins));
+        }
       }
     }
 
@@ -225,7 +239,7 @@ class EscalationInfo {
       escalationStatus:      (task['escalation_status'] ??
               raw['escalation_status'])
           ?.toString(),
-      nextEscalationAt:      nextAt,
+      nextEscalationAt:      nextAtUtc, // UTC
       escalationTimeMinutes: _parseInt(task['escalation_time_minutes'] ??
           raw['escalation_time_minutes']),
       currentNotifiedNames:  notifiedNames,
@@ -296,9 +310,12 @@ class EscalationInfo {
 
   bool get hasCountdown => nextEscalationAt != null;
 
+  /// Remaining seconds until the next escalation, negative if overdue.
+  /// All times are in UTC (no timezone conversion).
   int get remainingSeconds {
     if (nextEscalationAt == null) return 9999;
-    return nextEscalationAt!.difference(DateTime.now()).inSeconds;
+    // Both deadline and current time are UTC.
+    return nextEscalationAt!.difference(DateTime.now().toUtc()).inSeconds;
   }
 
   bool get isOverdue  => hasCountdown && remainingSeconds <= 0;
@@ -372,7 +389,7 @@ class EscalationDisplay {
       case EscalationAccentStyle.warning:
         return 'SLA BREACHED$stage — SUPERVISOR ATTENTION';
       case EscalationAccentStyle.info:
-        return 'ESCALATED$stage — PENDING RESOLUTION';
+        return 'ESCALATED$stage';
     }
   }
 

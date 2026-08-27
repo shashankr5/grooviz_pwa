@@ -8,6 +8,16 @@
 //    reassign so the new assignee gets an FCM immediately.
 //  • closeServiceRequest() — now passes department_id and enterprise_id
 //    in the payload so the Lambda can broadcast TASK_CLOSED via WebSocket.
+//  • Escalation permissions: Accept button now controlled by isAccept flag
+//    from enterprise_escalation_user_rule.json_data.
+//  • Reassign button now controlled by reassign flag from same json_data.
+//  • Added _loadEscalationPermissions() to fetch user's escalation
+//    permission flags and store them for action button visibility.
+//  • FIX: SLA banner now uses UTC-to-local conversion for accurate countdown.
+//    Added _parseUtcTimestamp() helper and updated _buildServiceSlaBanner().
+//  • FIX: Removed duplicate escalation step from the timeline to avoid
+//    showing "--:--" and SLA countdown twice (the escalation banner already
+//    displays it).
 //
 // FORMAT: Old version layout (info card with detail rows, inline Add Note,
 //         Reassign + Close buttons at bottom).
@@ -78,6 +88,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   bool _isRefreshing = false;
 
+  // ── Escalation permission flags ──────────────────────────────────────────
+  // Loaded from UserSessionHelper (set by get_user_dept_details_mobile).
+  bool _canAccept = false;
+  bool _canReassign = false;
+
   // Live SLA ticker — fires every second to update countdown in the
   // resolution SLA banner and status timeline on in-progress tasks.
   Timer? _slaTicker;
@@ -99,6 +114,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     _task = Map<String, dynamic>.from(widget.task);
     _latestNote = _readLatestNote(_task);
     _loadUserId();
+    _loadEscalationPermissions();
 
     // Silently fetch fresh ticket data so stale notes / status from the
     // parent list are replaced with the current server state.
@@ -154,6 +170,18 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Future<void> _loadUserId() async {
     final id = await UserSessionHelper.getUserId();
     if (mounted) setState(() => _loggedInUserId = id);
+  }
+
+  /// Loads escalation permission flags from UserSessionHelper.
+  Future<void> _loadEscalationPermissions() async {
+    final accept = await UserSessionHelper.isAccept();
+    final reassign = await UserSessionHelper.reassign();
+    if (mounted) {
+      setState(() {
+        _canAccept = accept;
+        _canReassign = reassign;
+      });
+    }
   }
 
   String _readLatestNote(Map<String, dynamic> task) {
@@ -1087,15 +1115,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildServiceSlaBanner(),
-
-                  // Escalation context banner — shown when task is escalated.
-                  // Gives supervisor+ a clear view of the current stage,
-                  // notified personnel, and SLA countdown.
+                  // Escalation SLA banner — shown when task is escalated.
+                  // Displays the stage name and a live countdown.
                   if (_isEscalated) ...[
-                    const SizedBox(height: 12),
                     _buildEscalatedBanner(),
+                    const SizedBox(height: 12),
                   ],
+
+                  _buildServiceSlaBanner(),
 
                   if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
                     const SizedBox(height: 12),
@@ -1103,6 +1130,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                   _buildInfoCard(),
 
                   const SizedBox(height: 12),
+
+                  _buildOrderItemsCard(),
 
                   _buildStatusTimeline(),
 
@@ -1203,6 +1232,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 }
   // ── Escalated banner ──────────────────────────────────────────────────────
   // Role-aware: accent colour and label change based on the viewer's authority.
+  // Shows live SLA countdown using the escalation helper.
 
   Widget _buildEscalatedBanner() {
     final esc         = EscalationInfo.fromTask(_task);
@@ -1471,6 +1501,24 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
+  // ── UTC-aware timestamp parser for SLA banner ────────────────────────────
+  // Converts MySQL UTC timestamps to local time for accurate countdown.
+
+  DateTime? _parseUtcTimestamp(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim();
+    if (text.isEmpty || text == 'null') return null;
+    try {
+      String s = text.replaceFirst(' ', 'T');
+      if (s.endsWith('Z')) s = s.substring(0, s.length - 1);
+      final dt = DateTime.parse(s);
+      // Convert UTC to local time
+      return dt.toLocal();
+    } catch (_) {
+      return null;
+    }
+  }
+
   DateTime? _parseTaskTimestamp(dynamic value) {
     if (value == null) return null;
     final text = value.toString().trim();
@@ -1486,10 +1534,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   /// Resolution SLA is based on accepted_at + escalation_time_minutes, so it
   /// remains visible even before the escalation engine creates an alert.
+  /// Uses UTC-to-local conversion for accurate remaining time.
   Widget _buildServiceSlaBanner() {
     final raw = _task['raw'] as Map? ?? const {};
     final status = (_task['status'] ?? raw['status'] ?? '').toString().toLowerCase();
-    final acceptedAt = _parseTaskTimestamp(_task['accepted_at'] ?? raw['accepted_at']);
+    final acceptedAt = _parseUtcTimestamp(_task['accepted_at'] ?? raw['accepted_at']);
     final totalMinutes = _parseTaskInt(
         _task['escalation_time_minutes'] ?? raw['escalation_time_minutes']);
     if (status != 'in progress' || acceptedAt == null || totalMinutes == null || totalMinutes <= 0) {
@@ -1541,19 +1590,20 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
     final closedByName = (raw['closed_by_user_name'] ?? '').toString().trim();
 
-    // ── Escalation info ──────────────────────────────────────────────────────
+    // ── Escalation info (used only for context; the step is removed) ──────
     final esc = EscalationInfo.fromTask(_task);
     final escalatedAt = _parseTaskTimestamp(raw['escalated_at'] ?? _task['escalated_at']);
-    // Derive stage and level info
-    final escStageLabel = esc.stageName?.isNotEmpty == true
-        ? esc.stageName!
-        : (esc.stageLevel != null ? 'Level ${esc.stageLevel}' : null);
-    final escFromRole = (raw['escalation_from_role_name'] ?? '').toString().trim();
-    final escToRole   = (raw['escalation_to_role_name']   ?? '').toString().trim();
-    final escDetail   = [
-      if (escFromRole.isNotEmpty) 'from $escFromRole',
-      if (escToRole.isNotEmpty)   'to $escToRole',
-    ].join(' → ');
+    // Derive stage and level info (not used in timeline anymore, but kept for
+    // potential future use)
+    // final escStageLabel = esc.stageName?.isNotEmpty == true
+    //     ? esc.stageName!
+    //     : (esc.stageLevel != null ? 'Level ${esc.stageLevel}' : null);
+    // final escFromRole = (raw['escalation_from_role_name'] ?? '').toString().trim();
+    // final escToRole   = (raw['escalation_to_role_name']   ?? '').toString().trim();
+    // final escDetail   = [
+    //   if (escFromRole.isNotEmpty) 'from $escFromRole',
+    //   if (escToRole.isNotEmpty)   'to $escToRole',
+    // ].join(' → ');
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
@@ -1580,18 +1630,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 ? 'Not reassigned' 
                 : assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
             color: AppColors.info),
-        // ── Escalation step — only shown when the task is / was escalated ──
-        if (_isEscalated || esc.isEscalated || escalatedAt != null)
-          _timelineEntry(
-            escStageLabel != null ? 'Escalated · $escStageLabel' : 'Escalated',
-            escalatedAt,
-            done: true,
-            detail: escDetail.isNotEmpty
-                ? escDetail
-                : (esc.slaLabel.isNotEmpty ? esc.slaLabel : 'SLA breached'),
-            color: AppColors.error,
-            isEscalation: true,
-          ),
+        // ── Escalation step REMOVED — the escalation banner already shows it ──
         _timelineEntry('Completed', closed, done: _isClosed || closed != null,
             detail: closed == null 
                 ? (_isClosed ? 'Closed' : 'Pending') 
@@ -1669,7 +1708,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final rawTitle   = (_task['title'] ?? raw['question'] ?? raw['name'] ?? 'Service Request').toString();
     final title      = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
 
-    final assignedTo     = (_task['assignedTo'] ?? raw['assigned_to_name'] ?? '—').toString();
+    final rawAssigned    = raw['accepted_by_user_name'] ?? raw['assigned_to_name'] ?? _task['assignedTo'] ?? raw['recent_reassigned_to_user_name'];
+    String assignedTo    = 'Unassigned';
+    if (rawAssigned != null) {
+      final str = rawAssigned.toString().trim();
+      if (str.isNotEmpty && str != 'null' && str != '-' && int.tryParse(str) == null) {
+        assignedTo = str;
+      }
+    }
     final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
     final acceptedByName = (raw['accepted_by_user_name'] ?? '').toString().trim();
     final assignedAt     = (raw['assigned_at'] ?? raw['recent_reassigned_at'] ?? '').toString();
@@ -1935,6 +1981,167 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   // ── Note display card ─────────────────────────────────────────────────────
 
+  // ── Order items card (catalog orders only) ───────────────────────────────
+  // Shows each line item from order_items_json: qty, service, option, amount,
+  // booking date, and special_request per item.
+  Widget _buildOrderItemsCard() {
+    final isFromOrder = (_task['is_from_order'] ?? 0) != 0;
+    final rawItems    = _task['order_items'];
+    final items       = (rawItems is List) ? rawItems : <dynamic>[];
+    if (!isFromOrder || items.isEmpty) return const SizedBox.shrink();
+
+    final orderNumber = (_task['order_number'] ?? '').toString();
+    final grandTotal  = _task['grand_total'];
+    final orderStatus = (_task['order_status'] ?? '').toString();
+
+    double toAmt(dynamic v) {
+      if (v == null) return 0;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString()) ?? 0;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 3))],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row
+            Row(
+              children: [
+                const Icon(Icons.receipt_long_rounded, size: 16, color: AppColors.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    orderNumber.isNotEmpty ? 'Order #$orderNumber' : 'Order Items',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.textPrimary),
+                  ),
+                ),
+                if (grandTotal != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(color: AppColors.successLight, borderRadius: BorderRadius.circular(8)),
+                    child: Text(
+                      '₹${toAmt(grandTotal).toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.success),
+                    ),
+                  ),
+                if (orderStatus.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(color: AppColors.primaryLight, borderRadius: BorderRadius.circular(8)),
+                    child: Text(orderStatus,
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.primary)),
+                  ),
+                ],
+              ],
+            ),
+            const Divider(height: 16, color: AppColors.borderLight),
+
+            // Line items
+            ...items.asMap().entries.map((entry) {
+              final idx  = entry.key;
+              final i    = entry.value as Map;
+              final name        = (i['service_name'] ?? i['food_name'] ?? '').toString();
+              final option      = (i['option_name'] ?? '').toString();
+              final qty         = (i['quantity'] as num?)?.toInt() ?? 1;
+              final amt         = toAmt(i['total_amount']);
+              final bookingDate = (i['booking_date'] ?? '').toString();
+              final bookingTime = (i['booking_time'] ?? '').toString();
+              final special     = (i['special_request'] ?? '').toString().trim();
+              final remarks     = (i['remarks'] ?? '').toString().trim();
+              final isLast      = idx == items.length - 1;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 26, height: 26,
+                        decoration: BoxDecoration(color: AppColors.primaryLight, borderRadius: BorderRadius.circular(6)),
+                        child: Center(
+                          child: Text('$qty',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.primary)),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(name,
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                            if (option.isNotEmpty)
+                              Text(option, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            if (bookingDate.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Row(children: [
+                                const Icon(Icons.calendar_today_rounded, size: 11, color: AppColors.info),
+                                const SizedBox(width: 4),
+                                Text(
+                                  bookingTime.isNotEmpty
+                                      ? '${DateFormatter.formatDateOnly(bookingDate)}  ${DateFormatter.formatTimeOnlyAmPm(bookingTime)}'
+                                      : DateFormatter.formatDateTimeAmPm(bookingDate),
+                                  style: const TextStyle(fontSize: 11, color: AppColors.info, fontWeight: FontWeight.w600),
+                                ),
+                              ]),
+                            ],
+                          ],
+                        ),
+                      ),
+                      if (amt > 0)
+                        Text('₹${amt.toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                    ],
+                  ),
+                  if (special.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.warningLight,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.warning.withValues(alpha: 0.35)),
+                      ),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Icon(Icons.star_rounded, size: 13, color: AppColors.warning),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            const Text('Special Request',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.warning)),
+                            const SizedBox(height: 2),
+                            Text(special, style: const TextStyle(fontSize: 12, color: AppColors.textPrimary, height: 1.35)),
+                          ]),
+                        ),
+                      ]),
+                    ),
+                  ],
+                  if (remarks.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('Remarks: $remarks',
+                        style: const TextStyle(fontSize: 11, color: AppColors.textSecondary, fontStyle: FontStyle.italic)),
+                  ],
+                  if (!isLast) const Divider(height: 14, color: AppColors.borderLight),
+                ],
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildNoteCard() {
     final note = _latestNote;
     if (note.isEmpty) return const SizedBox.shrink();
@@ -2048,29 +2255,57 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   // ── Action Buttons ────────────────────────────────────────────────────────
   //
-  // CHANGE: showClose condition updated.
-  // Before: showClose = !_isClosed  (showed for everyone)
-  // After:  showClose = !_isClosed && (Supervisor+ OR assigned to me)
-  //
-  // This prevents staff assigned to other tasks from seeing the Close
-  // button on tasks that aren't theirs, while still allowing:
-  //   • Supervisors, Dept Heads, Managers, GMs, Admins to close any task
-  //   • The assigned staff member to close their own task
+  // Accept button is now controlled by the `isAccept` escalation permission.
+  // Reassign button is controlled by the `reassign` escalation permission.
+  // Close button shows if Supervisor+ OR assigned to me.
 
   Widget _buildActions() {
-    final showTakeOver = _canTakeOver;
-    final showReassign = _isSupervisorOrAbove(widget.userRole);
+    final statusStr    = (_task['status'] ?? 'Open').toString().toLowerCase();
+    final isOpen = statusStr == 'open' || statusStr == 'pending';
+    
+    // Accept button: show only if status is open AND user has isAccept permission.
+    final showAccept = !_isClosed && isOpen && _canAccept;
 
-    // CHANGE: Close is gated on role OR being the assigned staff member.
+    // Take Over: only for escalated tasks in progress (existing logic).
+    final showTakeOver = _canTakeOver;
+
+    // Reassign: show only if user has reassign permission AND is Supervisor+.
+    final showReassign = !_isClosed && 
+        _isSupervisorOrAbove(widget.userRole) && 
+        _canReassign;
+
+    // Close is gated on role OR being the assigned staff member.
     final showClose = !_isClosed &&
         (_isSupervisorOrAbove(widget.userRole) ||
             _assignedToId == _loggedInUserId);
 
-    if (!showTakeOver && !showReassign && !showClose) {
+    if (!showAccept && !showTakeOver && !showReassign && !showClose) {
       return const SizedBox.shrink();
     }
 
     return Column(children: [
+      if (showAccept) ...[
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _isLoading ? null : () => _updateStatus('IN_PROGRESS'),
+            icon:  const Icon(Icons.assignment_turned_in_rounded, size: 18),
+            label: const Text('Accept Task',
+                style: TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 14)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF8C00),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(13)),
+              elevation: 0,
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+      ],
+
       if (showTakeOver) ...[
         SizedBox(
           width: double.infinity,
@@ -2141,4 +2376,3 @@ class _StaffListItem {
   final Map<String, dynamic>? staff;
   _StaffListItem({required this.isDivider, this.dept, this.staff});
 }
-

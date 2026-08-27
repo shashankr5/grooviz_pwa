@@ -7,6 +7,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // Added for escalation guard
 import '../utils/user_session_helper.dart';
 import 'unified_alert_foreground_task.dart';
 import 'notification_constants.dart';
@@ -96,22 +97,28 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       if (OrderAlertService.pendingOrderCount == 0) return;
       break;
 
-      case 'FOOD_ORDER_STATUS':
-        final status = (data['new_status'] ?? data['order_status'] ?? data['status'] ?? '')
-          .toString().toUpperCase();
-        if (status != 'READY') return;
-        await TaskAlertService.ensureDeliveryRunning();
-        await AlertReloadCoordinator.instance.reloadDelivery();
-        break;
+    // ── FOOD_ORDER_STATUS ───────────────────────────────────────────────────
+    case 'FOOD_ORDER_STATUS': {
+      final rawStatus = (
+        data['new_status'] ??
+        data['food_order_status'] ??
+        data['order_status'] ??
+        data['status'] ??
+        ''
+      ).toString().toUpperCase();
+      if (rawStatus != 'READY') return;
+      await TaskAlertService.ensureDeliveryRunning();
+      await AlertReloadCoordinator.instance.reloadDelivery();
+      break;
+    }
 
-    // ── SERVICE_ORDER ──────────────────────────────────────────────────────
-    // TV service booking — treated identically to NEW_SERVICE_REQUEST.
+    // ── SERVICE_ORDER ────────────────────────────────────────────────────────
     case 'SERVICE_ORDER':
       await TaskAlertService.ensureServiceRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    // ── NEW_SERVICE_REQUEST ────────────────────────────────────────────────
+    // ── NEW_SERVICE_REQUEST ─────────────────────────────────────────────────
     case 'NEW_SERVICE_REQUEST':
       await TaskAlertService.ensureServiceRunning();
       await AlertReloadCoordinator.instance.reloadTasks();
@@ -123,10 +130,19 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
-    // ── ESCALATION ─────────────────────────────────────────────────────────
-    // Looping sound; reload so badge + highlights update.
+    // ── ESCALATION ───────────────────────────────────────────────────────────
+    // Scheduler fires looping escalation sound; reload so badge + highlights update.
+    // Guard: if escalation is already playing, skip restart to avoid interruption.
     case 'ESCALATION':
-      await TaskAlertService.ensureEscalationRunning();
+      // Check current sound before restarting – avoid interrupting an ongoing escalation
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final currentSound = prefs.getString(AlertSoundKey.prefKey) ?? '';
+      if (currentSound != AlertSoundKey.escalation) {
+        await TaskAlertService.ensureEscalationRunning();
+      } else {
+        print('Background FCM: escalation already playing, skipping restart');
+      }
       await AlertReloadCoordinator.instance.reloadTasks();
       break;
 
@@ -161,8 +177,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       return;
 
     default:
-      // All other types (legacy delivery, order-accepted, pulses, etc.)
-      // are silently discarded.
+      // All other types are silently discarded.
       print('Background FCM: discarding unrecognised type=$type');
       return;
   }
@@ -212,8 +227,6 @@ Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
       styleInformation: BigTextStyleInformation(msg.bigText, contentTitle: msg.title),
       groupKey:         NotifGroup.key,
       autoCancel:       true,
-      // The notification itself plays notification.wav once. Any actionable
-      // request loop is owned by the foreground alert service.
       playSound:        true,
       sound:            const RawResourceAndroidNotificationSound('notification'),
     );

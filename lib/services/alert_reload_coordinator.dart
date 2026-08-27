@@ -93,10 +93,9 @@ class AlertReloadCoordinator with WidgetsBindingObserver {
   void _start() {
     _started = true;
 
-    _orderSub    = OrderAlertService.onNewOrder.listen((_) => reloadFood());
-    _taskSub     = TaskAlertService.onNewTask.listen((_) => reloadTasks());
-    _deliverySub = TaskAlertService.onNewDelivery.listen((_) => reloadDelivery());
-
+    _orderSub    = OrderAlertService.onNewOrder.listen((_) => reloadFood(silentReconcile: true));
+    _taskSub     = TaskAlertService.onNewTask.listen((_) => reloadTasks(silentReconcile: true));
+    _deliverySub = TaskAlertService.onNewDelivery.listen((_) => reloadDelivery(silentReconcile: true));
     print('AlertReloadCoordinator: started');
   }
 

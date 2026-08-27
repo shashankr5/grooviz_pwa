@@ -138,12 +138,27 @@ class DateFormatter {
     return '$d/$m/${time.year} • ${h == 0 ? 12 : h}:$min $p';
   }
 
-  /// Formats timestamp as "H:MM AM/PM" (used in guest_checkout_page.dart)
-  /// Shows timestamps as current time without UTC conversion.
+  /// Formats timestamp as "H:MM AM/PM" (used in guest_checkout_page.dart and others).
+  /// Supports both full datetime strings ("2026-08-27 07:32:51") and time-only strings
+  /// ("07:32:51.000000"). Strips microseconds from time-only strings.
   static String formatTimeOnlyAmPm(String? ts) {
     if (ts == null || ts.trim().isEmpty) return '—';
+    final trimmed = ts.trim();
+
+    // Try parsing as a time-only string (e.g., "07:32:51.000000")
+    final timeMatch = RegExp(r'^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$').firstMatch(trimmed);
+    if (timeMatch != null) {
+      int hour = int.parse(timeMatch.group(1)!);
+      int minute = int.parse(timeMatch.group(2)!);
+      final h = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+      final period = hour >= 12 ? 'PM' : 'AM';
+      final minStr = minute.toString().padLeft(2, '0');
+      return '$h:$minStr $period';
+    }
+
+    // Otherwise, treat it as a full datetime string
     try {
-      String s = ts.trim();
+      String s = trimmed;
       if (s.contains(' ') && !s.contains('T')) s = s.replaceFirst(' ', 'T');
       if (s.endsWith('Z') || s.endsWith('z')) s = s.substring(0, s.length - 1);
       // Parse timestamp as-is without UTC conversion
@@ -158,7 +173,7 @@ class DateFormatter {
       final minStr = d.minute.toString().padLeft(2, '0');
       return '$h:$minStr $p';
     } catch (_) {
-      return ts;
+      return trimmed;
     }
   }
 

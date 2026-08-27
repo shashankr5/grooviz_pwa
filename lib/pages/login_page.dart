@@ -10,6 +10,7 @@ import '../services/notification_navigation_coordinator.dart';
 import '../utils/user_session_helper.dart';
 import '../services/profile_service.dart';
 import '../services/websocket_service.dart';
+import '../services/home_service.dart'; // Added for escalation permissions
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import '../utils/validators.dart';
@@ -59,6 +60,29 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isFormValid = _formKey.currentState?.validate() ?? false);
   }
 
+  // ── Fetch and store escalation permissions ──────────────────────────────
+  Future<void> _fetchAndStoreEscalationPermissions() async {
+    try {
+      final result = await HomeService().getUserDeptDetails();
+      if (result['success'] == true) {
+        final departments = result['departments'] as List? ?? [];
+        if (departments.isNotEmpty) {
+          final jsonData = departments.first['json_data'] as Map? ?? {};
+          await UserSessionHelper.saveEscalationPermissions(
+            isAccept: jsonData['is_accept'] == 'Y',
+            reassign: jsonData['reassign'] == 'Y',
+            isDecline: jsonData['is_decline'] == 'Y',
+          );
+          print('Escalation permissions saved successfully.');
+        }
+      } else {
+        print('Failed to fetch escalation permissions: ${result['message']}');
+      }
+    } catch (e) {
+      print('Error fetching escalation permissions: $e');
+    }
+  }
+
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -80,7 +104,6 @@ class _LoginPageState extends State<LoginPage> {
         SnackBar(
           content: Text(response['message'] ?? 'Login failed'),
           backgroundColor: AppColors.error,
-          // Give extra time for the FCM hint so user can read it fully.
           duration: Duration(seconds: isFcmPending ? 5 : 3),
           action: isFcmPending
               ? SnackBarAction(
@@ -117,11 +140,11 @@ class _LoginPageState extends State<LoginPage> {
     if (role != null) await UserSessionHelper.saveInitialRole(role);
     if (depts.isNotEmpty) await UserSessionHelper.saveInitialDepartments(depts);
 
+    // ── Fetch and store escalation permissions (non‑blocking) ────────────
+    // We call this in the background so the user doesn't wait.
+    _fetchAndStoreEscalationPermissions();
+
     // FIX-9 (Bug 9): WebSocketService().connect() was never called anywhere
-    // in the app. Without this, HomePage's onNewTask/onNewDelivery/onEscalation
-    // listeners (which are already correctly wired) never receive live
-    // events — the list/count only ever updated via FCM cold-start delivery,
-    // which is why a full app-kill+reopen "fixed" it.
     final enterpriseId = await UserSessionHelper.getEnterpriseId();
     WebSocketService().connect(
       userId: response['user_id']?.toString(),
@@ -171,8 +194,6 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     // Disable the button while loading OR while FCM is still acquiring
-    // on a first launch / reinstall. On subsequent launches _fcmStatus
-    // is already FCMStatus.ready before the user sees this screen.
     final bool buttonEnabled =
         _isFormValid && !_isLoading && _fcmStatus != FCMStatus.acquiring;
 
@@ -338,8 +359,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
 
                 // ── FCM status hint ──────────────────────────────────────
-                // Appears automatically during GPS recovery on first launch
-                // or after reinstall. Invisible on all subsequent logins.
                 _buildFcmStatusHint(),
 
                 const SizedBox(height: 40),

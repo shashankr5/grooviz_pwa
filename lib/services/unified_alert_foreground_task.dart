@@ -37,7 +37,7 @@ class AlertServiceRestartGate {
   static Future<bool>? _operation;
   static String? _lastSound;
   static DateTime? _lastStartedAt;
-  static const _sameSoundCooldown = Duration(seconds: 4);
+  static const _sameSoundCooldown = Duration(seconds: 1);
 
   static Future<bool> run({
     required String soundName,
@@ -86,6 +86,7 @@ class UnifiedAlertTaskHandler extends TaskHandler {
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     try {
       final prefs     = await SharedPreferences.getInstance();
+      await prefs.reload();
       final soundName = prefs.getString(AlertSoundKey.prefKey) ?? AlertSoundKey.food;
       // shouldLoop=true → active alerts continue until their action clears them
       final shouldLoop = prefs.getString(AlertSoundKey.loopKey) == 'true';

@@ -280,25 +280,137 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
 
                   const SizedBox(height: 12),
 
-                  // Parse "Order #SRV20260814140331419 - Ayurvedic Massage x1"
+                  // Title / order-items block
+                  // Catalog orders (is_from_order=1) show the parsed item list.
+                  // Plain requests keep the existing single-title display.
                   () {
+                    final isFromOrder = (task['is_from_order'] ?? 0) != 0;
+                    final rawItems = task['order_items'];
+                    final items = (rawItems is List) ? rawItems : <dynamic>[];
+                    final orderNumber = task['order_number']?.toString();
+                    final grandTotal  = task['grand_total'];
+
+                    if (isFromOrder && items.isNotEmpty) {
+                      // ── Catalog order: show each item as a chip row ──────
+                      final totalStr = grandTotal != null
+                          ? '₹${(grandTotal as num).toStringAsFixed(2)}'
+                          : null;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Service Order',
+                                  style: AppTypography.title.copyWith(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ),
+                              if (totalStr != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.successLight,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    totalStr,
+                                    style: AppTypography.caption.copyWith(
+                                      color: AppColors.success,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          if (orderNumber != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              '#$orderNumber',
+                              style: AppTypography.caption.copyWith(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 6),
+                          ...items.map((item) {
+                            final name   = (item['service_name'] ?? item['food_name'] ?? '').toString();
+                            final option = (item['option_name'] ?? '').toString();
+                            final qty    = (item['quantity'] as num?)?.toInt() ?? 1;
+                            final amt    = (item['total_amount'] as num?)?.toDouble() ?? 0.0;
+                            final label  = option.isNotEmpty ? '$name · $option' : name;
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 20, height: 20,
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primaryLight,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Center(
+                                      child: Text(
+                                        '$qty',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      label,
+                                      style: AppTypography.caption.copyWith(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppColors.textPrimary,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (amt > 0)
+                                    Text(
+                                      '₹${amt.toStringAsFixed(0)}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.textSecondary,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          }),
+                        ],
+                      );
+                    }
+
+                    // ── Plain request: existing regex title display ───────
                     final regExp = RegExp(
                       r'^Order\s+(#[A-Za-z0-9]+)\s*-\s*(.*?)(?:\s+x\s*(\d+))?$',
                       caseSensitive: false,
                     );
                     final match = regExp.firstMatch(titleStr.trim());
-
                     String displayTitle = titleStr;
                     String? parsedOrderId;
                     int? quantity;
-
                     if (match != null) {
                       parsedOrderId = match.group(1);
-                      displayTitle = match.group(2) ?? titleStr;
-                      final qtyStr = match.group(3);
-                      if (qtyStr != null) {
-                        quantity = int.tryParse(qtyStr);
-                      }
+                      displayTitle  = match.group(2) ?? titleStr;
+                      final qtyStr  = match.group(3);
+                      if (qtyStr != null) quantity = int.tryParse(qtyStr);
                     }
 
                     return Column(
@@ -415,94 +527,15 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                       ],
                     ),
 
-                  // SLA Countdown — visible only on in-progress tasks
-                  () {
-                    if (statusStr.toLowerCase() != 'in progress') {
-                      return const SizedBox.shrink();
-                    }
-                    final rawMap = task['raw'] as Map? ?? {};
-                    final acceptedAtStr = (task['accepted_at'] ??
-                            rawMap['accepted_at'] ??
-                            '')
-                        .toString();
-                    final escalationMinsVal =
-                        rawMap['escalation_time_minutes'] ??
-                            task['escalation_time_minutes'];
-                    final escalationMins = escalationMinsVal != null
-                        ? int.tryParse(escalationMinsVal.toString())
-                        : null;
-                    if (escalationMins == null || escalationMins <= 0) {
-                      return const SizedBox.shrink();
-                    }
-                    DateTime? acceptedAt;
-                    if (acceptedAtStr.isNotEmpty &&
-                        acceptedAtStr != 'null') {
-                      acceptedAt = DateTime.tryParse(
-                              acceptedAtStr.replaceAll(' ', 'T'))
-                          ?.toLocal();
-                    }
-                    if (acceptedAt == null) return const SizedBox.shrink();
+                  // ── SLA Countdown using EscalationInfo ──────────────────
+                  // Only shown on In Progress tasks, using the same source
+                  // of truth as ticket details and other components.
+                  if (statusStr.toLowerCase() == 'in progress')
+                    _buildSlaCountdown(esc),
 
-                    final deadline =
-                        acceptedAt.add(Duration(minutes: escalationMins));
-                    final remaining = deadline.difference(DateTime.now());
-                    final isOverdue = remaining.isNegative;
-                    final remSecs = remaining.abs().inSeconds;
-                    final totalSecs = escalationMins * 60;
-                    final pct = isOverdue
-                        ? 0.0
-                        : (remSecs / totalSecs).clamp(0.0, 1.0);
-                    final Color slaColor = isOverdue || pct < 0.10
-                        ? AppColors.error
-                        : pct < 0.30
-                            ? AppColors.warning
-                            : AppColors.success;
-                    final mm = (remSecs ~/ 60).toString().padLeft(2, '0');
-                    final ss = (remSecs % 60).toString().padLeft(2, '0');
-                    final label = isOverdue
-                        ? '+$mm:$ss overdue'
-                        : '$mm:$ss remaining';
-
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: slaColor.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: slaColor.withValues(alpha: 0.25)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              isOverdue
-                                  ? Icons.timer_off_outlined
-                                  : Icons.timer_outlined,
-                              size: 12,
-                              color: slaColor,
-                            ),
-                            const SizedBox(width: 5),
-                            Text(
-                              'SLA  $label',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: slaColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }(),
-
-                  // Row 5: Quick Action Buttons — ONLY shown when NOT assigned to anyone
-                  if (!isAlreadyAssigned &&
-                      (statusStr.toLowerCase() == 'open' ||
-                          statusStr.toLowerCase() == 'pending')) ...[
+                  // Row 5: Quick Action Buttons — shown for all open/pending incoming tasks
+                  if (statusStr.toLowerCase() == 'open' ||
+                      statusStr.toLowerCase() == 'pending') ...[
                     const SizedBox(height: 14),
                     const Divider(height: 1, color: AppColors.borderLight),
                     const SizedBox(height: 12),
@@ -580,6 +613,63 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                     ),
                   ],
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Countdown widget using EscalationInfo — consistent across all pages.
+  Widget _buildSlaCountdown(EscalationInfo esc) {
+    if (!esc.hasCountdown) return const SizedBox.shrink();
+
+    final isOverdue = esc.isOverdue;
+    final isWarning = esc.isWarning;
+    final Color slaColor = isOverdue
+        ? AppColors.error
+        : isWarning
+            ? AppColors.warning
+            : AppColors.success;
+
+    final String label;
+    if (isOverdue) {
+      final secs = esc.remainingSeconds.abs();
+      final mm = (secs ~/ 60).toString().padLeft(2, '0');
+      final ss = (secs % 60).toString().padLeft(2, '0');
+      label = '+$mm:$ss overdue';
+    } else {
+      final secs = esc.remainingSeconds;
+      final mm = (secs ~/ 60).toString().padLeft(2, '0');
+      final ss = (secs % 60).toString().padLeft(2, '0');
+      label = '$mm:$ss remaining';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: slaColor.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: slaColor.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isOverdue ? Icons.timer_off_outlined : Icons.timer_outlined,
+              size: 12,
+              color: slaColor,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              'SLA  $label',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: slaColor,
               ),
             ),
           ],

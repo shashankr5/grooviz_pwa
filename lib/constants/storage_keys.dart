@@ -105,6 +105,17 @@ class StorageKeys {
   /// `int` — supervisor dept ID.
   static const supervisorDeptId = 'supervisor_dept_id';
 
+  // ─── Escalation Permissions (from enterprise_escalation_user_rule.json_data) ──
+
+  /// `bool` — whether the user can accept escalated tasks (`is_accept: "Y"`).
+  static const isAccept = 'is_accept';
+
+  /// `bool` — whether the user can reassign escalated tasks (`reassign: "Y"`).
+  static const reassign = 'reassign';
+
+  /// `bool` — whether the user can decline escalated tasks (`is_decline: "Y"` - not used in UI).
+  static const isDecline = 'is_decline';
+
   // ─── Foreground Task (UnifiedAlertForegroundTask) ────────────────────────
 
   /// `bool` — flag written before startService() to detect premature exits.
