@@ -1,4 +1,5 @@
 // lib/widgets/order_history_detail_sheet.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/kot_ticket_model.dart';
 import '../services/kot_printer_service.dart';
@@ -360,6 +361,17 @@ class OrderHistoryDetailSheet extends StatelessWidget {
                       ),
                     ),
                   ],
+
+                  // Escalation History Section
+                  if (_isOrderEscalated(order)) ...[
+                    const SizedBox(height: 18),
+                    const Text(
+                      'Escalation History',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                    ),
+                    const SizedBox(height: 10),
+                    _buildEscalationSection(order),
+                  ],
                 ],
               ),
             ),
@@ -460,5 +472,193 @@ class OrderHistoryDetailSheet extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 14),
       ),
     );
+  }
+
+  // ── ESCALATION HELPERS ──────────────────────────────────────────────────
+
+  bool _isOrderEscalated(Map<String, dynamic> order) {
+    if (order['isEscalated'] == true) return true;
+    final raw = order['raw'] as Map<String, dynamic>?;
+    if (raw != null && (raw['is_escalated'] == 1 || raw['is_escalated'] == true)) return true;
+    return false;
+  }
+
+  Widget _buildEscalationSection(Map<String, dynamic> order) {
+    final history = _resolveEscalationHistory(order);
+    if (history.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.amber.shade50,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.amber.shade200),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 15, color: Colors.amber.shade700),
+            const SizedBox(width: 8),
+            const Text(
+              'Escalated (details unavailable)',
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.amber.shade200),
+      ),
+      child: Column(
+        children: history.asMap().entries.map((entry) {
+          final e = entry.value;
+          final isLast = entry.key == history.length - 1;
+          final level = e['level'] ?? 0;
+          final toUser = e['toUser'] as Map<String, dynamic>? ?? {};
+          final fromUsers = e['fromUsers'] as List? ?? [];
+          final escalatedAt = (e['escalatedAt'] ?? '').toString();
+
+          final toName = (toUser['userName'] ?? '').toString();
+          final toRole = (toUser['roleName'] ?? '').toString();
+
+          String fromLabel = '';
+          if (fromUsers.isNotEmpty) {
+            final first = fromUsers[0] as Map<String, dynamic>;
+            fromLabel = '${first['userName'] ?? ''} (${first['roleName'] ?? ''})';
+          }
+
+          String timeLabel = '';
+          if (escalatedAt.isNotEmpty) {
+            timeLabel = DateFormatter.formatDateTimeAmPm(escalatedAt);
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(bottom: isLast ? 0 : 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Level indicator
+                Container(
+                  width: 22,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    color: level <= 1 ? Colors.amber.shade600 : Colors.orange.shade700,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      '$level',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Level $level',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.amber.shade800,
+                            ),
+                          ),
+                          if (timeLabel.isNotEmpty)
+                            Text(
+                              timeLabel,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontFamily: 'monospace',
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      if (fromLabel.isNotEmpty)
+                        Text(
+                          '$fromLabel  \u2192  $toName ($toRole)',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textPrimary,
+                          ),
+                        )
+                      else
+                        Text(
+                          'To: $toName ($toRole)',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> _resolveEscalationHistory(Map<String, dynamic> order) {
+    // Try pre-parsed escalationHistory first
+    final parsed = order['escalationHistory'];
+    if (parsed is List && parsed.isNotEmpty) {
+      return parsed.cast<Map<String, dynamic>>();
+    }
+    // Fallback: try raw.escalation_history
+    final raw = order['raw'] as Map<String, dynamic>?;
+    if (raw == null) return [];
+    final rawHistory = raw['escalation_history'];
+    if (rawHistory == null) return [];
+    try {
+      List list;
+      if (rawHistory is String) {
+        if (rawHistory.trim().isEmpty) return [];
+        list = json.decode(rawHistory) as List;
+      } else if (rawHistory is List) {
+        list = rawHistory;
+      } else {
+        return [];
+      }
+      return list.map<Map<String, dynamic>>((entry) {
+        final e = Map<String, dynamic>.from(entry);
+        final toUser = e['to_user'] is Map ? Map<String, dynamic>.from(e['to_user']) : <String, dynamic>{};
+        final fromUsers = (e['from_users'] is List)
+            ? (e['from_users'] as List).map((f) => Map<String, dynamic>.from(f)).toList()
+            : <Map<String, dynamic>>[];
+        return {
+          'level': e['level'] ?? 0,
+          'toUser': {
+            'userId': toUser['user_id'],
+            'userName': toUser['user_name'] ?? '',
+            'roleName': toUser['role_name'] ?? '',
+          },
+          'fromUsers': fromUsers.map((f) => {
+            'userId': f['user_id'],
+            'userName': f['user_name'] ?? '',
+            'roleName': f['role_name'] ?? '',
+          }).toList(),
+          'escalatedAt': e['escalated_at'] ?? '',
+        };
+      }).toList();
+    } catch (_) {
+      return [];
+    }
   }
 }

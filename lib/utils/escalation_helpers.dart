@@ -498,3 +498,546 @@ class EscalationDisplay {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EscalationView — new single source of truth for escalation UI
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Built entirely from fields that arrive in ScreenSync_get_all_services_mobile1:
+//   • is_escalated                    (top-level flag)
+//   • escalation_enabled              (feature flag)
+//   • escalation_time_minutes         (base SLA before any escalation)
+//   • escalation_history              (JSON array of level entries)
+//   • created_at / accepted_at / closed_at
+//   • accepted_by_user_name / closed_by_user_name
+//   • assigned_to_user_name / assigned_by_user_name
+//
+// Does NOT depend on the optional web-only fields such as current_stage_name,
+// current_stage_users_json, or next_escalation_at.  When those fields are
+// present they are ignored — the history array + the phase timestamps give us
+// everything we need.
+
+enum EscalationPhase { awaitingAcceptance, inProgress, closed }
+
+enum SlaSeverity { onTrack, warning, overdue, escalated, neutral }
+
+class EscalationChainStep {
+  final int      level;
+  final DateTime? escalatedAt;     // UTC
+  final String?  toUserName;
+  final String?  toRoleName;
+  final int?     toRoleId;
+  final List<String> fromUserNames;
+  final String?  fromRoleName;
+  final int?     acceptanceMinutes;
+  final int?     completionMinutes;
+  final bool     isCurrent;        // last entry when task is currently escalated
+
+  const EscalationChainStep({
+    required this.level,
+    required this.isCurrent,
+    this.escalatedAt,
+    this.toUserName,
+    this.toRoleName,
+    this.toRoleId,
+    this.fromUserNames = const [],
+    this.fromRoleName,
+    this.acceptanceMinutes,
+    this.completionMinutes,
+  });
+
+  String get toLabel {
+    if ((toUserName ?? '').isNotEmpty && (toRoleName ?? '').isNotEmpty) {
+      return '$toRoleName · $toUserName';
+    }
+    if ((toRoleName ?? '').isNotEmpty) return toRoleName!;
+    if ((toUserName ?? '').isNotEmpty) return toUserName!;
+    return 'Level $level';
+  }
+
+  String get fromLabel {
+    if (fromUserNames.isEmpty && (fromRoleName ?? '').isEmpty) return '';
+    if (fromUserNames.isEmpty) return fromRoleName ?? '';
+    final joined = fromUserNames.take(2).join(', ');
+    final extra  = fromUserNames.length > 2 ? ' +${fromUserNames.length - 2}' : '';
+    if ((fromRoleName ?? '').isEmpty) return '$joined$extra';
+    return '$fromRoleName · $joined$extra';
+  }
+}
+
+class EscalationDeadline {
+  final DateTime deadline;        // UTC
+  final int      quotaMinutes;
+  final bool     isOverdue;
+  final bool     isWarning;
+
+  const EscalationDeadline({
+    required this.deadline,
+    required this.quotaMinutes,
+    required this.isOverdue,
+    required this.isWarning,
+  });
+
+  /// mm:ss (or +mm:ss when overdue)
+  String get countdownText {
+    final now = DateTime.now().toUtc();
+    final remaining = deadline.difference(now).inSeconds;
+    final s = remaining.abs();
+    final mm = (s ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return remaining < 0 ? '+$mm:$ss' : '$mm:$ss';
+  }
+
+  /// Human readable urgency like "Due in 5 min" or "Overdue by 2 min"
+  String get urgencyLabel {
+    final now = DateTime.now().toUtc();
+    final remaining = deadline.difference(now).inSeconds;
+    if (remaining < 0) {
+      final mins = remaining.abs() ~/ 60;
+      return 'Overdue by ${mins <= 1 ? '1 min' : '$mins min'}';
+    }
+    if (remaining <= 60) return 'Due in < 1 min';
+    final mins = remaining ~/ 60;
+    return 'Due in ${mins <= 1 ? '1 min' : '$mins min'}';
+  }
+}
+
+class EscalationView {
+  // ── State ────────────────────────────────────────────────────────────────
+  final bool             isEscalated;
+  final EscalationPhase  phase;
+  final int              currentLevel;        // 0 when not escalated
+  final String?          currentUserName;     // to_user.user_name of latest step
+  final String?          currentRoleName;     // to_user.role_name of latest step
+  final String?          previousRoleName;    // from_user.role_name of latest step
+
+  // ── Timing ───────────────────────────────────────────────────────────────
+  final EscalationDeadline? deadline;  // deadline info with countdown text
+  final int?      slaMinutesQuota;  // total minutes granted for this window
+
+  // ── Audit ────────────────────────────────────────────────────────────────
+  final String?  acceptedByName;
+  final String?  closedByName;
+  final List<EscalationChainStep> chain;
+
+  const EscalationView._({
+    required this.isEscalated,
+    required this.phase,
+    required this.currentLevel,
+    required this.chain,
+    this.currentUserName,
+    this.currentRoleName,
+    this.previousRoleName,
+    this.deadline,
+    this.slaMinutesQuota,
+    this.acceptedByName,
+    this.closedByName,
+  });
+
+  // ── Factory ──────────────────────────────────────────────────────────────
+
+  factory EscalationView.fromTask(Map<String, dynamic> task) {
+    final raw = (task['raw'] is Map) ? task['raw'] as Map : const {};
+
+    // Phase ─────────────────────────────────────────────────────────────────
+    final statusStr = (task['status'] ?? raw['status'] ?? 'Open')
+        .toString()
+        .toLowerCase();
+    final closed = (raw['closed'] ?? task['closed'] ?? 0).toString();
+    final acceptedAtUtc = _parseUtc(task['accepted_at'] ?? raw['accepted_at']);
+    final createdAtUtc  = _parseUtc(task['created_at']  ?? raw['created_at']);
+    final closedAtUtc   = _parseUtc(task['closed_at']   ?? raw['closed_at']);
+
+    final EscalationPhase phase;
+    if (statusStr == 'closed' || closed == '1' || closedAtUtc != null) {
+      phase = EscalationPhase.closed;
+    } else if (statusStr == 'in progress' || acceptedAtUtc != null) {
+      phase = EscalationPhase.inProgress;
+    } else {
+      phase = EscalationPhase.awaitingAcceptance;
+    }
+
+    // Escalation flag ───────────────────────────────────────────────────────
+    final instanceId = task['escalation_instance_id'] ?? raw['escalation_instance_id'];
+    final isEscalated = task['is_escalated'] == 1 ||
+        task['is_escalated'] == true ||
+        raw['is_escalated'] == 1 ||
+        raw['is_escalated'] == true ||
+        (instanceId != null &&
+            instanceId.toString().isNotEmpty &&
+            instanceId.toString() != '0');
+
+    // Chain ────────────────────────────────────────────────────────────────
+    final rawHistory = task['escalation_history'] ?? raw['escalation_history'];
+    final steps = _parseChain(rawHistory);
+
+    // Names ────────────────────────────────────────────────────────────────
+    final acceptedByName = _cleanString(task['accepted_by_user_name'] ??
+        raw['accepted_by_user_name']);
+    final closedByName = _cleanString(task['closed_by_user_name'] ??
+        raw['closed_by_user_name']);
+
+    // If not escalated we still may want to show timers, but no chain-derived
+    // info.  Wire the base acceptance/completion window from
+    // escalation_time_minutes.
+    final baseMinutes = _parseInt(task['escalation_time_minutes'] ??
+        raw['escalation_time_minutes']);
+
+    if (!isEscalated) {
+      final (deadlineUtc, quota) = _computeBaseWindow(
+        phase:         phase,
+        createdAt:     createdAtUtc,
+        acceptedAt:    acceptedAtUtc,
+        baseMinutes:   baseMinutes,
+      );
+      final escalationDeadline = deadlineUtc != null && quota != null
+        ? EscalationDeadline(
+            deadline: deadlineUtc,
+            quotaMinutes: quota,
+            isOverdue: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds < 0,
+            isWarning: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds <= 60,
+          )
+        : null;
+      
+      return EscalationView._(
+        isEscalated:     false,
+        phase:           phase,
+        currentLevel:    0,
+        chain:           steps, // usually empty, occasionally has history
+        acceptedByName:  acceptedByName,
+        closedByName:    closedByName,
+        deadline:        escalationDeadline,
+        slaMinutesQuota: quota,
+      );
+    }
+
+    // Escalated → drive from the latest chain step.
+    final latest = steps.isNotEmpty ? steps.last : null;
+
+    final currentLevel = latest?.level ?? 0;
+    final currentRoleName = latest?.toRoleName;
+    final currentUserName = latest?.toUserName;
+    final previousRoleName = latest?.fromRoleName;
+
+    // Deadline for escalated tasks -----------------------------------------
+    EscalationDeadline? escalationDeadline;
+    int? quotaMins;
+    if (phase == EscalationPhase.closed) {
+      escalationDeadline = null;
+    } else if (phase == EscalationPhase.awaitingAcceptance &&
+        latest?.escalatedAt != null) {
+      final mins = latest!.acceptanceMinutes ?? baseMinutes;
+      if (mins != null && mins > 0) {
+        final deadlineUtc = latest.escalatedAt!.add(Duration(minutes: mins));
+        escalationDeadline = EscalationDeadline(
+          deadline: deadlineUtc,
+          quotaMinutes: mins,
+          isOverdue: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds < 0,
+          isWarning: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds <= 60,
+        );
+        quotaMins = mins;
+      }
+    } else if (phase == EscalationPhase.inProgress && acceptedAtUtc != null) {
+      final mins = latest?.completionMinutes ?? baseMinutes;
+      if (mins != null && mins > 0) {
+        final deadlineUtc = acceptedAtUtc.add(Duration(minutes: mins));
+        escalationDeadline = EscalationDeadline(
+          deadline: deadlineUtc,
+          quotaMinutes: mins,
+          isOverdue: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds < 0,
+          isWarning: deadlineUtc.difference(DateTime.now().toUtc()).inSeconds <= 60,
+        );
+        quotaMins = mins;
+      }
+    }
+
+    return EscalationView._(
+      isEscalated:     true,
+      phase:           phase,
+      currentLevel:    currentLevel,
+      currentUserName: currentUserName,
+      currentRoleName: currentRoleName,
+      previousRoleName: previousRoleName,
+      deadline:        escalationDeadline,
+      slaMinutesQuota: quotaMins,
+      acceptedByName:  acceptedByName,
+      closedByName:    closedByName,
+      chain:           steps,
+    );
+  }
+
+  // ── Timer helpers (UTC-safe) ─────────────────────────────────────────────
+
+  bool get hasCountdown => deadline != null && phase != EscalationPhase.closed;
+
+  int get remainingSeconds {
+    if (deadline == null) return 0;
+    return deadline!.deadline.difference(DateTime.now().toUtc()).inSeconds;
+  }
+
+  bool get isOverdue => deadline?.isOverdue ?? false;
+
+  /// Warning band: < 25 % of the SLA quota left, or < 60 s remaining.
+  bool get isWarning {
+    if (deadline == null) return false;
+    return deadline!.isWarning;
+  }
+
+  /// 0 → just started, 1 → deadline reached (clamped).
+  double get progress {
+    if (!hasCountdown || slaMinutesQuota == null || slaMinutesQuota! <= 0) {
+      return 0;
+    }
+    final totalSecs = slaMinutesQuota! * 60;
+    final elapsed = totalSecs - remainingSeconds;
+    if (elapsed <= 0) return 0;
+    if (elapsed >= totalSecs) return 1;
+    return elapsed / totalSecs;
+  }
+
+  /// mm:ss (or +mm:ss when overdue).  Falls back to empty when no deadline.
+  String get countdownLabel {
+    return deadline?.countdownText ?? '';
+  }
+
+  /// Compact human phrase like "Accept in 05:12", "Complete in 02:44",
+  /// "3 min overdue", "Closed".  Never empty for non-closed tasks with a
+  /// deadline.
+  String get phaseLabel {
+    switch (phase) {
+      case EscalationPhase.closed:
+        return 'Closed';
+      case EscalationPhase.awaitingAcceptance:
+        if (!hasCountdown) return 'Awaiting acceptance';
+        if (isOverdue) return 'Acceptance overdue by ${_absMin()}';
+        return 'Accept in $countdownLabel';
+      case EscalationPhase.inProgress:
+        if (!hasCountdown) return 'In progress';
+        if (isOverdue) return 'Resolution overdue by ${_absMin()}';
+        return 'Complete in $countdownLabel';
+    }
+  }
+
+  /// Optional shorter sub-line — small explanatory text.  Empty when the main
+  /// phaseLabel already carries everything.
+  String get subLabel {
+    if (phase == EscalationPhase.closed) {
+      return closedByName != null && closedByName!.isNotEmpty
+          ? 'Closed by $closedByName'
+          : '';
+    }
+    if (!hasCountdown) return '';
+    if (isOverdue) {
+      return isEscalated
+          ? 'SLA breached · ${_levelRoleLine()}'
+          : 'SLA breached';
+    }
+    if (isWarning) return 'Nearing SLA';
+    return 'On track';
+  }
+
+  /// Top strip title for cards: "Level 2 · General Manager".
+  String get accentStripTitle {
+    if (!isEscalated) return '';
+    final role = (currentRoleName ?? '').trim();
+    if (currentLevel > 0 && role.isNotEmpty) return 'Level $currentLevel · $role';
+    if (currentLevel > 0) return 'Level $currentLevel';
+    return 'Escalated';
+  }
+
+  SlaSeverity get severity {
+    if (phase == EscalationPhase.closed) return SlaSeverity.neutral;
+    if (isOverdue) return SlaSeverity.overdue;
+    if (isEscalated) return SlaSeverity.escalated;
+    if (isWarning) return SlaSeverity.warning;
+    if (hasCountdown) return SlaSeverity.onTrack;
+    return SlaSeverity.neutral;
+  }
+
+  /// Color/icon tokens based on current severity.
+  SlaTokens get slaTokens => SlaTokens.forSeverity(severity);
+
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  String _absMin() {
+    if (deadline == null) return '1 min';
+    final now = DateTime.now().toUtc();
+    final remaining = deadline!.deadline.difference(now).inSeconds;
+    final m = remaining.abs() ~/ 60;
+    return m <= 1 ? '1 min' : '$m min';
+  }
+
+  String _levelRoleLine() {
+    final role = (currentRoleName ?? '').trim();
+    if (currentLevel > 0 && role.isNotEmpty) return 'Level $currentLevel · $role';
+    if (currentLevel > 0) return 'Level $currentLevel';
+    return 'Escalated';
+  }
+
+  static (DateTime?, int?) _computeBaseWindow({
+    required EscalationPhase phase,
+    required DateTime? createdAt,
+    required DateTime? acceptedAt,
+    required int?      baseMinutes,
+  }) {
+    if (baseMinutes == null || baseMinutes <= 0) return (null, null);
+    switch (phase) {
+      case EscalationPhase.awaitingAcceptance:
+        if (createdAt == null) return (null, null);
+        return (createdAt.add(Duration(minutes: baseMinutes)), baseMinutes);
+      case EscalationPhase.inProgress:
+        if (acceptedAt == null) return (null, null);
+        return (acceptedAt.add(Duration(minutes: baseMinutes)), baseMinutes);
+      case EscalationPhase.closed:
+        return (null, null);
+    }
+  }
+
+  static List<EscalationChainStep> _parseChain(dynamic rawHistory) {
+    if (rawHistory == null) return const [];
+    List list = const [];
+    if (rawHistory is List) {
+      list = rawHistory;
+    } else if (rawHistory is String) {
+      final s = rawHistory.trim();
+      if (s.isEmpty || s == '[]' || s == 'null') return const [];
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is List) list = decoded;
+      } catch (_) {
+        return const [];
+      }
+    }
+    if (list.isEmpty) return const [];
+
+    final steps = <EscalationChainStep>[];
+    for (int i = 0; i < list.length; i++) {
+      final item = list[i];
+      if (item is! Map) continue;
+      final level = _parseInt(item['level']) ?? (i + 1);
+      final escalatedAt = _parseUtc(item['escalated_at']);
+      final toUser = item['to_user'];
+      final fromUsers = item['from_users'];
+      String? toUserName;
+      String? toRoleName;
+      int?    toRoleId;
+      if (toUser is Map) {
+        toUserName = _cleanString(toUser['user_name']);
+        toRoleName = _cleanString(toUser['role_name']);
+        toRoleId   = _parseInt(toUser['role_id']);
+      }
+      final List<String> fromNames = <String>[];
+      String? fromRoleName;
+      if (fromUsers is List) {
+        for (final u in fromUsers) {
+          if (u is Map) {
+            final n = _cleanString(u['user_name']);
+            if (n != null && n.isNotEmpty) fromNames.add(n);
+            fromRoleName ??= _cleanString(u['role_name']);
+          }
+        }
+      }
+      steps.add(EscalationChainStep(
+        level:             level,
+        escalatedAt:       escalatedAt,
+        toUserName:        toUserName,
+        toRoleName:        toRoleName,
+        toRoleId:          toRoleId,
+        fromUserNames:     fromNames,
+        fromRoleName:      fromRoleName,
+        acceptanceMinutes: _parseInt(item['acceptance_time_minutes']),
+        completionMinutes: _parseInt(item['completion_time_minutes']),
+        isCurrent:         i == list.length - 1,
+      ));
+    }
+    return steps;
+  }
+
+  static int? _parseInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString());
+  }
+
+  static String? _cleanString(dynamic v) {
+    if (v == null) return null;
+    final s = v.toString().trim();
+    if (s.isEmpty || s.toLowerCase() == 'null') return null;
+    return s;
+  }
+
+  /// Parses any timestamp coming from the service_request API into UTC.
+  /// Accepts:
+  ///   "2026-08-27T16:40:49.000Z"        (ISO with Z)
+  ///   "2026-08-27 16:43:22.000000"      (MySQL DATETIME — treated as UTC)
+  ///   "2026-08-27T16:40:49+05:30"       (ISO with offset)
+  static DateTime? _parseUtc(dynamic value) {
+    if (value == null) return null;
+    var s = value.toString().trim();
+    if (s.isEmpty || s.toLowerCase() == 'null') return null;
+    s = s.replaceFirst(' ', 'T');
+    final hasTz = s.endsWith('Z') ||
+        RegExp(r'[+\-]\d{2}:?\d{2}$').hasMatch(s);
+    if (!hasTz) s = '${s}Z';
+    return DateTime.tryParse(s);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Severity → colour tokens shared across every escalation surface.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class SlaTokens {
+  const SlaTokens({
+    required this.fg,
+    required this.bg,
+    required this.border,
+    required this.icon,
+  });
+
+  final Color    fg;
+  final Color    bg;
+  final Color    border;
+  final IconData icon;
+
+  static SlaTokens forSeverity(SlaSeverity s) {
+    switch (s) {
+      case SlaSeverity.overdue:
+        return SlaTokens(
+          fg:     AppColors.error,
+          bg:     AppColors.errorLight,
+          border: AppColors.error.withOpacity(0.35),
+          icon:   Icons.timer_off_outlined,
+        );
+      case SlaSeverity.escalated:
+        return SlaTokens(
+          fg:     AppColors.error,
+          bg:     AppColors.errorLight,
+          border: AppColors.error.withOpacity(0.30),
+          icon:   Icons.arrow_upward_rounded,
+        );
+      case SlaSeverity.warning:
+        return SlaTokens(
+          fg:     AppColors.warning,
+          bg:     AppColors.warningLight,
+          border: AppColors.warning.withOpacity(0.35),
+          icon:   Icons.bolt_rounded,
+        );
+      case SlaSeverity.onTrack:
+        return SlaTokens(
+          fg:     AppColors.success,
+          bg:     AppColors.successLight,
+          border: AppColors.success.withOpacity(0.30),
+          icon:   Icons.timer_outlined,
+        );
+      case SlaSeverity.neutral:
+        return SlaTokens(
+          fg:     AppColors.textSecondary,
+          bg:     AppColors.surfaceAlt,
+          border: AppColors.borderLight,
+          icon:   Icons.info_outline_rounded,
+        );
+    }
+  }
+}

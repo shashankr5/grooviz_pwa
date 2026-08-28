@@ -106,13 +106,13 @@ class _MainNavigationState extends State<MainNavigation>
 
     // ── Food & Beverage ───────────────────────────────────────────────────
     // F&B staff work on the Food tab; they don't handle service requests
-    // or room deliveries directly.
+    // or room deliveries directly. They now also have access to their profile.
     if (d == 'food & beverage' ||
         d == 'food and beverage' ||
         d == 'f&b' ||
         d == 'fnb' ||
         d.contains('food') && d.contains('beverage')) {
-      return {'food', 'tasks'};
+      return {'food', 'tasks', 'profile'};
     }
 
     // ── Front Office ──────────────────────────────────────────────────────

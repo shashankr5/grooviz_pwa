@@ -29,6 +29,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
+import '../services/order_alert_service.dart';
+import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
 import '../services/profile_service.dart';
 import '../services/escalation_service.dart';
 import '../utils/user_session_helper.dart';
@@ -94,6 +97,10 @@ class TasksPageState extends State<TasksPage> {
   int?         _userId;
   int?         _userRoleId;
   bool         _canSendReports = false;
+  
+  // ── Escalation permission flags ──────────────────────────────────────────
+  bool _canAccept = false;
+  bool _canReassign = false;
 
   // ── Month / dept filter ───────────────────────────────────────────────────
   int     _selectedMonth = DateTime.now().month;
@@ -162,6 +169,10 @@ class TasksPageState extends State<TasksPage> {
   // ── Escalation refresh subscriptions ──────────────────────────────────────
   StreamSubscription<void>? _escalationListSub;
   StreamSubscription<int>?  _escalationBadgeSub;
+  
+  // ── Task and delivery refresh subscriptions ─────────────────────────────────
+  StreamSubscription<void>? _taskUpdateSub;
+  StreamSubscription<void>? _deliveryUpdateSub;
 
 
   static const _monthNames = [
@@ -183,12 +194,22 @@ class TasksPageState extends State<TasksPage> {
     _escalationBadgeSub = EscalationService.instance.onBadgeUpdate.listen((_) {
       if (mounted) _loadMyStats();
     });
+    
+    // Listen to task and delivery updates from notifications to automatically refresh UI
+    _taskUpdateSub = TaskAlertService.onNewTask.listen((_) {
+      if (mounted) _loadMyStats();
+    });
+    _deliveryUpdateSub = TaskAlertService.onNewDelivery.listen((_) {
+      if (mounted) _loadMyStats();
+    });
   }
 
   @override
   void dispose() {
     _escalationListSub?.cancel();
     _escalationBadgeSub?.cancel();
+    _taskUpdateSub?.cancel();
+    _deliveryUpdateSub?.cancel();
     super.dispose();
   }
 
@@ -201,6 +222,11 @@ class TasksPageState extends State<TasksPage> {
     final depts  = await UserSessionHelper.getDepartments();
     final profile = await UserSessionHelper.getUserProfile();
     final sendReports = profile?['send_reports']?.toString().toUpperCase() ?? 'N';
+    
+    // Load escalation permissions
+    final accept = await UserSessionHelper.isAccept();
+    final reassign = await UserSessionHelper.reassign();
+    
     if (!mounted) return;
 
     setState(() {
@@ -208,6 +234,8 @@ class TasksPageState extends State<TasksPage> {
       _userRoleId = roleId ?? _deriveRoleId(role);
       _userId     = userId;
       _canSendReports = sendReports == 'Y';
+      _canAccept = accept;
+      _canReassign = reassign;
 
       _availableFilterDepts = List.from(depts)..sort();
       if (_isDeptScopedRole(_userRoleId)) {
@@ -647,12 +675,19 @@ class TasksPageState extends State<TasksPage> {
         final depts  = await UserSessionHelper.getDepartments();
         final profile = await UserSessionHelper.getUserProfile();
         final sendReports = profile?['send_reports']?.toString().toUpperCase() ?? 'N';
+        
+        // Reload escalation permissions
+        final accept = await UserSessionHelper.isAccept();
+        final reassign = await UserSessionHelper.reassign();
+        
         if (mounted) {
           setState(() {
             _userRole   = role ?? '';
             _userRoleId = roleId ?? _deriveRoleId(role);
             _userId     = userId;
             _canSendReports = sendReports == 'Y';
+            _canAccept = accept;
+            _canReassign = reassign;
             _availableFilterDepts = List.from(depts)..sort();
             if (_isDeptScopedRole(_userRoleId)) {
               if (_availableFilterDepts.length == 1) {
@@ -4185,6 +4220,10 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   final TaskService _taskService = TaskService();
 
   bool                       _isLoading           = true;
+  
+  // ── Escalation permission flags ──────────────────────────────────────────
+  bool _canAccept = false;
+  bool _canReassign = false;
   List<Map<String, dynamic>> _monthlyUserRows     = [];
   List<Map<String, dynamic>> _weeklyUserRows      = [];
   List<Map<String, dynamic>> _monthlyDepts        = [];
@@ -4206,6 +4245,18 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
   void initState() {
     super.initState();
     _load();
+    _loadEscalationPermissions();
+  }
+
+  Future<void> _loadEscalationPermissions() async {
+    final accept = await UserSessionHelper.isAccept();
+    final reassign = await UserSessionHelper.reassign();
+    if (mounted) {
+      setState(() {
+        _canAccept = accept;
+        _canReassign = reassign;
+      });
+    }
   }
 
   @override
@@ -4512,6 +4563,10 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
                             );
                             if (!mounted) return;
                             if (reassignRes['success'] == true) {
+                              // Stop alert sound when reassigning from tasks page
+                              await TaskAlertService.stopEscalation();
+                              await TaskAlertService.stopOneServiceAlert();
+                              
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   backgroundColor: AppColors.success,
@@ -5552,6 +5607,11 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
 
     final statusColor = isEsc ? AppColors.error : AppColors.statusColor(status);
     final canManage = _isSupervisorOrAboveByName(widget.userRole);
+    
+    // Permission-based controls - match ticket details page logic
+    final showReassign = status.toLowerCase() != 'closed' && 
+        canManage && 
+        _canReassign;
 
     return Container(
       decoration: BoxDecoration(
@@ -5707,34 +5767,36 @@ class _StaffDrillDownPageState extends State<_StaffDrillDownPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                // 1. Reassign button
-                InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => _showQuickReassignDialog(task),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.swap_horiz_rounded, size: 14, color: AppColors.primary),
-                        SizedBox(width: 4),
-                        Text(
-                          'Reassign',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary,
+                // 1. Reassign button - only show if user has permission and task is not closed
+                if (showReassign) ...[
+                  InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => _showQuickReassignDialog(task),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.swap_horiz_rounded, size: 14, color: AppColors.primary),
+                          SizedBox(width: 4),
+                          Text(
+                            'Reassign',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 // 2. Add Note button
                 InkWell(
                   borderRadius: BorderRadius.circular(8),

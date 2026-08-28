@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
 import '../services/session_change_service.dart';
-import '../services/task_alert_service.dart';
-import '../services/order_alert_service.dart';
 import '../services/escalation_service.dart';
+import '../services/order_alert_service.dart';
+import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
 import '../services/profile_service.dart';
 import '../services/food_order_service.dart';
-import '../services/notification_handler.dart';
 import '../services/notification_constants.dart';
 import '../utils/date_formatter.dart';
 import '../utils/user_session_helper.dart';
@@ -1127,7 +1127,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task);
-                              if (_wasEscalated(task)) _showEscalationResolvedToast('close');
                             },
                             onReassign: (updatedTask) {
                               setState(() {
@@ -1162,7 +1161,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
-                              if (_wasEscalated(task)) _showEscalationResolvedToast('reassign');
                             },
                           ),
                         ),
@@ -1253,11 +1251,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   task:     task,
                   userRole: userRole,
                   onClose:  () {
-                    _showEscalationResolvedToast('close');
                     _loadTasks();
                   },
                   onReassign: (updatedTask) {
-                    _showEscalationResolvedToast('reassign');
                     _loadTasks();
                   },
                   onNoteAdded: (note) {
@@ -1297,52 +1293,23 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final assignedTo = (raw['accepted_by_user_name'] ?? raw['assigned_to_name'] ?? task['assignedTo'] ?? '').toString();
     final status     = (task['status'] ?? 'Open').toString();
 
-    final esc        = EscalationInfo.fromTask(task);
-    final accentStyle = EscalationVisibility.accentStyle(role);
-
-    final bool isInProgress = status.toLowerCase() == 'in progress';
+    final view = EscalationView.fromTask(task);
+    final bool isActive = view.isEscalated && view.phase != EscalationPhase.closed;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color:        Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border:       EscalationDisplay.escalatedBorder(),
-        boxShadow:    EscalationDisplay.escalatedShadow(),
+        border:       isActive ? Border.all(color: SlaTokens.forSeverity(view.severity).border, width: 1.5) : Border.all(color: AppColors.borderLight),
+        boxShadow:    [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 3))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width:   double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
-            decoration: BoxDecoration(
-              color: EscalationDisplay.accentBarColor(accentStyle),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
-            ),
-            child: Row(children: [
-              const Icon(Icons.warning_amber_rounded,
-                  color: Colors.white, size: 13),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
-                  style: const TextStyle(
-                    color:         Colors.white,
-                    fontSize:      10,
-                    fontWeight:    FontWeight.w700,
-                    letterSpacing: 0.5,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (isInProgress) ...[
-                const SizedBox(width: 8),
-                EscalationDisplay.countdownChip(esc),
-              ],
-            ]),
-          ),
+          // Only show escalation strip for ACTIVE tasks (not closed)
+          if (view.isEscalated && view.phase != EscalationPhase.closed)
+            _buildHomeEscalationStrip(view),
 
           Padding(
             padding: const EdgeInsets.all(14),
@@ -1389,8 +1356,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       _metaChip(Icons.person_outline_rounded, guestName),
                     if (deptName.isNotEmpty)
                       _metaChip(Icons.business_rounded, deptName),
-                    if (esc.stageName != null && esc.stageName!.isNotEmpty)
-                      EscalationDisplay.stagePill(esc.stageName!),
+                    // Removed duplicate escalation stage pill since it's already in the strip
                   ],
                 ),
 
@@ -1398,70 +1364,99 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 const Divider(height: 1, color: AppColors.borderLight),
                 const SizedBox(height: 10),
 
-                if (isInProgress) ...[
-                  Row(children: [
+                Row(children: [
+                  // Show SLA info only for active tasks with a deadline
+                  if (isActive && view.deadline != null && view.deadline!.urgencyLabel.isNotEmpty) ...[
                     Icon(
-                      esc.isOverdue
+                      view.deadline!.isOverdue
                           ? Icons.timer_off_rounded
                           : Icons.timer_outlined,
                       size: 13,
-                      color: esc.isOverdue ? AppColors.error : AppColors.warning,
+                      color: view.deadline!.isOverdue ? AppColors.error : AppColors.warning,
                     ),
                     const SizedBox(width: 5),
                     Text(
-                      esc.slaLabel,
+                      view.phaseLabel,
                       style: TextStyle(
                         fontSize:   12,
-                        fontWeight: FontWeight.w700,
-                        color: esc.isOverdue ? AppColors.error : AppColors.warning,
+                        fontWeight: FontWeight.w600,
+                        color: view.deadline!.isOverdue ? AppColors.error : AppColors.warning,
                       ),
                     ),
                     const Spacer(),
-                    if (assignedTo.isNotEmpty && assignedTo != '-') ...[
-                      const Icon(Icons.badge_outlined,
-                          size: 13, color: AppColors.textSecondary),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          assignedTo,
-                          style: const TextStyle(
-                            fontSize:   12,
-                            fontWeight: FontWeight.w500,
-                            color:      AppColors.textSecondary,
-                          ),
-                          maxLines:  1,
-                          overflow:  TextOverflow.ellipsis,
+                  ] else 
+                    const Spacer(),
+                  
+                  if (assignedTo.isNotEmpty && assignedTo != '-') ...[
+                    const Icon(Icons.badge_outlined,
+                        size: 13, color: AppColors.textSecondary),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        assignedTo,
+                        style: const TextStyle(
+                          fontSize:   12,
+                          fontWeight: FontWeight.w500,
+                          color:      AppColors.textSecondary,
                         ),
+                        maxLines:  1,
+                        overflow:  TextOverflow.ellipsis,
                       ),
-                    ],
-                  ]),
-                ] else ...[
-                  if (assignedTo.isNotEmpty && assignedTo != '-')
-                    Row(
-                      children: [
-                        const Icon(Icons.badge_outlined,
-                            size: 13, color: AppColors.textSecondary),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            assignedTo,
-                            style: const TextStyle(
-                              fontSize:   12,
-                              fontWeight: FontWeight.w500,
-                              color:      AppColors.textSecondary,
-                            ),
-                            maxLines:  1,
-                            overflow:  TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
                     ),
-                ],
+                  ],
+                ]),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildHomeEscalationStrip(EscalationView view) {
+    final tokens = SlaTokens.forSeverity(view.severity);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+      decoration: BoxDecoration(
+        color: tokens.fg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+      ),
+      child: Row(children: [
+        const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 12),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            view.accentStripTitle,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (view.hasCountdown) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              view.countdownLabel,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ],
+      ]),
     );
   }
 
@@ -1704,14 +1699,6 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         raw['is_escalated'] == true;
   }
 
-  void _showEscalationResolvedToast(String type) {
-    final msg = type == 'reassign'
-        ? 'Escalated task reassigned successfully'
-        : 'Escalated task closed successfully';
-    if (mounted) {
-      AppSnackBar.show(context, msg);
-    }
-  }
 
   // ── Search query matcher ──────────────────────────────────────────────────
 
@@ -1743,6 +1730,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _acceptingTaskId = null);
 
     if (result['success'] == true) {
+      // Stop the service alert for this accepted task
+      await TaskAlertService.stopOneServiceAlert();
+      
       setState(() {
         final idx = tasks.indexWhere((t) =>
             (t["raw"]?["service_request_id"] ?? t["task_id"] ?? t["id"]) == taskId);

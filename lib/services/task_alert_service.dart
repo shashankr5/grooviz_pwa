@@ -1,11 +1,7 @@
 // services/task_alert_service.dart
 //
-// CHANGES IN THIS VERSION:
-//  • ensureDeliveryRunning() now uses AlertSoundKey.delivery (was .task)
-//  • Added _escalationCount + resetEscalationCount()
-//  • Added notifyEscalation() – called by WebSocket ESCALATION_ALERT handler
-//  • Added ensureEscalationRunning() — plays escalation sound once, no loop
-//  • stopAll() also resets _escalationCount
+// Task alert service managing service tasks, deliveries, and escalations
+// Provides unified interface for all task-related alert sounds
 
 import 'dart:async';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -14,143 +10,99 @@ import 'unified_alert_foreground_task.dart';
 import 'order_alert_service.dart';
 
 class TaskAlertService {
-  TaskAlertService._();
-
-  static int _pendingServiceCount  = 0;
-  static int _pendingDeliveryCount = 0;
+  static int _serviceTaskCount = 0;
+  static int _deliveryCount = 0;
   static bool _escalationActive = false;
 
-  static int get totalPending =>
-      _pendingServiceCount + _pendingDeliveryCount;
+  static final StreamController<void> _newTaskController = StreamController.broadcast();
+  static final StreamController<void> _newDeliveryController = StreamController.broadcast();
 
-  static int get pendingServiceCount => _pendingServiceCount;
-  static int get pendingDeliveryCount => _pendingDeliveryCount;
+  static Stream<void> get onNewTask => _newTaskController.stream;
+  static Stream<void> get onNewDelivery => _newDeliveryController.stream;
 
-  static Future<void> reevaluate() => _reevaluate();
-
-  // ── Streams ─────────────────────────────────────────────────────────────
-  static final StreamController<void> _newTaskController =
-      StreamController.broadcast();
-  static final StreamController<void> _newDeliveryController =
-      StreamController.broadcast();
-
-  static Stream<void> get onNewTask       => _newTaskController.stream;
-  static Stream<void> get onNewDelivery   => _newDeliveryController.stream;
-
-  static void notifyNewTask()     => _newTaskController.add(null);
+  static void notifyNewTask() => _newTaskController.add(null);
   static void notifyNewDelivery() => _newDeliveryController.add(null);
 
-  // ── Service task API ─────────────────────────────────────────────────────
+  static int get totalPending => _serviceTaskCount + _deliveryCount;
+  static int get serviceTaskCount => _serviceTaskCount;
+  static int get deliveryCount => _deliveryCount;
+  static bool get escalationActive => _escalationActive;
 
-  static Future<bool> startServiceAlert()    => ensureServiceRunning();
+  // ── Public API ──────────────────────────────────────────────────────────
+
   static Future<bool> ensureServiceRunning() => _ensureRunning(
-        soundName:         AlertSoundKey.task,
-        // Service task alerts loop until explicitly accepted/stopped by any device.
-        shouldLoop:        true,
-        notificationTitle: 'New Service Request',
-        notificationText:  'Tap to view pending tasks',
+        soundName: AlertSoundKey.task,
+        notificationTitle: 'Service Request',
+        notificationText: 'Waiting for assignment...',
       );
 
-  /// Escalations remain audible until the escalated task is actioned.
-  static Future<bool> ensureEscalationRunning() async {
-    _escalationActive = true;
-    return _ensureRunning(
-      soundName: AlertSoundKey.escalation,
-      shouldLoop: true,
-      notificationTitle: 'Escalation Requires Attention',
-      notificationText: 'Tap to review the escalated service request',
-    );
+  static Future<bool> ensureDeliveryRunning() => _ensureRunning(
+        soundName: AlertSoundKey.delivery,
+        notificationTitle: 'Delivery Ready',
+        notificationText: 'Order ready for delivery...',
+      );
+
+  static Future<bool> ensureEscalationRunning() => _ensureRunning(
+        soundName: AlertSoundKey.escalation,
+        notificationTitle: 'Escalation Alert',
+        notificationText: 'SLA breach requires attention...',
+      );
+
+  /// Stop one delivery alert optimistically
+  static Future<void> stopOneDeliveryAlert() async {
+    _deliveryCount = (_deliveryCount - 1).clamp(0, 9999);
+    print('TaskAlertService.stopOneDeliveryAlert() | deliveryCount=$_deliveryCount');
+    await _reevaluate();
   }
 
-  /// Stops an escalation alert after its task is accepted, closed, or reassigned.
+  /// Stop one service alert optimistically
+  static Future<void> stopOneServiceAlert() async {
+    _serviceTaskCount = (_serviceTaskCount - 1).clamp(0, 9999);
+    print('TaskAlertService.stopOneServiceAlert() | serviceCount=$_serviceTaskCount');
+    await _reevaluate();
+  }
+
+  /// Stop escalation alerts
   static Future<void> stopEscalation() async {
     _escalationActive = false;
+    print('TaskAlertService.stopEscalation() | escalation=false');
     await _reevaluate();
   }
 
-  /// ACCEPTOR DEVICE ONLY — optimistic decrement.
-  static Future<void> stopOneServiceAlert() async {
-    _pendingServiceCount = (_pendingServiceCount - 1).clamp(0, 9999);
-    print('TaskAlertService.stopOneServiceAlert() | serviceCount=$_pendingServiceCount');
+  /// Stop all task-related alerts
+  static Future<void> stopAll() async {
+    _serviceTaskCount = 0;
+    _deliveryCount = 0;
+    _escalationActive = false;
+    print('TaskAlertService.stopAll() | all counts reset');
     await _reevaluate();
   }
 
-  /// PRIMARY STOP GATE for service tasks.
-  static void resetServiceCount(
-    int count, {
-    bool reconcileAlert = false,
-  }) {
-    _pendingServiceCount = count.clamp(0, 9999);
+  /// Reset service task count from server data
+  static void resetServiceCount(int count, {bool reconcileAlert = false}) {
+    _serviceTaskCount = count.clamp(0, 9999);
     print('TaskAlertService.resetServiceCount($count)');
-    // Reconciliation must always stop a stale alert at zero. It may only
-    // start/restart an alert for a real incoming event.
     if (count <= 0 || reconcileAlert) _reevaluate();
-    
-    // BUGFIX: If there are pending tasks but no alert is running, start the alert
-    // This handles the case where app was killed/restarted with pending tasks
-    else if (count > 0) {
-      _checkAndStartServiceAlertIfNeeded();
-    }
   }
 
-  static Future<void> _checkAndStartServiceAlertIfNeeded() async {
-    try {
-      final isRunning = await FlutterForegroundTask.isRunningService;
-      if (!isRunning && _pendingServiceCount > 0) {
-        print('TaskAlertService: Starting alert for existing pending tasks ($_pendingServiceCount)');
-        await ensureServiceRunning();
-      }
-    } catch (e) {
-      print('TaskAlertService._checkAndStartServiceAlertIfNeeded error: $e');
-    }
-  }
-
-  // ── Delivery API ─────────────────────────────────────────────────────────
-  //
-  // Delivery is an operational request, so it shares alert.wav with service
-  // and food requests. The existing loop/stop lifecycle remains unchanged.
-
-  static Future<bool> startDeliveryAlert()    => ensureDeliveryRunning();
-  static Future<bool> ensureDeliveryRunning() => _ensureRunning(
-        soundName:         AlertSoundKey.delivery,
-        // A Ready order remains actionable until Room Service accepts it.
-        // _reevaluate() stops this loop when the Ready queue becomes empty.
-        shouldLoop:        true,
-        notificationTitle: 'Order Ready for Delivery',
-        notificationText:  'Tap to view delivery queue',
-      );
-
-  /// ACCEPTOR DEVICE ONLY — optimistic decrement.
-  static Future<void> stopOneDeliveryAlert() async {
-    _pendingDeliveryCount = (_pendingDeliveryCount - 1).clamp(0, 9999);
-    print('TaskAlertService.stopOneDeliveryAlert() | deliveryCount=$_pendingDeliveryCount');
-    await _reevaluate();
-  }
-
-  /// PRIMARY STOP GATE for delivery tasks.
-  static void resetDeliveryCount(
-    int count, {
-    bool reconcileAlert = false,
-  }) {
-    _pendingDeliveryCount = count.clamp(0, 9999);
+  /// Reset delivery count from server data
+  static void resetDeliveryCount(int count, {bool reconcileAlert = false}) {
+    _deliveryCount = count.clamp(0, 9999);
     print('TaskAlertService.resetDeliveryCount($count)');
     if (count <= 0 || reconcileAlert) _reevaluate();
   }
 
-  // ── Force stop (logout / app reset) ─────────────────────────────────────
-
-  static Future<void> stopAll() async {
-    _pendingServiceCount  = 0;
-    _pendingDeliveryCount = 0;
-    _escalationActive     = false;
-    await _stopService();
+  /// Set escalation status from server data
+  static void setEscalationActive(bool active, {bool reconcileAlert = false}) {
+    _escalationActive = active;
+    print('TaskAlertService.setEscalationActive($active)');
+    if (!active || reconcileAlert) _reevaluate();
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
   static Future<bool> _ensureRunning({
     required String soundName,
-    required bool   shouldLoop,
     required String notificationTitle,
     required String notificationText,
   }) async {
@@ -158,32 +110,21 @@ class TaskAlertService {
       soundName: soundName,
       operation: () async {
         try {
-          // Write sound preference BEFORE starting service so the handler
-          // isolate can read it synchronously in onStart().
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(AlertSoundKey.prefKey, soundName);
-          await prefs.setString(
-            AlertSoundKey.loopKey,
-            shouldLoop ? 'true' : 'false',
-          );
+          await prefs.setString(AlertSoundKey.loopKey, 'true');
 
           final isRunning = await FlutterForegroundTask.isRunningService;
           if (isRunning) {
             await FlutterForegroundTask.restartService();
-            print(
-              'TaskAlertService: foreground service restarted '
-              '(sound=$soundName, loop=$shouldLoop)',
-            );
+            print('TaskAlertService: foreground service restarted (sound=$soundName)');
           } else {
             await FlutterForegroundTask.startService(
               notificationTitle: notificationTitle,
               notificationText: notificationText,
               callback: unifiedAlertStartCallback,
             );
-            print(
-              'TaskAlertService: foreground service started '
-              '(sound=$soundName, loop=$shouldLoop)',
-            );
+            print('TaskAlertService: foreground service started (sound=$soundName)');
           }
           return true;
         } catch (e) {
@@ -195,20 +136,13 @@ class TaskAlertService {
   }
 
   static Future<void> _reevaluate() async {
-    // ARCHITECTURE: _reevaluate() is a STOP-ONLY gate.
-    // It NEVER restarts the foreground service — restarts are driven exclusively
-    // by FCM/WS new-event handlers (NEW_FOOD_ORDER, NEW_SERVICE_TASK, etc.).
-    // This eliminates spurious sound replays triggered by:
-    //   • pull-to-refresh (_loadDeliveryCounts → resetDeliveryCount(0) → reevaluate)
-    //   • home-icon tap (_refreshCurrentTab → _loadTasks → resetServiceCount)
-    //   • post-accept reload (_acceptTask → _loadTasks → resetServiceCount)
-    //   • cold-launch reconciliation (AlertReloadCoordinator.reloadTasks)
-    if (OrderAlertService.pendingOrderCount > 0) return; // Food pending — service still running
-    if (_escalationActive) return; // Escalation remains active until explicitly resolved
-    if (totalPending == 0) {
-      await _stopService(); // All clear — stop the foreground service
-    }
-    // totalPending > 0: service already running and looping — nothing to do
+    // Stop service only if no pending items remain
+    if (_serviceTaskCount > 0) return;
+    if (_deliveryCount > 0) return;
+    if (_escalationActive) return;
+    if (OrderAlertService.pendingOrderCount > 0) return;
+    
+    await _stopService();
   }
 
   static Future<void> _stopService() async {

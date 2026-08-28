@@ -16,12 +16,14 @@ import '../theme/app_typography.dart';
 import '../theme/app_colors.dart';
 import '../components/app_badge.dart';
 import '../utils/order_alert_sound.dart';
-import '../services/order_alert_service.dart';
 import '../services/websocket_service.dart';
-import '../services/notification_handler.dart';
+import '../services/order_alert_service.dart';
+import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
 import '../services/notification_constants.dart';
 import '../components/skeleton_loader.dart';
 import '../widgets/kot_preview_sheet.dart';
+import '../widgets/escalation_timeline_sheet.dart';
 
 class FoodOrdersPage extends StatefulWidget {
   const FoodOrdersPage({super.key});
@@ -273,6 +275,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     FoodOrderStatus.ready.label,
     FoodOrderStatus.delivered.label,
     FoodOrderStatus.cancelled.label,
+    'Escalated',
   ];
 
   final List<Map<String, dynamic>> foodOrders      = [];
@@ -902,6 +905,11 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
     if (selectedFilter == FoodOrderStatus.ready.label)     return ready;
     if (selectedFilter == FoodOrderStatus.delivered.label) return delivered;
     if (selectedFilter == FoodOrderStatus.cancelled.label) return cancelled;
+    if (selectedFilter == 'Escalated') {
+      return [...pending, ...preparing, ...ready, ...otherActive, ...delivered, ...cancelled]
+          .where((o) => o['isEscalated'] == true)
+          .toList();
+    }
 
     return [...pending, ...preparing, ...ready, ...otherActive, ...delivered, ...cancelled];
   }
@@ -949,6 +957,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       foodOrders.where((o) => o['status'] == FoodOrderStatus.preparing.label).length;
   int get _readyCount =>
       foodOrders.where((o) => o['status'] == FoodOrderStatus.ready.label).length;
+  int get _escalatedCount =>
+      foodOrders.where((o) => o['isEscalated'] == true).length +
+      cancelledOrders.where((o) => o['isEscalated'] == true).length +
+      deliveredOrders.where((o) => o['isEscalated'] == true).length;
 
   int _countForFilter(String filter) {
     switch (filter) {
@@ -960,6 +972,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       case _ready:      return _readyCount;
       case _delivered:  return deliveredOrders.length;
       case _cancelled:  return cancelledOrders.length;
+      case 'Escalated': return _escalatedCount;
       default:          return 0;
     }
   }
@@ -1249,6 +1262,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       {'label': _ready,     'color': AppColors.success,  'icon': Icons.check_circle_rounded},
       {'label': _delivered, 'color': AppColors.teal,     'icon': Icons.local_shipping_rounded},
       {'label': _cancelled, 'color': AppColors.error,    'icon': Icons.cancel_rounded},
+      {'label': 'Escalated', 'color': AppColors.warning,  'icon': Icons.warning_amber_rounded},
     ];
 
     return Padding(
@@ -1324,6 +1338,18 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
         ),
       ),
     );
+  }
+
+  // ── ESCALATION HELPER ──────────────────────────────────────────
+  int _getMaxEscalationLevel(Map<String, dynamic> order) {
+    final history = order['escalationHistory'] as List? ?? [];
+    if (history.isEmpty) return 0;
+    int maxLevel = 0;
+    for (final entry in history) {
+      final level = (entry as Map<String, dynamic>?)?['level'] as int? ?? 0;
+      if (level > maxLevel) maxLevel = level;
+    }
+    return maxLevel;
   }
 
   // ── ORDER CARD ────────────────────────────────────────────────
@@ -1550,6 +1576,50 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
 
                 if (isTimelineExpanded) ...[
                   _buildOrderLifecycleStepper(order),
+                ],
+
+                // Escalation indicator
+                if (order['isEscalated'] == true) ...[
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: () {
+                      final history = order['escalationHistory'] as List? ?? [];
+                      final typedHistory = history.cast<Map<String, dynamic>>();
+                      EscalationTimelineSheet.show(
+                        context,
+                        orderNumber: (order['orderNo'] ?? '').toString(),
+                        escalationHistory: typedHistory,
+                      );
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              size: 15, color: Colors.amber.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Escalated (Level ${_getMaxEscalationLevel(order)})',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.amber.shade800,
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.chevron_right_rounded,
+                              size: 16, color: Colors.amber.shade600),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
 
                 const Divider(height: 16, color: AppColors.borderLight),
@@ -2449,6 +2519,8 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     return;
                   }
                   order["raw"]["order_status"] = "CANCELLED";
+                  // Show success feedback BEFORE committing count update
+                  AppSnackBar.show(context, "Order cancelled");
                   setState(() {
                     order["raw"]["cancel_reason"] = reason;
                     foodOrders.remove(order);
@@ -2458,7 +2530,6 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     }
                   });
                   await OrderAlertService.stopOne();
-                  AppSnackBar.show(context, "Order cancelled");
                 },
                 borderRadius: BorderRadius.circular(12),
                 child: Container(

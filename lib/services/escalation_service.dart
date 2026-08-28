@@ -12,9 +12,9 @@
 //    ScreenSync_sp_check_and_escalate_mobile have been removed — the server
 //    owns the escalation clock.
 //
-//  • Resolution is handled atomically inside
-//    ScreenSync_update_service_request_status_mobile. No separate resolve
-//    round-trip is needed from the client.
+//  • Resolution is handled atomically inside the closeService() and 
+//    acceptServiceRequest() methods' underlying stored procedures.
+//    No separate resolve round-trip is needed from the client.
 //
 //  • onBadgeUpdate / onListRefresh streams are fed by WebSocket
 //    ESCALATION_ALERT events and consumed by home_page.dart.

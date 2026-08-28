@@ -663,6 +663,9 @@ class FoodOrderService {
         // Legacy ETA fields (kept for groupFoodOrderRows() compatibility)
         "extraEtaMinutes":     _safeInt(m["extra_eta_minutes"]),
         "etaLocked":           false,   // v1 uses tap count check instead
+        // Escalation fields
+        "isEscalated":         m["is_escalated"] == 1 || m["is_escalated"] == true,
+        "escalationHistory":   _parseEscalationHistory(m["escalation_history"]),
         "raw":                 m,
       };
     }).toList();
@@ -695,6 +698,9 @@ class FoodOrderService {
         "etaTapMinutes":       0,
         "extraEtaMinutes":     0,
         "etaLocked":           false,
+        // Escalation fields
+        "isEscalated":         m["is_escalated"] == 1 || m["is_escalated"] == true,
+        "escalationHistory":   _parseEscalationHistory(m["escalation_history"]),
         "raw": {
           ...m,
           "order_status":  "CANCELLED",
@@ -711,6 +717,51 @@ class FoodOrderService {
     if (v is int)  return v;
     if (v is num)  return v.toInt();
     return int.tryParse(v.toString()) ?? 0;
+  }
+
+  // ── ESCALATION HISTORY PARSER ─────────────────────────────────────────────
+
+  /// Parses escalation_history from a JSON string or list into a List<Map>.
+  /// Each entry: { level, toUser: {userId, userName, roleName},
+  ///              fromUsers: [{userId, userName, roleName}], escalatedAt }
+  static List<Map<String, dynamic>> _parseEscalationHistory(dynamic value) {
+    if (value == null) return [];
+    try {
+      List parsed;
+      if (value is String) {
+        if (value.trim().isEmpty) return [];
+        parsed = json.decode(value) as List;
+      } else if (value is List) {
+        parsed = value;
+      } else {
+        return [];
+      }
+
+      return parsed.map<Map<String, dynamic>>((entry) {
+        final e = Map<String, dynamic>.from(entry);
+        final toUser = e["to_user"] is Map ? Map<String, dynamic>.from(e["to_user"]) : <String, dynamic>{};
+        final fromUsers = (e["from_users"] is List)
+            ? (e["from_users"] as List).map((f) => Map<String, dynamic>.from(f)).toList()
+            : <Map<String, dynamic>>[];
+
+        return {
+          "level":       e["level"] ?? 0,
+          "toUser": {
+            "userId":   toUser["user_id"],
+            "userName":  toUser["user_name"] ?? "",
+            "roleName":  toUser["role_name"] ?? "",
+          },
+          "fromUsers": fromUsers.map((f) => {
+            "userId":   f["user_id"],
+            "userName":  f["user_name"] ?? "",
+            "roleName":  f["role_name"] ?? "",
+          }).toList(),
+          "escalatedAt": e["escalated_at"] ?? "",
+        };
+      }).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   // ── STATUS HELPERS ────────────────────────────────────────────────────────

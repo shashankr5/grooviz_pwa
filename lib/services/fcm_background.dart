@@ -7,15 +7,13 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // Added for escalation guard
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/user_session_helper.dart';
 import 'unified_alert_foreground_task.dart';
-import 'notification_constants.dart';
-import 'notification_message_builder.dart';
-import 'notification_policy.dart';
-import 'alert_reload_coordinator.dart';
+// Alert services
 import 'order_alert_service.dart';
 import 'task_alert_service.dart';
+import 'alert_reload_coordinator.dart';
 
 void _initForegroundTask() {
   FlutterForegroundTask.init(
@@ -182,63 +180,49 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       return;
   }
 
-  if (NotificationPolicy.shouldShowLocalNotification(data)) {
-    await _showBackgroundNotification(data);
+  // ✅ ADD: Show Lambda's notification in background
+  if (message.notification?.title != null && message.notification?.body != null) {
+    await _showBackgroundLambdaNotification(message);
   }
 }
 
-Future<void> _showBackgroundNotification(Map<String, dynamic> data) async {
-  try {
-    final plugin = FlutterLocalNotificationsPlugin();
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios     = DarwinInitializationSettings();
-    await plugin.initialize(const InitializationSettings(android: android, iOS: ios));
-
-    final msg = NotificationMessageBuilder.build(data);
-    final title = data['title']?.toString().trim();
-    final body = data['body']?.toString().trim();
-
-    // A background FCM can arrive before the foreground startup has created
-    // the channel. Register it here too so Android resolves notification.wav
-    // instead of falling back to the device default sound.
-    final androidPlugin = plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(
-      AndroidNotificationChannel(
-        msg.channelId,
+Future<void> _showBackgroundLambdaNotification(RemoteMessage message) async {
+  final plugin = FlutterLocalNotificationsPlugin();
+  
+  const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const ios = DarwinInitializationSettings();
+  await plugin.initialize(const InitializationSettings(android: android, iOS: ios));
+  
+  await plugin.show(
+    _getNotificationId(message.data['type']),
+    message.notification!.title!,  // Lambda's exact title
+    message.notification!.body!,   // Lambda's exact body
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'screensync_alerts',
         'ScreenSync Alerts',
-        description: 'ScreenSync operational notifications',
-        importance: Importance.max,
-        playSound: true,
-        enableVibration: false,
-        sound: const RawResourceAndroidNotificationSound('notification'),
+        importance: Importance.high,
+        priority: Priority.high,
+        autoCancel: true,
       ),
-    );
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: false,
+      ),
+    ),
+    payload: jsonEncode(message.data),
+  );
+}
 
-    final androidDetails = AndroidNotificationDetails(
-      msg.channelId,
-      msg.channelId,
-      importance:       Importance.max,
-      priority:         Priority.max,
-      icon:             msg.icon,
-      color:            Color(msg.color),
-      ticker:           msg.ticker,
-      styleInformation: BigTextStyleInformation(msg.bigText, contentTitle: msg.title),
-      groupKey:         NotifGroup.key,
-      autoCancel:       true,
-      playSound:        true,
-      sound:            const RawResourceAndroidNotificationSound('notification'),
-    );
-
-    await plugin.show(
-      msg.notifId,
-      title == null || title.isEmpty ? msg.title : title,
-      body == null || body.isEmpty ? msg.body : body,
-      NotificationDetails(android: androidDetails),
-      payload: jsonEncode(data),
-    );
-  } catch (e) {
-    debugPrint('Background notification display error: $e');
+int _getNotificationId(String? type) {
+  switch (type) {
+    case 'NEW_FOOD_ORDER': return 1001;
+    case 'NEW_SERVICE_REQUEST': return 1002;
+    case 'FOOD_ORDER_STATUS': return 1003;  
+    case 'ESCALATION': return 1004;
+    case 'SERVICE_ORDER': return 1005;
+    case 'TASK_REASSIGNED': return 1006;
+    default: return 1000;
   }
 }

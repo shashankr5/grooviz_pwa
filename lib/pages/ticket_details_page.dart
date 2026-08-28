@@ -36,8 +36,10 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/home_service.dart';
 import '../services/task_service.dart';
-import '../services/task_alert_service.dart';
 import '../services/websocket_service.dart';
+import '../services/order_alert_service.dart';
+import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
@@ -336,20 +338,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             (_task['escalation_instance_id'] ?? raw['escalation_instance_id']).toString() != '0');
   }
 
-  bool get _canTakeOver {
-    if (!_isEscalated) return false;
-    if (_task['status'] != 'In Progress') return false;
-    // A task already assigned to the signed-in user cannot be taken over.
-    // This applies to managers as well as supervisors.
-    if (_loggedInUserId == null || _assignedToId == _loggedInUserId) {
-      return false;
-    }
-    if (_isManagerRole(widget.userRole)) return true;
-    if (_isSupervisorOrAbove(widget.userRole)) {
-      return true;
-    }
-    return false;
-  }
+
 
   bool get _isClosed =>
       (_task['status'] ?? '').toString().toLowerCase() == 'closed' ||
@@ -387,71 +376,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final msg = switch (action) {
       'accept'   => 'Escalation resolved — task accepted ✅',
       'reassign' => 'Escalation resolved — task reassigned ✅',
-      'takeover' => 'Escalation resolved — task taken over ✅',
+      'close'    => 'Escalation resolved — request closed ✅',
       _          => 'Escalation resolved ✅',
     };
     AppSnackBar.show(context, msg);
-  }
-
-  Future<void> _takeOver() async {
-    final userId = _loggedInUserId;
-    if (userId == null || _isLoading || !_canTakeOver) return;
-
-    final confirm = await _showConfirmSheet(
-      title:   'Take Over Task',
-      body:    'You will be assigned this escalated task and be responsible for completing it.',
-      confirm: 'Take Over',
-      color:   AppColors.error,
-      icon:    Icons.person_add_rounded,
-    );
-    if (confirm != true) return;
-
-    setState(() => _isLoading = true);
-
-    final deptIdVal = _task['department_id'] ?? (_task['raw'] as Map?)?['department_id'];
-    final deptId = deptIdVal is int ? deptIdVal : int.tryParse(deptIdVal?.toString() ?? '');
-
-    // Always use TaskService → ScreenSync_reassign_service_mobile1
-    final result = await TaskService().reassignService(
-      taskId:     _serviceRequestId,
-      reassignTo: userId,
-    );
-
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-
-    if (result['success'] != true) {
-      AppSnackBar.show(context, result['message'] ?? 'Failed to take over',
-          isError: true);
-      return;
-    }
-
-    await TaskAlertService.stopEscalation();
-
-    final updated = (result['updatedTask'] as Map<String, dynamic>?) ?? {};
-    final newAssignedAt = result['assigned_at']?.toString() ??
-        updated['assigned_at']?.toString() ??
-        DateTime.now().toIso8601String();
-    setState(() {
-      _task['assignedTo']   = updated['assigned_to_name'] ?? result['assigned_to_name'] ?? 'You';
-      _task['status']       = updated['status'] ?? 'In Progress';
-      _task['is_escalated'] = 0;
-      _task['alert_pending'] = 0;
-      if (_task['raw'] is Map) {
-        final raw = _task['raw'] as Map;
-        raw['assigned_to']      = userId;
-        raw['assigned_to_name'] = updated['assigned_to_name'] ?? result['assigned_to_name'] ?? 'You';
-        raw['assigned_at']      = newAssignedAt;
-        raw['assigned_by_name'] = result['assigned_by_name'] ?? '';
-        raw['is_escalated']     = 0;
-        raw['alert_pending']    = 0;
-      }
-    });
-
-    widget.onReassign?.call(updated);
-
-    AppSnackBar.show(context, 'Task taken over ✅');
-    if (_isEscalated) _showEscalationResolvedToast('takeover');
   }
 
   // ── Unified status transition (Accept / Close) ───────────────────────────
@@ -460,9 +388,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   //   newStatus = "IN_PROGRESS" → Accept (staff marks task as taken)
   //   newStatus = "CLOSED"      → Close  (mark request as resolved)
   //
-  // SP: ScreenSync_update_service_request_status_mobile
-  // The SP resolves escalation_log, stops task_alert_state pulsing, and
-  // returns guest_device_token for Lambda FCM — all within one DB transaction.
+  // Uses acceptServiceRequest() for acceptance and closeService() for closing.
+  // The underlying SPs handle escalation resolution atomically.
   // DO NOT call EscalationService.resolveEscalation() after this.
 
   Future<void> _updateStatus(String newStatus) async {
@@ -515,6 +442,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     await TaskAlertService.stopEscalation();
+    
+    // Stop service alerts when task is accepted or closed
+    if (isAccept) {
+      await TaskAlertService.stopOneServiceAlert();
+      TaskAlertService.resetServiceCount(0, reconcileAlert: true);
+    } else if (isClose) {
+      await TaskAlertService.stopOneServiceAlert();
+    }
 
     // ── Optimistic UI update from SP STATUS[0] response ─────────────────
     final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
@@ -907,6 +842,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                           return;
                                         }
                                         await TaskAlertService.stopEscalation();
+                                        await TaskAlertService.stopOneServiceAlert();
                                         final upd = (res['updatedTask']
                                                 as Map<String,
                                                     dynamic>?) ??
@@ -1115,17 +1051,12 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Escalation SLA banner — shown when task is escalated.
-                  // Displays the stage name and a live countdown.
-                  if (_isEscalated) ...[
-                    _buildEscalatedBanner(),
-                    const SizedBox(height: 12),
-                  ],
+                  // Single adaptive SLA + escalation banner.  Renders
+                  // nothing when the task is closed and no history exists.
+                  _buildSlaBanner(),
 
-                  _buildServiceSlaBanner(),
-
-                  if ((_task['status'] ?? '').toString().toLowerCase() == 'in progress')
-                    const SizedBox(height: 12),
+                  // Compact escalation chain (only when there is history).
+                  _buildEscalationChain(),
 
                   _buildInfoCard(),
 
@@ -1230,149 +1161,117 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     ),
   );
 }
-  // ── Escalated banner ──────────────────────────────────────────────────────
-  // Role-aware: accent colour and label change based on the viewer's authority.
-  // Shows live SLA countdown using the escalation helper.
+  // ── Adaptive SLA banner ───────────────────────────────────────────────────
+  //
+  // Replaces the previous _buildEscalatedBanner + _buildServiceSlaBanner
+  // combination.  A single card whose severity (colour, icon, copy) is driven
+  // by EscalationView.severity — never shows two clocks or repeats "escalated"
+  // three times.
+  //
+  //  ┌─────────────────────────────────────────────────────────┐
+  //  │  [icon]  Level 2 · General Manager        MM:SS         │  ← accent strip
+  //  │          {phaseLabel}                                   │
+  //  │          {subLabel}                                     │
+  //  └─────────────────────────────────────────────────────────┘
+  //
+  // For non-escalated tasks the accent strip is omitted and the card body
+  // shows the plain acceptance/completion countdown.
+  Widget _buildSlaBanner() {
+    final view = EscalationView.fromTask(_task);
 
-  Widget _buildEscalatedBanner() {
-    final esc         = EscalationInfo.fromTask(_task);
-    final role        = escalationRoleFromName(widget.userRole);
-    final accentStyle = EscalationVisibility.accentStyle(role);
-    final accentColor = EscalationDisplay.accentBarColor(accentStyle);
+    // Closed task with no chain → nothing to show.
+    if (view.phase == EscalationPhase.closed && !view.isEscalated) {
+      return const SizedBox.shrink();
+    }
+    // Non-escalated & no live countdown → hide.
+    if (!view.isEscalated && !view.hasCountdown) {
+      return const SizedBox.shrink();
+    }
 
-    final raw              = _task['raw'] as Map<String, dynamic>? ?? {};
-    final originalAssignee = (raw['original_assignee_name'] ??
-            _task['original_assignee'] ??
-            '').toString().trim();
+    final tokens = SlaTokens.forSeverity(view.severity);
+    final showStrip = view.isEscalated && view.currentLevel > 0;
 
     return Container(
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color:        accentColor.withValues(alpha: 0.06),
+        color:        tokens.bg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: accentColor.withValues(alpha: 0.35), width: 1.5),
+        border: Border.all(color: tokens.border, width: 1.2),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header strip: label + live countdown ────────────────────────
-          Container(
-            width:   double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
-            decoration: BoxDecoration(
-              color: accentColor,
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(13)),
-            ),
-            child: Row(children: [
-              const Icon(Icons.warning_amber_rounded,
-                  color: Colors.white, size: 14),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
-                  style: const TextStyle(
-                    color: Colors.white, fontSize: 11,
-                    fontWeight: FontWeight.w700, letterSpacing: 0.4,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+          // ── Accent strip: Level · Role + countdown (escalated only) ──
+          if (showStrip)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 14),
+              decoration: BoxDecoration(
+                color: tokens.fg,
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(13)),
               ),
-              const SizedBox(width: 8),
-              EscalationDisplay.countdownChip(esc),
-            ]),
-          ),
+              child: Row(children: [
+                const Icon(Icons.arrow_upward_rounded,
+                    color: Colors.white, size: 13),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    view.accentStripTitle,
+                    style: const TextStyle(
+                      color:      Colors.white,
+                      fontSize:   12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (view.hasCountdown)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color:        Colors.white.withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      view.countdownLabel,
+                      style: const TextStyle(
+                        color:        Colors.white,
+                        fontSize:     11,
+                        fontWeight:   FontWeight.w800,
+                        fontFamily:   'monospace',
+                      ),
+                    ),
+                  ),
+              ]),
+            ),
 
-          // ── Body: stage + SLA + detail rows ─────────────────────────────
+          // ── Body: phase label + sub-label (simple text, no ring) ──
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Stage pill + SLA label on the same row
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    if (esc.stageName != null && esc.stageName!.isNotEmpty) ...[
-                      EscalationDisplay.stagePill(esc.stageName!),
-                      const SizedBox(width: 10),
-                    ],
-                    Expanded(
-                      child: Text(
-                        esc.slaLabel,
-                        style: TextStyle(
-                          fontSize:   13,
-                          fontWeight: FontWeight.w700,
-                          color:      accentColor,
-                        ),
-                      ),
-                    ),
-                  ],
+                Text(
+                  view.phaseLabel,
+                  style: TextStyle(
+                    color:      tokens.fg,
+                    fontSize:   14,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-
-                // ── Info rows ────────────────────────────────────────────
-                const SizedBox(height: 10),
-
-                // Currently notified staff at this level
-                if (esc.notifiedSummary.isNotEmpty)
-                  _escalationInfoRow(
-                    Icons.notifications_active_outlined,
-                    'Notified',
-                    esc.notifiedSummary,
-                    AppColors.warning,
-                  ),
-
-                // Accepted at level
-                if (esc.acceptedAtLabel != null)
-                  _escalationInfoRow(
-                    Icons.check_circle_outline_rounded,
-                    'Accepted',
-                    esc.acceptedAtLabel!
-                        .replaceFirst('Accepted at: ', ''),
-                    AppColors.success,
-                  ),
-
-                // Original assignee (before any escalation)
-                if (originalAssignee.isNotEmpty)
-                  _escalationInfoRow(
-                    Icons.person_outline_rounded,
-                    'Originally',
-                    originalAssignee,
-                    AppColors.textSecondary,
-                  ),
-
-                // Latest reassignment
-                if (esc.reassignedToName != null &&
-                    esc.reassignedToName!.isNotEmpty) ...[
-                  _escalationInfoRow(
-                    Icons.swap_horiz_rounded,
-                    'Reassigned to',
-                    esc.reassignedToName!,
-                    AppColors.info,
-                  ),
-                  if (esc.reassignedByName != null &&
-                      esc.reassignedByName!.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 20, top: 1),
-                      child: Text(
-                        'by ${esc.reassignedByName}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color:    AppColors.textSecondary,
-                        ),
-                      ),
+                if (view.subLabel.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    view.subLabel,
+                    style: TextStyle(
+                      color:    tokens.fg.withOpacity(0.75),
+                      fontSize: 12,
                     ),
-                ],
-
-                // Closed by
-                if (esc.closedByName != null &&
-                    esc.closedByName!.isNotEmpty)
-                  _escalationInfoRow(
-                    Icons.lock_outline_rounded,
-                    'Closed by',
-                    esc.closedByName!,
-                    AppColors.success,
                   ),
+                ],
               ],
             ),
           ),
@@ -1381,142 +1280,204 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  /// Compact label + value row used inside the escalation banner body.
-  Widget _escalationInfoRow(
-      IconData icon, String label, String value, Color color) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 5),
-      child: Row(
+  // ── Escalation chain (compact + expandable) ───────────────────────────────
+  //
+  // Renders a breadcrumb: [ L0 Staff ] → [ L1 Supervisor ] → [ L2 GM (now) ]
+  // with a "Show details" toggle that reveals the escalated_at + acceptance /
+  // completion minutes per level.  When escalation_history is empty this
+  // returns SizedBox.shrink() and disappears completely.
+  bool _escalationChainExpanded = false;
+
+  Widget _buildEscalationChain() {
+    final view = EscalationView.fromTask(_task);
+    if (view.chain.isEmpty) return const SizedBox.shrink();
+
+    // Build compact breadcrumb text: "Staff suhas → Supervisor akshey → GM shrusti (current)"
+    final parts = <String>[];
+    final first = view.chain.first;
+    if (first.fromUserNames.isNotEmpty || (first.fromRoleName ?? '').isNotEmpty) {
+      final name = first.fromUserNames.isNotEmpty ? first.fromUserNames.first : '';
+      final role = first.fromRoleName ?? 'Staff';
+      parts.add(name.isNotEmpty ? '$role $name' : role);
+    }
+    for (final s in view.chain) {
+      final role = s.toRoleName ?? 'Level ${s.level}';
+      final name = s.toUserName ?? '';
+      final label = name.isNotEmpty ? '$role $name' : role;
+      parts.add(s.isCurrent && view.isEscalated ? '$label (current)' : label);
+    }
+    final breadcrumb = parts.join(' → ');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color:        Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 6),
-          Text(
-            '$label: ',
-            style: TextStyle(
-              fontSize:   12,
-              fontWeight: FontWeight.w600,
-              color:      color,
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontSize: 12,
-                color:    AppColors.textPrimary,
+          // Header row
+          Row(children: [
+            const Icon(Icons.route_rounded,
+                size: 15, color: AppColors.textSecondary),
+            const SizedBox(width: 6),
+            const Expanded(
+              child: Text(
+                'Escalation chain',
+                style: TextStyle(
+                  fontSize:   13,
+                  fontWeight: FontWeight.w700,
+                  color:      AppColors.textPrimary,
+                ),
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            ),
+            InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () => setState(
+                  () => _escalationChainExpanded = !_escalationChainExpanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 3),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(
+                    _escalationChainExpanded ? 'Hide' : 'Show details',
+                    style: const TextStyle(
+                      fontSize:   11,
+                      fontWeight: FontWeight.w600,
+                      color:      AppColors.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Icon(
+                    _escalationChainExpanded
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size:  14,
+                    color: AppColors.primary,
+                  ),
+                ]),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+
+          // Compact breadcrumb text
+          Text(
+            breadcrumb,
+            style: const TextStyle(
+              fontSize: 12,
+              color:    AppColors.textSecondary,
+              height:   1.4,
             ),
           ),
+
+          // Expanded detail rows
+          if (_escalationChainExpanded) ...[
+            const SizedBox(height: 10),
+            const Divider(height: 1, color: AppColors.borderLight),
+            const SizedBox(height: 8),
+            ...view.chain.map(_buildChainDetailRow),
+          ],
         ],
       ),
     );
   }
 
-  // ── Resolution SLA Banner ─────────────────────────────────────────────────
-  // Shown for In Progress tasks. Uses EscalationInfo for consistent
-  // countdown math — same source of truth as the list card.
-
-  Widget _buildResolutionSlaBanner() {
-    final status = (_task['status'] ?? 'Open').toString();
-    if (status.toLowerCase() != 'in progress') return const SizedBox.shrink();
-
-    final esc = EscalationInfo.fromTask(_task);
-    if (!esc.hasCountdown) return const SizedBox.shrink();
-
-    // Rebuild every second via the parent's periodic setState
-    final isOverdue  = esc.isOverdue;
-    final isWarning  = esc.isWarning;
-
-    final Color bgColor = isOverdue
-        ? AppColors.errorLight
-        : (isWarning ? AppColors.warningLight : AppColors.primaryLight);
-    final Color borderColor = isOverdue
-        ? AppColors.error.withValues(alpha: 0.4)
-        : (isWarning
-            ? AppColors.warning.withValues(alpha: 0.5)
-            : AppColors.primary.withValues(alpha: 0.3));
-    final Color fgColor = isOverdue
-        ? AppColors.error
-        : (isWarning ? AppColors.warning : AppColors.primary);
-    final IconData icon = isOverdue
-        ? Icons.timer_off_outlined
-        : (isWarning ? Icons.bolt_rounded : Icons.timer_outlined);
-
-    final String headline = isOverdue
-        ? 'Resolution Overdue  (+${esc.countdownLabel})'
-        : (isWarning
-            ? 'Critical — Close Within  ${esc.countdownLabel}'
-            : 'SLA Countdown  ${esc.countdownLabel}');
-    final String subtext = isOverdue
-        ? 'Task sits unclosed past SLA deadline. Supervisor has been notified.'
-        : (isWarning
-            ? 'Must be closed immediately to prevent further escalation.'
-            : 'Staff accepted task. Resolution SLA clock is active.');
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color:        bgColor,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: borderColor, width: 1.5),
-      ),
-      child: Row(children: [
-        Container(
-          padding: const EdgeInsets.all(9),
-          decoration: BoxDecoration(
-            color:  fgColor.withValues(alpha: 0.12),
-            shape:  BoxShape.circle,
-          ),
-          child: Icon(icon, color: fgColor, size: 20),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                headline,
+  Widget _buildChainDetailRow(EscalationChainStep step) {
+    final stamp = step.escalatedAt == null
+        ? '—'
+        : DateFormatter.formatDateTimeAmPm(step.escalatedAt!.toLocal().toString());
+    final acc = step.acceptanceMinutes;
+    final comp = step.completionMinutes;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color:        step.isCurrent
+                    ? AppColors.errorLight
+                    : AppColors.primaryLight,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                'L${step.level}',
                 style: TextStyle(
-                  color:      fgColor,
+                  fontSize:   10,
+                  fontWeight: FontWeight.w800,
+                  color:      step.isCurrent
+                      ? AppColors.error
+                      : AppColors.primary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                step.toLabel,
+                style: const TextStyle(
+                  fontSize:   12,
                   fontWeight: FontWeight.w700,
-                  fontSize:   13,
+                  color:      AppColors.textPrimary,
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                subtext,
-                style: TextStyle(
-                  color:    fgColor.withValues(alpha: 0.8),
-                  fontSize: 12,
-                  height:   1.35,
+            ),
+            Text(
+              stamp,
+              style: const TextStyle(
+                fontSize: 11,
+                color:    AppColors.textSecondary,
+              ),
+            ),
+          ]),
+          if (step.fromLabel.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 4),
+              child: Text(
+                'from ${step.fromLabel}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color:    AppColors.textSecondary,
                 ),
               ),
-            ],
-          ),
-        ),
-      ]),
+            ),
+          if (acc != null || comp != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 4),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  if (acc != null)
+                    Text(
+                      'Accept ${acc}m',
+                      style: const TextStyle(
+                        fontSize:   10,
+                        fontWeight: FontWeight.w600,
+                        color:      AppColors.textSecondary,
+                      ),
+                    ),
+                  if (comp != null)
+                    Text(
+                      'Complete ${comp}m',
+                      style: const TextStyle(
+                        fontSize:   10,
+                        fontWeight: FontWeight.w600,
+                        color:      AppColors.textSecondary,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
-  }
-
-  // ── UTC-aware timestamp parser for SLA banner ────────────────────────────
-  // Converts MySQL UTC timestamps to local time for accurate countdown.
-
-  DateTime? _parseUtcTimestamp(dynamic value) {
-    if (value == null) return null;
-    final text = value.toString().trim();
-    if (text.isEmpty || text == 'null') return null;
-    try {
-      String s = text.replaceFirst(' ', 'T');
-      if (s.endsWith('Z')) s = s.substring(0, s.length - 1);
-      final dt = DateTime.parse(s);
-      // Convert UTC to local time
-      return dt.toLocal();
-    } catch (_) {
-      return null;
-    }
   }
 
   DateTime? _parseTaskTimestamp(dynamic value) {
@@ -1532,52 +1493,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   int? _parseTaskInt(dynamic value) =>
       value == null ? null : int.tryParse(value.toString());
 
-  /// Resolution SLA is based on accepted_at + escalation_time_minutes, so it
-  /// remains visible even before the escalation engine creates an alert.
-  /// Uses UTC-to-local conversion for accurate remaining time.
-  Widget _buildServiceSlaBanner() {
-    final raw = _task['raw'] as Map? ?? const {};
-    final status = (_task['status'] ?? raw['status'] ?? '').toString().toLowerCase();
-    final acceptedAt = _parseUtcTimestamp(_task['accepted_at'] ?? raw['accepted_at']);
-    final totalMinutes = _parseTaskInt(
-        _task['escalation_time_minutes'] ?? raw['escalation_time_minutes']);
-    if (status != 'in progress' || acceptedAt == null || totalMinutes == null || totalMinutes <= 0) {
-      return const SizedBox.shrink();
-    }
-
-    final remaining = acceptedAt.add(Duration(minutes: totalMinutes)).difference(DateTime.now());
-    final overdue = remaining.isNegative;
-    final seconds = remaining.abs().inSeconds;
-    final fraction = overdue ? 0.0 : (seconds / (totalMinutes * 60)).clamp(0.0, 1.0);
-    final color = overdue || fraction < 0.10
-        ? AppColors.error
-        : fraction <= 0.30 ? AppColors.warning : AppColors.success;
-    final label = overdue ? '${seconds ~/ 60} min overdue' : '${seconds ~/ 60} min remaining';
-    final state = overdue ? 'SLA breach' : fraction <= 0.30 ? 'Nearing SLA' : 'On track';
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: 0.30)),
-      ),
-      child: Row(children: [
-        SizedBox(height: 48, width: 48, child: Stack(alignment: Alignment.center, children: [
-          CircularProgressIndicator(value: fraction, strokeWidth: 5, color: color,
-              backgroundColor: color.withValues(alpha: 0.15)),
-          Icon(overdue ? Icons.timer_off_outlined : Icons.timer_outlined, color: color, size: 20),
-        ])),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 14)),
-          const SizedBox(height: 2),
-          Text(state, style: TextStyle(color: color.withValues(alpha: 0.85), fontSize: 12)),
-        ])),
-      ]),
-    );
-  }
-
   Widget _buildStatusTimeline() {
     final raw = _task['raw'] as Map? ?? const {};
     final created = _parseTaskTimestamp(_task['created_at'] ?? raw['created_at'] ?? raw['timestamp']);
@@ -1590,20 +1505,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
     final closedByName = (raw['closed_by_user_name'] ?? '').toString().trim();
 
-    // ── Escalation info (used only for context; the step is removed) ──────
-    final esc = EscalationInfo.fromTask(_task);
-    final escalatedAt = _parseTaskTimestamp(raw['escalated_at'] ?? _task['escalated_at']);
-    // Derive stage and level info (not used in timeline anymore, but kept for
-    // potential future use)
-    // final escStageLabel = esc.stageName?.isNotEmpty == true
-    //     ? esc.stageName!
-    //     : (esc.stageLevel != null ? 'Level ${esc.stageLevel}' : null);
-    // final escFromRole = (raw['escalation_from_role_name'] ?? '').toString().trim();
-    // final escToRole   = (raw['escalation_to_role_name']   ?? '').toString().trim();
-    // final escDetail   = [
-    //   if (escFromRole.isNotEmpty) 'from $escFromRole',
-    //   if (escToRole.isNotEmpty)   'to $escToRole',
-    // ].join(' → ');
+    // Parse escalation history from API response
+    final escalationHistory = _parseEscalationHistory();
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
@@ -1625,12 +1528,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 ? 'took ${_timelineDuration(created, accepted)}${acceptedByName.isNotEmpty ? ' by $acceptedByName' : ''}'
                 : acceptedByName.isNotEmpty ? 'by $acceptedByName' : null,
             color: AppColors.success),
-        _timelineEntry('Assigned / Reassigned', assigned, done: assigned != null,
-            detail: assigned == null 
-                ? 'Not reassigned' 
-                : assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
-            color: AppColors.info),
-        // ── Escalation step REMOVED — the escalation banner already shows it ──
+        // Only show reassignment when it actually happened
+        if (assigned != null)
+          _timelineEntry('Reassigned', assigned, done: true,
+              detail: assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
+              color: AppColors.info),
+        
+        // ── Single expandable escalation entry if history exists ──
+        if (escalationHistory.isNotEmpty) 
+          _timelineEscalationEntry(escalationHistory),
+        
         _timelineEntry('Completed', closed, done: _isClosed || closed != null,
             detail: closed == null 
                 ? (_isClosed ? 'Closed' : 'Pending') 
@@ -1638,6 +1545,91 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             color: AppColors.success, last: true),
       ]),
     );
+  }
+
+  /// Parse escalation history from the API response and return timeline entries
+  List<Map<String, dynamic>> _parseEscalationHistory() {
+    final raw = _task['raw'] as Map? ?? const {};
+    final escalationHistoryRaw = raw['escalation_history'] ?? _task['escalation_history'];
+    
+    if (escalationHistoryRaw == null) return [];
+    
+    List escalationList = [];
+    
+    // Handle both JSON string and parsed list formats
+    if (escalationHistoryRaw is String) {
+      if (escalationHistoryRaw.trim().isEmpty || escalationHistoryRaw == '[]') return [];
+      try {
+        escalationList = jsonDecode(escalationHistoryRaw) as List;
+      } catch (e) {
+        print('Error parsing escalation history: $e');
+        return [];
+      }
+    } else if (escalationHistoryRaw is List) {
+      escalationList = escalationHistoryRaw;
+    }
+    
+    if (escalationList.isEmpty) return [];
+    
+    List<Map<String, dynamic>> entries = [];
+    
+    for (final escalation in escalationList) {
+      if (escalation is! Map) continue;
+      
+      final level = escalation['level'];
+      final escalatedAt = _parseTaskTimestamp(escalation['escalated_at']);
+      final toUser = escalation['to_user'] as Map?;
+      final fromUsers = escalation['from_users'] as List?;
+      
+      if (escalatedAt == null) continue;
+      
+      // Build the escalation label and detail
+      String label = 'Escalated to Level $level';
+      String detail = DateFormatter.formatDateTimeOnlyAmPm(escalatedAt);
+      
+      if (toUser != null) {
+        final toUserName = toUser['user_name']?.toString() ?? '';
+        final toRoleName = toUser['role_name']?.toString() ?? '';
+        
+        if (toUserName.isNotEmpty && toRoleName.isNotEmpty) {
+          detail += '  •  $toUserName ($toRoleName)';
+        } else if (toRoleName.isNotEmpty) {
+          detail += '  •  $toRoleName';
+        }
+      }
+      
+      // Add from users information if available
+      if (fromUsers != null && fromUsers.isNotEmpty) {
+        final fromNames = fromUsers
+            .where((user) => user is Map && user['user_name'] != null)
+            .map((user) => user['user_name'].toString())
+            .where((name) => name.isNotEmpty)
+            .take(2) // Limit to avoid UI overflow
+            .join(', ');
+        
+        if (fromNames.isNotEmpty) {
+          detail += '\nFrom: $fromNames';
+        }
+      }
+      
+      entries.add({
+        'label': label,
+        'time': escalatedAt,
+        'detail': detail,
+      });
+    }
+    
+    // Sort by escalation time to ensure correct chronological order
+    entries.sort((a, b) {
+      final timeA = a['time'] as DateTime?;
+      final timeB = b['time'] as DateTime?;
+      if (timeA == null && timeB == null) return 0;
+      if (timeA == null) return 1;
+      if (timeB == null) return -1;
+      return timeA.compareTo(timeB);
+    });
+    
+    return entries;
   }
 
   String _timelineDuration(DateTime start, DateTime end) {
@@ -1698,6 +1690,108 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         ]),
       )),
     ]);
+  }
+
+  Widget _timelineEscalationEntry(List<Map<String, dynamic>> escalationHistory) {
+    if (escalationHistory.isEmpty) return const SizedBox.shrink();
+
+    final firstEscalation = escalationHistory.first;
+    final escalationCount = escalationHistory.length;
+    final label = escalationCount == 1 ? 'Escalated' : 'Escalated ($escalationCount times)';
+    final firstTime = firstEscalation['time'] as DateTime?;
+    final stamp = firstTime == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(firstTime);
+
+    return StatefulBuilder(
+      builder: (context, setState) {
+        bool isExpanded = false;
+        
+        return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(width: 24, child: Column(children: [
+            // Escalation node: red warning icon
+            Container(
+              width: 16, height: 16,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.error.withValues(alpha: 0.12),
+                border: Border.all(color: AppColors.error, width: 2),
+              ),
+              child: const Center(
+                child: Icon(Icons.warning, size: 10, color: AppColors.error),
+              ),
+            ),
+            Container(width: 2, height: 20, color: AppColors.borderLight),
+          ])),
+          
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const SizedBox(height: 2),
+            
+            // Main escalation row with expand/collapse
+            InkWell(
+              onTap: () => setState(() => isExpanded = !isExpanded),
+              child: Row(children: [
+                Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.error)),
+                const SizedBox(width: 8),
+                Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  size: 16,
+                  color: AppColors.error,
+                ),
+                const Spacer(),
+                Text(stamp, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              ]),
+            ),
+            
+            // Expandable detail section
+            if (isExpanded) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.error.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.error.withValues(alpha: 0.2)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: escalationHistory.map((escalation) {
+                    final time = escalation['time'] as DateTime?;
+                    final detail = escalation['detail'] as String? ?? '';
+                    final timeStamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
+                    
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 6, height: 6,
+                            margin: const EdgeInsets.only(top: 4),
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppColors.error,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(escalation['label']!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppColors.error)),
+                                Text('$timeStamp  •  $detail', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ])),
+        ]);
+      },
+    );
   }
   Widget _buildInfoCard() {
     final raw        = _task['raw'] as Map<String, dynamic>? ?? {};
@@ -1871,12 +1965,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                   color: AppColors.success),
             ],
 
-            if (escalationMins != null) ...[
-              const SizedBox(height: 8),
-              _detailRow(Icons.timer_outlined, 'Escalation SLA',
-                  '$escalationMins min',
-                  color: AppColors.warning),
-            ],
+            // Removed duplicate Escalation SLA display - this information is already shown in the SLA banner above
           ],
         ),
       ),
@@ -2266,9 +2355,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     // Accept button: show only if status is open AND user has isAccept permission.
     final showAccept = !_isClosed && isOpen && _canAccept;
 
-    // Take Over: only for escalated tasks in progress (existing logic).
-    final showTakeOver = _canTakeOver;
-
     // Reassign: show only if user has reassign permission AND is Supervisor+.
     final showReassign = !_isClosed && 
         _isSupervisorOrAbove(widget.userRole) && 
@@ -2279,7 +2365,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         (_isSupervisorOrAbove(widget.userRole) ||
             _assignedToId == _loggedInUserId);
 
-    if (!showAccept && !showTakeOver && !showReassign && !showClose) {
+    if (!showAccept && !showReassign && !showClose) {
       return const SizedBox.shrink();
     }
 
@@ -2295,28 +2381,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                     fontWeight: FontWeight.w700, fontSize: 14)),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFEF8C00),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(13)),
-              elevation: 0,
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-      ],
-
-      if (showTakeOver) ...[
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _isLoading ? null : _takeOver,
-            icon:  const Icon(Icons.person_add_rounded, size: 16),
-            label: const Text('Take Over',
-                style: TextStyle(
-                    fontWeight: FontWeight.w700, fontSize: 14)),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.error,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(

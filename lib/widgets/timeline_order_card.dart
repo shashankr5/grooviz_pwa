@@ -339,6 +339,34 @@ class TimelineOrderCard extends StatelessWidget {
                         ),
                       ),
                     ],
+
+                    // Escalation indicator
+                    if (_isEscalated(order)) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.amber.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.warning_amber_rounded, size: 13, color: Colors.amber.shade700),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Escalated',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.amber.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -347,5 +375,12 @@ class TimelineOrderCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  bool _isEscalated(Map<String, dynamic> order) {
+    if (order['isEscalated'] == true) return true;
+    final raw = order['raw'] as Map<String, dynamic>?;
+    if (raw != null && (raw['is_escalated'] == 1 || raw['is_escalated'] == true)) return true;
+    return false;
   }
 }

@@ -16,15 +16,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../services/task_service.dart';
-import '../services/task_alert_service.dart';
 import '../services/food_order_service.dart';
+import '../services/order_alert_service.dart';
+import '../services/task_alert_service.dart';
+import '../services/alert_reload_coordinator.dart';
+import '../services/notification_constants.dart';
 import '../utils/order_grouping.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/date_formatter.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
-import '../services/notification_handler.dart';
-import '../services/notification_constants.dart';
 import '../components/skeleton_loader.dart';
 
 // ── Shared veg helpers ────────────────────────────────────────────────────────
@@ -478,6 +479,9 @@ class _DeliveryPageState extends State<DeliveryPage>
       }
 
       AppSnackBar.show(context, 'Order accepted ✅');
+      
+      // Stop the delivery alert for this accepted order
+      await TaskAlertService.stopOneDeliveryAlert();
 
       // Optimistically move the card to Accepted tab
       setState(() {
@@ -545,12 +549,6 @@ class _DeliveryPageState extends State<DeliveryPage>
       var serviceResult = await TaskService().closeService(
         serviceRequestId: serviceRequestId,
       );
-      if (serviceResult['success'] != true && serviceResult['success'] != 1) {
-        serviceResult = await TaskService().updateServiceRequestStatus(
-          serviceRequestId: serviceRequestId,
-          status: 'CLOSED',
-        );
-      }
 
       if (!mounted) return;
 

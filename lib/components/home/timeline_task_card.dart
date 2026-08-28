@@ -1,5 +1,6 @@
 // components/home/timeline_task_card.dart
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_typography.dart';
@@ -131,6 +132,10 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     final accentStyle = EscalationVisibility.accentStyle(role);
     final esc         = EscalationInfo.fromTask(task);
 
+    // Determine if this is an ACTIVE escalated task (not closed)
+    final bool isActiveEscalated = isEscalated && 
+        statusStr.toLowerCase() != 'closed';
+
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
@@ -138,43 +143,16 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
-          border: isEscalated
+          border: isActiveEscalated
               ? EscalationDisplay.escalatedBorder()
               : Border.all(color: AppColors.border.withValues(alpha: 0.6)),
-          boxShadow: isEscalated
-              ? EscalationDisplay.escalatedShadow()
-              : [BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: Offset(0, 4))],
+          boxShadow: [BoxShadow(color: AppColors.shadow, blurRadius: 10, offset: Offset(0, 4))],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Escalation accent banner (only when escalated) ─────────────
-            if (isEscalated)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 14),
-                decoration: BoxDecoration(
-                  color: EscalationDisplay.accentBarColor(accentStyle),
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 12),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      EscalationDisplay.accentBarLabel(accentStyle, esc.stageName),
-                      style: const TextStyle(
-                        color: Colors.white, fontSize: 10,
-                        fontWeight: FontWeight.w700, letterSpacing: 0.4,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  EscalationDisplay.countdownChip(esc),
-                ]),
-              ),
+            // ── Escalation accent strip (only active escalated tasks) ─────
+            if (isActiveEscalated) _buildEscalationStrip(),
             Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -269,10 +247,6 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                               ),
                             ),
                           ),
-                          if (isEscalated) ...[
-                            const SizedBox(width: 6),
-                            EscalationDisplay.statusPill(),
-                          ],
                         ],
                       ),
                     ],
@@ -527,11 +501,9 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                       ],
                     ),
 
-                  // ── SLA Countdown using EscalationInfo ──────────────────
-                  // Only shown on In Progress tasks, using the same source
-                  // of truth as ticket details and other components.
-                  if (statusStr.toLowerCase() == 'in progress')
-                    _buildSlaCountdown(esc),
+                  // ── Removed duplicate SLA Countdown ──────────────────
+                  // SLA information is already displayed in the escalation banner above
+                  // to avoid showing duplicate countdown information
 
                   // Row 5: Quick Action Buttons — shown for all open/pending incoming tasks
                   if (statusStr.toLowerCase() == 'open' ||
@@ -621,60 +593,180 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
     );
   }
 
-  /// Countdown widget using EscalationInfo — consistent across all pages.
-  Widget _buildSlaCountdown(EscalationInfo esc) {
-    if (!esc.hasCountdown) return const SizedBox.shrink();
+  /// Build real SLA countdown based on API data
+  Widget _buildRealSlaCountdown(Map<String, dynamic> task) {
+    final slaInfo = _calculateRealSla(task);
+    if (slaInfo == null) return const SizedBox.shrink();
 
-    final isOverdue = esc.isOverdue;
-    final isWarning = esc.isWarning;
-    final Color slaColor = isOverdue
-        ? AppColors.error
-        : isWarning
-            ? AppColors.warning
-            : AppColors.success;
-
-    final String label;
-    if (isOverdue) {
-      final secs = esc.remainingSeconds.abs();
-      final mm = (secs ~/ 60).toString().padLeft(2, '0');
-      final ss = (secs % 60).toString().padLeft(2, '0');
-      label = '+$mm:$ss overdue';
-    } else {
-      final secs = esc.remainingSeconds;
-      final mm = (secs ~/ 60).toString().padLeft(2, '0');
-      final ss = (secs % 60).toString().padLeft(2, '0');
-      label = '$mm:$ss remaining';
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: slaColor.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: slaColor.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              isOverdue ? Icons.timer_off_outlined : Icons.timer_outlined,
-              size: 12,
-              color: slaColor,
-            ),
-            const SizedBox(width: 5),
-            Text(
-              'SLA  $label',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: slaColor,
-              ),
-            ),
-          ],
+    final seconds = slaInfo['remainingSeconds'] as int;
+    final isOverdue = seconds < 0;
+    final displaySeconds = seconds.abs();
+    
+    final mm = (displaySeconds ~/ 60).toString().padLeft(2, '0');
+    final ss = (displaySeconds % 60).toString().padLeft(2, '0');
+    
+    final text = isOverdue ? '+$mm:$ss' : '$mm:$ss';
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          fontFamily: 'monospace',
         ),
       ),
+    );
+  }
+
+  /// Calculate real SLA based on API response data
+  Map<String, dynamic>? _calculateRealSla(Map<String, dynamic> task) {
+    final status = (task['status'] ?? 'Open').toString().toLowerCase();
+    final createdAt = _parseTimestamp(task['created_at']);
+    final acceptedAt = _parseTimestamp(task['accepted_at']);
+    final escalationTimeMinutes = (task['escalation_time_minutes'] as num?)?.toInt();
+    
+    if (createdAt == null) return null;
+    
+    final now = DateTime.now();
+    
+    // Parse escalation history to get specific SLA minutes
+    final escalationHistory = _parseEscalationHistory(task);
+    
+    if (status == 'open' || (status == 'pending' && acceptedAt == null)) {
+      // ── ACCEPTANCE SLA: Time to accept the task ──
+      
+      // Try to get acceptance_time_minutes from escalation history first
+      int? acceptanceSlaMinutes;
+      for (final escalation in escalationHistory) {
+        final acceptanceMinutes = escalation['acceptance_time_minutes'] as int?;
+        if (acceptanceMinutes != null) {
+          acceptanceSlaMinutes = acceptanceMinutes;
+          break;
+        }
+      }
+      
+      // Fallback to escalation_time_minutes if no specific acceptance SLA
+      acceptanceSlaMinutes ??= escalationTimeMinutes;
+      
+      if (acceptanceSlaMinutes == null || acceptanceSlaMinutes <= 0) return null;
+      
+      final acceptanceDue = createdAt.add(Duration(minutes: acceptanceSlaMinutes));
+      final remainingSeconds = acceptanceDue.difference(now).inSeconds;
+      
+      return {
+        'type': 'acceptance',
+        'remainingSeconds': remainingSeconds,
+        'slaMinutes': acceptanceSlaMinutes,
+      };
+      
+    } else if (status == 'in progress' && acceptedAt != null) {
+      // ── COMPLETION SLA: Time to complete after acceptance ──
+      
+      // Try to get completion_time_minutes from escalation history
+      int? completionSlaMinutes;
+      for (final escalation in escalationHistory) {
+        final completionMinutes = escalation['completion_time_minutes'] as int?;
+        if (completionMinutes != null) {
+          completionSlaMinutes = completionMinutes;
+          break;
+        }
+      }
+      
+      // Fallback to escalation_time_minutes if no specific completion SLA
+      completionSlaMinutes ??= escalationTimeMinutes;
+      
+      if (completionSlaMinutes == null || completionSlaMinutes <= 0) return null;
+      
+      final completionDue = acceptedAt.add(Duration(minutes: completionSlaMinutes));
+      final remainingSeconds = completionDue.difference(now).inSeconds;
+      
+      return {
+        'type': 'completion',
+        'remainingSeconds': remainingSeconds,
+        'slaMinutes': completionSlaMinutes,
+      };
+    }
+    
+    return null;
+  }
+
+  /// Parse escalation history from API response
+  List<Map<String, dynamic>> _parseEscalationHistory(Map<String, dynamic> task) {
+    final escalationHistoryRaw = task['escalation_history'];
+    if (escalationHistoryRaw == null) return [];
+    
+    try {
+      List escalationList = [];
+      if (escalationHistoryRaw is String) {
+        if (escalationHistoryRaw.trim().isEmpty || escalationHistoryRaw == '[]') return [];
+        escalationList = jsonDecode(escalationHistoryRaw) as List;
+      } else if (escalationHistoryRaw is List) {
+        escalationList = escalationHistoryRaw;
+      }
+      
+      return escalationList.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (e) {
+      print('Error parsing escalation history: $e');
+      return [];
+    }
+  }
+
+  Widget _buildEscalationStrip() {
+    final view = EscalationView.fromTask(widget.task);
+    if (!view.isEscalated || view.phase == EscalationPhase.closed) {
+      return const SizedBox.shrink();
+    }
+
+    final tokens = SlaTokens.forSeverity(view.severity);
+    
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 14),
+      decoration: BoxDecoration(
+        color: tokens.fg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+      ),
+      child: Row(children: [
+        const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 12),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            view.accentStripTitle,
+            style: const TextStyle(
+              color: Colors.white, fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (view.hasCountdown) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              view.countdownLabel,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ],
+      ]),
     );
   }
 }

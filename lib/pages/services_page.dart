@@ -1,6 +1,7 @@
 // lib/pages/services_page.dart
 //
-// Services Page — displays all service department requests for the logged-in user.
+// Services Page — displays service department requests passed from parent.
+// No longer makes direct API calls to avoid duplication with home page.
 // Bifurcates rendering on is_from_order:
 //   0 → DirectRequestCard (text/chat style)
 //   1 → CatalogOrderCard  (invoice/booking style)
@@ -8,8 +9,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/service_request.dart';
-import '../services/task_service.dart';
-import '../services/profile_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import '../theme/app_spacing.dart';
@@ -49,17 +48,23 @@ extension _ServiceFilterLabel on ServiceFilter {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 class ServicesPage extends StatefulWidget {
-  const ServicesPage({super.key});
+  final List<ServiceRequest>? initialServices;
+  final void Function()? onRefreshRequested;
+  
+  const ServicesPage({
+    super.key,
+    this.initialServices,
+    this.onRefreshRequested,
+  });
 
   @override
   State<ServicesPage> createState() => ServicesPageState();
 }
 
 class ServicesPageState extends State<ServicesPage> {
-  final TaskService _service = TaskService();
-
+  // Remove TaskService since we're no longer making API calls
   List<ServiceRequest> _allServices = [];
-  bool _isLoading = true;
+  bool _isLoading = false; // Changed default to false since we'll get data from props
   String? _errorMessage;
   ServiceFilter _activeFilter = ServiceFilter.all;
 
@@ -80,39 +85,25 @@ class ServicesPageState extends State<ServicesPage> {
   @override
   void initState() {
     super.initState();
-    _loadServices();
+    // Initialize with passed data or empty list
+    if (widget.initialServices != null) {
+      _allServices = widget.initialServices!;
+    }
   }
 
-  Future<void> _loadServices() async {
-    final bool isRecoveringFromError = _errorMessage != null;
-
-    if (!mounted) return;
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
-    if (isRecoveringFromError) {
-      try {
-        await ProfileService().getProfile();
-      } catch (_) {}
+  // ── Data refresh callback ──────────────────────────────────────────────────
+  void _requestRefresh() {
+    if (widget.onRefreshRequested != null) {
+      widget.onRefreshRequested!();
     }
+  }
 
-    final result = await _service.getAllServices();
-
-    if (!mounted) return;
-
-    if (result['success'] == true) {
-      final raw = (result['services'] as List<dynamic>? ?? [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
+  // ── Method to update services from parent ──────────────────────────────────
+  void updateServices(List<ServiceRequest> newServices, {String? errorMessage}) {
+    if (mounted) {
       setState(() {
-        _allServices = raw.map(ServiceRequest.fromJson).toList();
-        _isLoading = false;
-      });
-    } else {
-      setState(() {
-        _errorMessage = result['message']?.toString() ?? 'Failed to load services';
+        _allServices = newServices;
+        _errorMessage = errorMessage;
         _isLoading = false;
       });
     }
@@ -177,7 +168,7 @@ class ServicesPageState extends State<ServicesPage> {
           task: _taskMap(req),
         ),
       ),
-    ).then((_) => _loadServices());
+    ).then((_) => _requestRefresh()); // Request refresh from parent instead
   }
 
   void _onTap(ServiceRequest req) {
@@ -188,7 +179,7 @@ class ServicesPageState extends State<ServicesPage> {
           task: _taskMap(req),
         ),
       ),
-    ).then((_) => _loadServices());
+    ).then((_) => _requestRefresh()); // Request refresh from parent instead
   }
 
   // ── Build ───────────────────────────────────────────────────────────────────
@@ -200,7 +191,7 @@ class ServicesPageState extends State<ServicesPage> {
       appBar: _buildAppBar(),
       body: RefreshIndicator(
         color: AppColors.primary,
-        onRefresh: _loadServices,
+        onRefresh: () async => _requestRefresh(), // Request refresh from parent
         child: _buildBody(),
       ),
     );
@@ -224,7 +215,7 @@ class ServicesPageState extends State<ServicesPage> {
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh, color: AppColors.primary),
-          onPressed: _loadServices,
+          onPressed: _requestRefresh, // Request refresh from parent
           tooltip: 'Refresh',
         ),
         const SizedBox(width: 4),
@@ -313,7 +304,7 @@ class ServicesPageState extends State<ServicesPage> {
             ),
             const SizedBox(height: AppSpacing.lg),
             ElevatedButton.icon(
-              onPressed: _loadServices,
+              onPressed: _requestRefresh, // Request refresh from parent
               icon: const Icon(Icons.refresh, size: 16),
               label: const Text('Retry'),
               style: ElevatedButton.styleFrom(

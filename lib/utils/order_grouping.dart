@@ -148,6 +148,9 @@ List<Map<String, dynamic>> groupFoodOrderRows(List apiOrders) {
         'etaLocked':    locked,
         'cancelReason': o['cancelReason'] ?? raw?['cancel_reason'] ?? '',
         'isVeg':        o['isVeg'] ?? raw?['is_veg'],
+        // Escalation fields (read-only display)
+        'isEscalated':       o['isEscalated'] == true || raw?['is_escalated'] == 1,
+        'escalationHistory': o['escalationHistory'] is List ? o['escalationHistory'] : [],
       };
     }
 

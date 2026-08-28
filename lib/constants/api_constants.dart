@@ -28,8 +28,7 @@ class ApiConstants {
   static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile1";
   static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_request_mobile1";
   static const String acceptServiceRequest = "$baseUrl/ScreenSync_accept_service_request_mobile1";
-  static const String acceptServiceOrder = "$baseUrl/ScreenSync_accept_service_order_mobile";
-  static const String updateServiceRequestStatus = "$baseUrl/ScreenSync_update_service_request_status_mobile";
+
 
   // ── Ticket Details ────────────────────────────────────────────
   static const String staffList            = "$baseUrl/ScreenSync_get_staff_list_mobile";

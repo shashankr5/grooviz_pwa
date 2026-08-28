@@ -229,8 +229,9 @@ class WebSocketService {
 
       if (type == 'SERVICE_TASK_ACCEPTED' || type == 'ACCEPTED') {
         TaskAlertService.stopEscalation();
-        TaskAlertService.resetServiceCount(0, reconcileAlert: true);
+        // FIX: Use same logic as FCM - reload from server instead of forcing count to 0
         TaskAlertService.notifyNewTask();
+        // Note: AlertReloadCoordinator will be triggered by notifyNewTask stream
         return;
       }
 
@@ -252,8 +253,9 @@ class WebSocketService {
       }
 
       if (type == 'DELIVERY_ACCEPTED' || type == 'DELIVERY_DELIVERED') {
-        TaskAlertService.resetDeliveryCount(0, reconcileAlert: true);
+        // FIX: Use same logic as FCM - reload from server instead of forcing count to 0
         TaskAlertService.notifyNewDelivery();
+        // Note: AlertReloadCoordinator will be triggered by notifyNewDelivery stream
         return;
       }
 
