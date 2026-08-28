@@ -498,6 +498,7 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        // Escalated pill removed — banner above already indicates escalation
                       ],
                     ),
 
@@ -747,25 +748,7 @@ class _TimelineTaskCardState extends State<TimelineTaskCard>
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        if (view.hasCountdown) ...[
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              view.countdownLabel,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
-        ],
+        // Countdown removed — keep banner clean
       ]),
     );
   }

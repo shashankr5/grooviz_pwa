@@ -616,7 +616,7 @@ class OrderHistoryDetailSheet extends StatelessWidget {
   }
 
   List<Map<String, dynamic>> _resolveEscalationHistory(Map<String, dynamic> order) {
-    // Try pre-parsed escalationHistory first
+    // Try pre-parsed escalationHistory first (already deduped by food_order_service)
     final parsed = order['escalationHistory'];
     if (parsed is List && parsed.isNotEmpty) {
       return parsed.cast<Map<String, dynamic>>();
@@ -636,14 +636,30 @@ class OrderHistoryDetailSheet extends StatelessWidget {
       } else {
         return [];
       }
-      return list.map<Map<String, dynamic>>((entry) {
+
+      // Deduplicate: stop once the same to_user repeats (max level hit)
+      final Set<String> seenToUsers = {};
+      final List<Map<String, dynamic>> result = [];
+
+      for (final entry in list) {
         final e = Map<String, dynamic>.from(entry);
+        final level = (e['level'] as num?)?.toInt() ?? 0;
+
         final toUser = e['to_user'] is Map ? Map<String, dynamic>.from(e['to_user']) : <String, dynamic>{};
+        final toUserId = toUser['user_id'];
+        final toKey = toUserId != null
+            ? 'uid_$toUserId'
+            : '${toUser['role_name'] ?? ''}_${toUser['user_name'] ?? ''}';
+
+        // If same target user seen before, max reached — stop
+        if (seenToUsers.contains(toKey)) break;
+        seenToUsers.add(toKey);
+
         final fromUsers = (e['from_users'] is List)
             ? (e['from_users'] as List).map((f) => Map<String, dynamic>.from(f)).toList()
             : <Map<String, dynamic>>[];
-        return {
-          'level': e['level'] ?? 0,
+        result.add({
+          'level': level,
           'toUser': {
             'userId': toUser['user_id'],
             'userName': toUser['user_name'] ?? '',
@@ -655,8 +671,10 @@ class OrderHistoryDetailSheet extends StatelessWidget {
             'roleName': f['role_name'] ?? '',
           }).toList(),
           'escalatedAt': e['escalated_at'] ?? '',
-        };
-      }).toList();
+        });
+      }
+
+      return result;
     } catch (_) {
       return [];
     }

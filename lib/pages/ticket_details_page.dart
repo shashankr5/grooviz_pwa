@@ -90,6 +90,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
   bool _isRefreshing = false;
 
+  // ── Expand/collapse state for escalation widgets ─────────────────────────
+  bool _escalationChainExpanded   = false;
+  bool _timelineEscalationExpanded = false;
+
   // ── Escalation permission flags ──────────────────────────────────────────
   // Loaded from UserSessionHelper (set by get_user_dept_details_mobile).
   bool _canAccept = false;
@@ -446,10 +450,14 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     // Stop service alerts when task is accepted or closed
     if (isAccept) {
       await TaskAlertService.stopOneServiceAlert();
-      TaskAlertService.resetServiceCount(0, reconcileAlert: true);
     } else if (isClose) {
       await TaskAlertService.stopOneServiceAlert();
     }
+
+    // Reload from server to reconcile real pending + escalation counts.
+    // Optimistic decrements alone cannot clear escalationActive if other
+    // escalated tasks still exist — only a server reload knows the true count.
+    await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
 
     // ── Optimistic UI update from SP STATUS[0] response ─────────────────
     final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
@@ -480,6 +488,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           raw['status']                 = 'IN_PROGRESS';
           raw['accepted_by_user_name']  = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
           raw['accepted_at']             = result['accepted_at'] ?? raw['accepted_at'];
+          // Also update assigned_to_name and _task['assignedTo'] so display updates immediately
+          raw['assigned_to_name']        = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          _task['assignedTo']            = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
           _task['accepted_at']             = result['accepted_at'] ?? _task['accepted_at'];
           raw['escalation_status']      = escStatus;
           raw['next_escalation_at']     = nextEscalationAt;
@@ -843,6 +854,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                                         }
                                         await TaskAlertService.stopEscalation();
                                         await TaskAlertService.stopOneServiceAlert();
+                                        // Reload to reconcile real escalation count after reassign
+                                        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
                                         final upd = (res['updatedTask']
                                                 as Map<String,
                                                     dynamic>?) ??
@@ -1021,7 +1034,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Widget build(BuildContext context) {
     final status    = (_task['status'] ?? 'Open').toString();
     final statusClr =
-        _isEscalated ? AppColors.error : AppColors.statusColor(status);
+        _isEscalated ? const Color(0xFFB45309) : AppColors.statusColor(status);
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -1051,12 +1064,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Single adaptive SLA + escalation banner.  Renders
-                  // nothing when the task is closed and no history exists.
-                  _buildSlaBanner(),
-
-                  // Compact escalation chain (only when there is history).
-                  _buildEscalationChain(),
+                  // Unified escalation banner + chain — single card
+                  _buildEscalationBannerWithChain(),
 
                   _buildInfoCard(),
 
@@ -1161,35 +1170,43 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     ),
   );
 }
-  // ── Adaptive SLA banner ───────────────────────────────────────────────────
+  // ── Unified Escalation Banner + Chain ───────────────────────────────────
   //
-  // Replaces the previous _buildEscalatedBanner + _buildServiceSlaBanner
-  // combination.  A single card whose severity (colour, icon, copy) is driven
-  // by EscalationView.severity — never shows two clocks or repeats "escalated"
-  // three times.
+  // Single card combining the accent strip, status line, breadcrumb,
+  // and expandable chain detail. Replaces the old two-card layout.
   //
-  //  ┌─────────────────────────────────────────────────────────┐
-  //  │  [icon]  Level 2 · General Manager        MM:SS         │  ← accent strip
-  //  │          {phaseLabel}                                   │
-  //  │          {subLabel}                                     │
-  //  └─────────────────────────────────────────────────────────┘
-  //
-  // For non-escalated tasks the accent strip is omitted and the card body
-  // shows the plain acceptance/completion countdown.
-  Widget _buildSlaBanner() {
+  // Non-escalated tasks with no chain → hidden entirely.
+  // Non-escalated tasks with countdown → no accent strip, just phase text.
+  Widget _buildEscalationBannerWithChain() {
     final view = EscalationView.fromTask(_task);
 
-    // Closed task with no chain → nothing to show.
-    if (view.phase == EscalationPhase.closed && !view.isEscalated) {
+    // Nothing to show for a cleanly closed, never-escalated task
+    if (view.phase == EscalationPhase.closed && !view.isEscalated && view.chain.isEmpty) {
       return const SizedBox.shrink();
     }
-    // Non-escalated & no live countdown → hide.
-    if (!view.isEscalated && !view.hasCountdown) {
+    if (!view.isEscalated && !view.hasCountdown && view.chain.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    final tokens = SlaTokens.forSeverity(view.severity);
+    final tokens   = SlaTokens.forSeverity(view.severity);
     final showStrip = view.isEscalated && view.currentLevel > 0;
+
+    // Build breadcrumb
+    final parts = <String>[];
+    final first = view.chain.isNotEmpty ? view.chain.first : null;
+    if (first != null && (first.fromUserNames.isNotEmpty || (first.fromRoleName ?? '').isNotEmpty)) {
+      final name = first.fromUserNames.isNotEmpty ? first.fromUserNames.first : '';
+      final role = first.fromRoleName ?? 'Staff';
+      parts.add(name.isNotEmpty ? '$role $name' : role);
+    }
+    for (final s in view.chain) {
+      final role  = s.toRoleName ?? 'Level ${s.level}';
+      final name  = s.toUserName ?? '';
+      final label = name.isNotEmpty ? '$role $name' : role;
+      parts.add(s.isCurrent && view.isEscalated ? '$label (current)' : label);
+    }
+    final breadcrumb = parts.join(' → ');
+    final hasChain   = view.chain.isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1201,76 +1218,166 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Accent strip: Level · Role + countdown (escalated only) ──
+          // ── Accent strip ─────────────────────────────────────────────────
           if (showStrip)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 14),
               decoration: BoxDecoration(
                 color: tokens.fg,
-                borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(13)),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(13)),
               ),
               child: Row(children: [
-                const Icon(Icons.arrow_upward_rounded,
-                    color: Colors.white, size: 13),
+                const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 13),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     view.accentStripTitle,
                     style: const TextStyle(
-                      color:      Colors.white,
-                      fontSize:   12,
-                      fontWeight: FontWeight.w700,
+                      color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (view.hasCountdown)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color:        Colors.white.withOpacity(0.18),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      view.countdownLabel,
-                      style: const TextStyle(
-                        color:        Colors.white,
-                        fontSize:     11,
-                        fontWeight:   FontWeight.w800,
-                        fontFamily:   'monospace',
-                      ),
-                    ),
-                  ),
               ]),
             ),
 
-          // ── Body: phase label + sub-label (simple text, no ring) ──
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // ── Phase status line ───────────────────────────────────────
                 Text(
-                  view.phaseLabel,
+                  view.isEscalated
+                      ? (view.phase == EscalationPhase.inProgress
+                          ? 'In Progress — awaiting resolution'
+                          : 'Awaiting acceptance')
+                      : (view.phase == EscalationPhase.inProgress ? 'In Progress' : 'Open'),
                   style: TextStyle(
-                    color:      tokens.fg,
-                    fontSize:   14,
-                    fontWeight: FontWeight.w700,
+                    color: tokens.fg, fontSize: 13, fontWeight: FontWeight.w700,
                   ),
                 ),
-                if (view.subLabel.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    view.subLabel,
-                    style: TextStyle(
-                      color:    tokens.fg.withOpacity(0.75),
-                      fontSize: 12,
+
+                // ── Breadcrumb + expand toggle ──────────────────────────────
+                if (hasChain) ...[
+                  const SizedBox(height: 8),
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Icon(Icons.route_rounded, size: 13,
+                        color: tokens.fg.withOpacity(0.6)),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        breadcrumb,
+                        style: TextStyle(
+                          fontSize: 12, color: tokens.fg.withOpacity(0.8), height: 1.4,
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 8),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => setState(() => _escalationChainExpanded = !_escalationChainExpanded),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Text(
+                            _escalationChainExpanded ? 'Hide' : 'Details',
+                            style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600,
+                              color: tokens.fg,
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            _escalationChainExpanded
+                                ? Icons.expand_less_rounded
+                                : Icons.expand_more_rounded,
+                            size: 14, color: tokens.fg,
+                          ),
+                        ]),
+                      ),
+                    ),
+                  ]),
+
+                  // ── Expanded chain detail rows ────────────────────────────
+                  if (_escalationChainExpanded) ...[
+                    const SizedBox(height: 10),
+                    Divider(height: 1, color: tokens.border),
+                    const SizedBox(height: 8),
+                    ...view.chain.map((step) {
+                      final stamp = step.escalatedAt == null
+                          ? '—'
+                          : DateFormatter.formatDateTimeAmPm(
+                              step.escalatedAt!.toLocal().toString());
+                      final acc  = step.acceptanceMinutes;
+                      final comp = step.completionMinutes;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: step.isCurrent
+                                      ? tokens.fg.withOpacity(0.15)
+                                      : tokens.bg,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: tokens.border),
+                                ),
+                                child: Text(
+                                  'L${step.level}',
+                                  style: TextStyle(
+                                    fontSize: 10, fontWeight: FontWeight.w800,
+                                    color: tokens.fg,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  step.toLabel,
+                                  style: TextStyle(
+                                    fontSize: 12, fontWeight: FontWeight.w700,
+                                    color: tokens.fg.withOpacity(0.9),
+                                  ),
+                                ),
+                              ),
+                              Text(stamp,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: tokens.fg.withOpacity(0.6))),
+                            ]),
+                            if (step.fromLabel.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2, left: 4),
+                                child: Text('from ${step.fromLabel}',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: tokens.fg.withOpacity(0.6))),
+                              ),
+                            if (acc != null || comp != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2, left: 4),
+                                child: Wrap(spacing: 8, children: [
+                                  if (acc  != null) Text('Accept ${acc}m',
+                                      style: TextStyle(fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                          color: tokens.fg.withOpacity(0.65))),
+                                  if (comp != null) Text('Complete ${comp}m',
+                                      style: TextStyle(fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                          color: tokens.fg.withOpacity(0.65))),
+                                ]),
+                              ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
                 ],
               ],
             ),
@@ -1280,205 +1387,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  // ── Escalation chain (compact + expandable) ───────────────────────────────
-  //
-  // Renders a breadcrumb: [ L0 Staff ] → [ L1 Supervisor ] → [ L2 GM (now) ]
-  // with a "Show details" toggle that reveals the escalated_at + acceptance /
-  // completion minutes per level.  When escalation_history is empty this
-  // returns SizedBox.shrink() and disappears completely.
-  bool _escalationChainExpanded = false;
-
-  Widget _buildEscalationChain() {
-    final view = EscalationView.fromTask(_task);
-    if (view.chain.isEmpty) return const SizedBox.shrink();
-
-    // Build compact breadcrumb text: "Staff suhas → Supervisor akshey → GM shrusti (current)"
-    final parts = <String>[];
-    final first = view.chain.first;
-    if (first.fromUserNames.isNotEmpty || (first.fromRoleName ?? '').isNotEmpty) {
-      final name = first.fromUserNames.isNotEmpty ? first.fromUserNames.first : '';
-      final role = first.fromRoleName ?? 'Staff';
-      parts.add(name.isNotEmpty ? '$role $name' : role);
-    }
-    for (final s in view.chain) {
-      final role = s.toRoleName ?? 'Level ${s.level}';
-      final name = s.toUserName ?? '';
-      final label = name.isNotEmpty ? '$role $name' : role;
-      parts.add(s.isCurrent && view.isEscalated ? '$label (current)' : label);
-    }
-    final breadcrumb = parts.join(' → ');
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color:        Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.borderLight),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header row
-          Row(children: [
-            const Icon(Icons.route_rounded,
-                size: 15, color: AppColors.textSecondary),
-            const SizedBox(width: 6),
-            const Expanded(
-              child: Text(
-                'Escalation chain',
-                style: TextStyle(
-                  fontSize:   13,
-                  fontWeight: FontWeight.w700,
-                  color:      AppColors.textPrimary,
-                ),
-              ),
-            ),
-            InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () => setState(
-                  () => _escalationChainExpanded = !_escalationChainExpanded),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 3),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Text(
-                    _escalationChainExpanded ? 'Hide' : 'Show details',
-                    style: const TextStyle(
-                      fontSize:   11,
-                      fontWeight: FontWeight.w600,
-                      color:      AppColors.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 2),
-                  Icon(
-                    _escalationChainExpanded
-                        ? Icons.expand_less_rounded
-                        : Icons.expand_more_rounded,
-                    size:  14,
-                    color: AppColors.primary,
-                  ),
-                ]),
-              ),
-            ),
-          ]),
-          const SizedBox(height: 8),
-
-          // Compact breadcrumb text
-          Text(
-            breadcrumb,
-            style: const TextStyle(
-              fontSize: 12,
-              color:    AppColors.textSecondary,
-              height:   1.4,
-            ),
-          ),
-
-          // Expanded detail rows
-          if (_escalationChainExpanded) ...[
-            const SizedBox(height: 10),
-            const Divider(height: 1, color: AppColors.borderLight),
-            const SizedBox(height: 8),
-            ...view.chain.map(_buildChainDetailRow),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChainDetailRow(EscalationChainStep step) {
-    final stamp = step.escalatedAt == null
-        ? '—'
-        : DateFormatter.formatDateTimeAmPm(step.escalatedAt!.toLocal().toString());
-    final acc = step.acceptanceMinutes;
-    final comp = step.completionMinutes;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color:        step.isCurrent
-                    ? AppColors.errorLight
-                    : AppColors.primaryLight,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                'L${step.level}',
-                style: TextStyle(
-                  fontSize:   10,
-                  fontWeight: FontWeight.w800,
-                  color:      step.isCurrent
-                      ? AppColors.error
-                      : AppColors.primary,
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                step.toLabel,
-                style: const TextStyle(
-                  fontSize:   12,
-                  fontWeight: FontWeight.w700,
-                  color:      AppColors.textPrimary,
-                ),
-              ),
-            ),
-            Text(
-              stamp,
-              style: const TextStyle(
-                fontSize: 11,
-                color:    AppColors.textSecondary,
-              ),
-            ),
-          ]),
-          if (step.fromLabel.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 2, left: 4),
-              child: Text(
-                'from ${step.fromLabel}',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color:    AppColors.textSecondary,
-                ),
-              ),
-            ),
-          if (acc != null || comp != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 2, left: 4),
-              child: Wrap(
-                spacing: 8,
-                children: [
-                  if (acc != null)
-                    Text(
-                      'Accept ${acc}m',
-                      style: const TextStyle(
-                        fontSize:   10,
-                        fontWeight: FontWeight.w600,
-                        color:      AppColors.textSecondary,
-                      ),
-                    ),
-                  if (comp != null)
-                    Text(
-                      'Complete ${comp}m',
-                      style: const TextStyle(
-                        fontSize:   10,
-                        fontWeight: FontWeight.w600,
-                        color:      AppColors.textSecondary,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+  // ── (old _buildSlaBanner and _buildEscalationChain replaced by above) ──────
 
   DateTime? _parseTaskTimestamp(dynamic value) {
     if (value == null) return null;
@@ -1573,12 +1482,30 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     
     List<Map<String, dynamic>> entries = [];
     
+    // Deduplicate: stop once the same to_user repeats (max level reached).
+    // The cron keeps re-escalating with incrementing level numbers to the
+    // same person — we show it only once and stop there.
+    final Set<String> seenToUsers = {};
+    
     for (final escalation in escalationList) {
       if (escalation is! Map) continue;
       
-      final level = escalation['level'];
-      final escalatedAt = _parseTaskTimestamp(escalation['escalated_at']);
+      final level = (escalation['level'] as num?)?.toInt() ?? 0;
       final toUser = escalation['to_user'] as Map?;
+      
+      // Build a dedup key from to_user
+      final toUserId = toUser?['user_id'];
+      final toUserName = toUser?['user_name']?.toString() ?? '';
+      final toRoleName = toUser?['role_name']?.toString() ?? '';
+      final toKey = toUserId != null
+          ? 'uid_$toUserId'
+          : '${toRoleName}_$toUserName';
+      
+      // If same target user seen before, we've hit max — stop entirely
+      if (seenToUsers.contains(toKey)) break;
+      seenToUsers.add(toKey);
+      
+      final escalatedAt = _parseTaskTimestamp(escalation['escalated_at']);
       final fromUsers = escalation['from_users'] as List?;
       
       if (escalatedAt == null) continue;
@@ -1641,21 +1568,21 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     required bool done, required Color color, String? detail, bool last = false,
     bool isEscalation = false,
   }) {
+    const Color escColor = Color(0xFFB45309); // amber-700 — consistent with escalation theme
     final activeColor = done ? color : AppColors.textDisabled;
     final stamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       SizedBox(width: 24, child: Column(children: [
-        // Escalation node: coloured ring with a small warning icon inside
         if (isEscalation)
           Container(
             width: 16, height: 16,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: AppColors.error.withValues(alpha: 0.12),
-              border: Border.all(color: AppColors.error, width: 2),
+              color: const Color(0xFFFEF3C7), // amber-50
+              border: Border.all(color: const Color(0xFFF59E0B), width: 2), // amber-400
             ),
             child: const Center(
-              child: Icon(Icons.warning_amber_rounded, size: 9, color: AppColors.error),
+              child: Icon(Icons.warning_amber_rounded, size: 9, color: escColor),
             ),
           )
         else
@@ -1674,7 +1601,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             fontSize: 13,
             fontWeight: FontWeight.w700,
             color: isEscalation
-                ? AppColors.error
+                ? escColor
                 : (done ? AppColors.textPrimary : AppColors.textSecondary),
           )),
           const SizedBox(height: 2),
@@ -1683,7 +1610,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
             style: TextStyle(
               fontSize: 12,
               color: isEscalation
-                  ? AppColors.error.withValues(alpha: 0.75)
+                  ? escColor.withValues(alpha: 0.75)
                   : (done ? AppColors.textSecondary : AppColors.textDisabled),
             ),
           ),
@@ -1701,97 +1628,88 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final firstTime = firstEscalation['time'] as DateTime?;
     final stamp = firstTime == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(firstTime);
 
-    return StatefulBuilder(
-      builder: (context, setState) {
-        bool isExpanded = false;
-        
-        return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          SizedBox(width: 24, child: Column(children: [
-            // Escalation node: red warning icon
-            Container(
-              width: 16, height: 16,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.error.withValues(alpha: 0.12),
-                border: Border.all(color: AppColors.error, width: 2),
-              ),
-              child: const Center(
-                child: Icon(Icons.warning, size: 10, color: AppColors.error),
-              ),
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(width: 24, child: Column(children: [
+        // Escalation node: warning icon in muted amber (less aggressive than full red)
+        Container(
+          width: 16, height: 16,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.amber.shade100,
+            border: Border.all(color: Colors.amber.shade600, width: 2),
+          ),
+          child: Center(
+            child: Icon(Icons.warning_amber_rounded, size: 9, color: Colors.amber.shade700),
+          ),
+        ),
+        Container(width: 2, height: 20, color: AppColors.borderLight),
+      ])),
+
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const SizedBox(height: 2),
+
+        // Main escalation row with expand/collapse — uses page setState so
+        // the expanded state survives the per-second ticker rebuild
+        InkWell(
+          onTap: () => setState(() => _timelineEscalationExpanded = !_timelineEscalationExpanded),
+          child: Row(children: [
+            Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                color: Colors.amber.shade800)),
+            const SizedBox(width: 8),
+            Icon(
+              _timelineEscalationExpanded ? Icons.expand_less : Icons.expand_more,
+              size: 16, color: Colors.amber.shade700,
             ),
-            Container(width: 2, height: 20, color: AppColors.borderLight),
-          ])),
-          
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const SizedBox(height: 2),
-            
-            // Main escalation row with expand/collapse
-            InkWell(
-              onTap: () => setState(() => isExpanded = !isExpanded),
-              child: Row(children: [
-                Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.error)),
-                const SizedBox(width: 8),
-                Icon(
-                  isExpanded ? Icons.expand_less : Icons.expand_more,
-                  size: 16,
-                  color: AppColors.error,
-                ),
-                const Spacer(),
-                Text(stamp, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-              ]),
+            const Spacer(),
+            Text(stamp, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          ]),
+        ),
+
+        // Expandable detail section
+        if (_timelineEscalationExpanded) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.amber.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.shade200),
             ),
-            
-            // Expandable detail section
-            if (isExpanded) ...[
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.error.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.error.withValues(alpha: 0.2)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: escalationHistory.map((escalation) {
-                    final time = escalation['time'] as DateTime?;
-                    final detail = escalation['detail'] as String? ?? '';
-                    final timeStamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
-                    
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            width: 6, height: 6,
-                            margin: const EdgeInsets.only(top: 4),
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.error,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(escalation['label']!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppColors.error)),
-                                Text('$timeStamp  •  $detail', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                              ],
-                            ),
-                          ),
-                        ],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: escalationHistory.map((escalation) {
+                final time = escalation['time'] as DateTime?;
+                final detail = escalation['detail'] as String? ?? '';
+                final timeStamp = time == null ? '--:--' : DateFormatter.formatDateTimeOnlyAmPm(time);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Container(
+                      width: 6, height: 6,
+                      margin: const EdgeInsets.only(top: 4),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.amber.shade700,
                       ),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ],
-          ])),
-        ]);
-      },
-    );
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(escalation['label']!,
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
+                                color: Colors.amber.shade900)),
+                        Text('$timeStamp  •  $detail',
+                            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                      ]),
+                    ),
+                  ]),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ])),
+    ]);
   }
   Widget _buildInfoCard() {
     final raw        = _task['raw'] as Map<String, dynamic>? ?? {};
@@ -1820,13 +1738,16 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final deptName       = (raw['department_name'] ?? '').toString();
     final escalationMins = raw['escalation_time_minutes'];
 
+    // Escalation accent color — muted deep orange, not full red
+    const Color escAccent   = Color(0xFFB45309); // amber-700
+    const Color escAccentBg = Color(0xFFFEF3C7); // amber-50
+
     return Container(
       decoration: BoxDecoration(
         color:        Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: _isEscalated
-            ? Border.all(
-                color: AppColors.error.withValues(alpha: 0.25), width: 1.2)
+            ? Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.45), width: 1.2)
             : null,
         boxShadow: [
           BoxShadow(
@@ -1847,7 +1768,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                     horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: _isEscalated
-                      ? AppColors.errorLight
+                      ? escAccentBg
                       : AppColors.warningLight,
                   borderRadius: BorderRadius.circular(10),
                 ),
@@ -1858,7 +1779,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                       style: TextStyle(
                           fontSize:   10,
                           color:      _isEscalated
-                              ? AppColors.error
+                              ? escAccent
                               : AppColors.warning,
                           fontWeight: FontWeight.w600)),
                   Text(room,
@@ -1866,7 +1787,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                           fontSize:   22,
                           fontWeight: FontWeight.bold,
                           color:      _isEscalated
-                              ? AppColors.error
+                              ? escAccent
                               : AppColors.warning,
                           height:     1.1)),
                 ]),

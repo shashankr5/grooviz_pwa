@@ -396,7 +396,7 @@ class EscalationDisplay {
   // ── Card border / shadow ──────────────────────────────────────────────────
 
   static Border escalatedBorder() =>
-      Border.all(color: AppColors.error.withOpacity(0.4), width: 1.5);
+      Border.all(color: const Color(0xFFF59E0B).withOpacity(0.5), width: 1.5);
 
   static List<BoxShadow> escalatedShadow() => [
         BoxShadow(
@@ -437,22 +437,22 @@ class EscalationDisplay {
   static Widget statusPill() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
         decoration: BoxDecoration(
-          color:        AppColors.errorLight,
+          color:        const Color(0xFFFEF3C7), // amber-50
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.error.withOpacity(0.3)),
+          border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.5)), // amber-400
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(
             width: 5,
             height: 5,
             decoration: const BoxDecoration(
-                color: AppColors.error, shape: BoxShape.circle),
+                color: Color(0xFFB45309), shape: BoxShape.circle), // amber-700
           ),
           const SizedBox(width: 5),
           const Text(
             'Escalated',
             style: TextStyle(
-              color:      AppColors.error,
+              color:      Color(0xFFB45309), // amber-700
               fontWeight: FontWeight.w700,
               fontSize:   11,
             ),
@@ -911,10 +911,16 @@ class EscalationView {
     if (list.isEmpty) return const [];
 
     final steps = <EscalationChainStep>[];
+    // Track to_user keys we've already seen. Once the same user at the same
+    // role appears again (max level reached, cron keeps re-escalating),
+    // stop adding entries.
+    final Set<String> seenToUsers = {};
+    
     for (int i = 0; i < list.length; i++) {
       final item = list[i];
       if (item is! Map) continue;
       final level = _parseInt(item['level']) ?? (i + 1);
+      
       final escalatedAt = _parseUtc(item['escalated_at']);
       final toUser = item['to_user'];
       final fromUsers = item['from_users'];
@@ -926,6 +932,16 @@ class EscalationView {
         toRoleName = _cleanString(toUser['role_name']);
         toRoleId   = _parseInt(toUser['role_id']);
       }
+
+      // Dedup: if this exact to_user (by user_id or name+role) was already
+      // escalated to, the system hit max. Stop here.
+      final toUserId = _parseInt(toUser is Map ? toUser['user_id'] : null);
+      final toKey = toUserId != null
+          ? 'uid_$toUserId'
+          : '${toRoleName ?? ''}_${toUserName ?? ''}';
+      if (seenToUsers.contains(toKey)) break; // max reached — stop entirely
+      seenToUsers.add(toKey);
+
       final List<String> fromNames = <String>[];
       String? fromRoleName;
       if (fromUsers is List) {
@@ -947,9 +963,26 @@ class EscalationView {
         fromRoleName:      fromRoleName,
         acceptanceMinutes: _parseInt(item['acceptance_time_minutes']),
         completionMinutes: _parseInt(item['completion_time_minutes']),
-        isCurrent:         i == list.length - 1,
+        isCurrent:         false, // will be set below
       ));
     }
+    
+    // Mark last step as current
+    if (steps.isNotEmpty) {
+      steps[steps.length - 1] = EscalationChainStep(
+        level:             steps.last.level,
+        escalatedAt:       steps.last.escalatedAt,
+        toUserName:        steps.last.toUserName,
+        toRoleName:        steps.last.toRoleName,
+        toRoleId:          steps.last.toRoleId,
+        fromUserNames:     steps.last.fromUserNames,
+        fromRoleName:      steps.last.fromRoleName,
+        acceptanceMinutes: steps.last.acceptanceMinutes,
+        completionMinutes: steps.last.completionMinutes,
+        isCurrent:         true,
+      );
+    }
+    
     return steps;
   }
 
@@ -1001,20 +1034,28 @@ class SlaTokens {
   final Color    border;
   final IconData icon;
 
+  // Escalation accent: deep orange instead of full red.
+  // Red is reserved for hard errors (network failures, auth errors).
+  // Escalation is urgent but not an error — deep orange signals
+  // "needs attention" without triggering alarm-fatigue from red overuse.
+  static const Color _escalationFg     = Color(0xFFB45309); // amber-700
+  static const Color _escalationBg     = Color(0xFFFEF3C7); // amber-50
+  static const Color _escalationBorder = Color(0xFFF59E0B); // amber-400
+
   static SlaTokens forSeverity(SlaSeverity s) {
     switch (s) {
       case SlaSeverity.overdue:
-        return SlaTokens(
-          fg:     AppColors.error,
-          bg:     AppColors.errorLight,
-          border: AppColors.error.withOpacity(0.35),
+        return const SlaTokens(
+          fg:     Color(0xFFC2410C), // orange-700 — slightly more urgent than escalated
+          bg:     Color(0xFFFFF7ED), // orange-50
+          border: Color(0xFFEA580C), // orange-600
           icon:   Icons.timer_off_outlined,
         );
       case SlaSeverity.escalated:
-        return SlaTokens(
-          fg:     AppColors.error,
-          bg:     AppColors.errorLight,
-          border: AppColors.error.withOpacity(0.30),
+        return const SlaTokens(
+          fg:     _escalationFg,
+          bg:     _escalationBg,
+          border: _escalationBorder,
           icon:   Icons.arrow_upward_rounded,
         );
       case SlaSeverity.warning:

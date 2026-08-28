@@ -2757,27 +2757,21 @@ class TasksPageState extends State<TasksPage> {
   // and all bottom sheets. Uses _resolveTitle() so question is shown
   // when task_name is empty.
   Widget _buildActivityRow(Map<String, dynamic> task) {
+    final raw = task['raw'] as Map<String, dynamic>? ?? task;
+
     final isEsc = (task['is_escalated'] == 1 ||
         task['is_escalated'] == true ||
         task['task_flag'] == 'Escalated' ||
         task['escalation_instance_id'] != null ||
         task['escalation_status'] != null);
-    final status = (task['status'] ??
-            task['task_flag'] ??
-            'Open')
-        .toString();
-    final stageName = (task['current_stage_name'] ?? task['stage_name'] ?? '').toString();
-    final escLevel = task['escalation_level_reached'] ?? task['escalation_level'];
 
-    final displayStatus = isEsc
-        ? (stageName.isNotEmpty ? stageName : (escLevel != null ? 'Level $escLevel' : 'Escalated'))
-        : status;
+    final status = (task['status'] ?? task['task_flag'] ?? 'Open').toString();
 
     Color statusColor;
     Color statusBg;
     if (isEsc) {
-      statusColor = AppColors.error;
-      statusBg    = AppColors.errorLight;
+      statusColor = Colors.amber.shade800;
+      statusBg    = Colors.amber.shade50;
     } else if (status == 'Closed') {
       statusColor = AppColors.success;
       statusBg    = AppColors.successLight;
@@ -2789,81 +2783,85 @@ class TasksPageState extends State<TasksPage> {
       statusBg    = AppColors.primaryLight;
     }
 
-    final rawRoom = (task['room_number'] ??
-            task['room_id'] ??
-            task['room'] ??
-            '—')
-        .toString();
-    final room = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom.isEmpty) ? 'General' : rawRoom;
+    // Room
+    final rawRoom = (task['room_number'] ?? task['room'] ?? raw['room_number'] ?? '—').toString();
+    final room = (rawRoom == '0' || rawRoom == '000' || rawRoom == 'null' || rawRoom.isEmpty)
+        ? 'Gen'
+        : rawRoom;
 
-    // FIX 1: Use _resolveTitle() and strip #SRV prefix
+    // Title
     final rawTitle = _resolveTitle(task);
-    final title = rawTitle.replaceFirst(RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
-    final timeAgo = _timeAgo(
-        (task['created_at'] ?? task['time'] ?? '').toString());
+    final title = rawTitle.replaceFirst(
+        RegExp(r'^Order\s+#[A-Z0-9]+\s*-\s*', caseSensitive: false), '');
+
+    // Meta fields
+    final guest      = (task['guest'] ?? raw['guest_name'] ?? '').toString().trim();
+    final deptName   = (raw['department_name'] ?? task['department_name'] ?? '').toString().trim();
+    final timeAgo    = _timeAgo((task['created_at'] ?? raw['created_at'] ?? task['time'] ?? '').toString());
+
+    // Who handled it — show accepted_by if in-progress, closed_by if closed
+    String handledBy = '';
+    if (status == 'In Progress' || status == 'Closed') {
+      final acceptedBy  = (raw['accepted_by_user_name'] ?? task['assignedTo'] ?? '').toString().trim();
+      final closedBy    = (raw['closed_by_user_name'] ?? '').toString().trim();
+      if (status == 'Closed' && closedBy.isNotEmpty) {
+        handledBy = closedBy;
+      } else if (acceptedBy.isNotEmpty && acceptedBy != '-' && int.tryParse(acceptedBy) == null) {
+        handledBy = acceptedBy;
+      }
+    }
 
     final canTap = _isSupervisorOrAboveByName(_userRole);
 
-    // ── Escalation accent: wrap the row content in a red left-border container
-    // when the task is escalated so it matches the home page card treatment.
+    final accentColor = isEsc
+        ? Colors.amber.shade700
+        : (status == 'Closed'
+            ? AppColors.success
+            : (status == 'In Progress' ? AppColors.orange : AppColors.primary));
+
     Widget rowContent = Container(
       decoration: BoxDecoration(
+        color: Colors.white,
         border: Border(
-          left: BorderSide(
-            color: isEsc
-                ? AppColors.error
-                : (status == 'Closed'
-                    ? AppColors.success
-                    : (status == 'In Progress'
-                        ? AppColors.orange
-                        : AppColors.primary)),
-            width: 3,
-          ),
+          left: BorderSide(color: accentColor, width: 3),
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Escalation accent strip (top of row, only for escalated) ────
+          // Escalation strip — toned down amber, not full red
           if (isEsc)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-              color: AppColors.error.withValues(alpha: 0.07),
+              color: Colors.amber.shade50,
               child: Row(children: [
-                const Icon(Icons.warning_amber_rounded,
-                    size: 11, color: AppColors.error),
+                Icon(Icons.warning_amber_rounded, size: 11, color: Colors.amber.shade700),
                 const SizedBox(width: 5),
                 Expanded(
                   child: Text(
-                    stageName.isNotEmpty
-                        ? 'SLA BREACHED  ·  $stageName'
-                        : 'SLA BREACHED — ESCALATED',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.error,
-                      letterSpacing: 0.3,
+                    'SLA Escalated',
+                    style: TextStyle(
+                      fontSize: 10, fontWeight: FontWeight.w700,
+                      color: Colors.amber.shade800, letterSpacing: 0.3,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ]),
             ),
+
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
+            padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Room badge
                 Container(
-                  width: 40,
-                  height: 40,
+                  width: 38,
+                  height: 38,
                   decoration: BoxDecoration(
-                    color: isEsc
-                        ? AppColors.error.withValues(alpha: 0.1)
-                        : AppColors.primary.withValues(alpha: 0.08),
+                    color: accentColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   alignment: Alignment.center,
@@ -2871,88 +2869,121 @@ class TasksPageState extends State<TasksPage> {
                     room,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: isEsc ? AppColors.error : AppColors.primary,
+                      color: accentColor,
                       fontWeight: FontWeight.w800,
-                      fontSize: room.length > 4 ? 9.5 : 11,
+                      fontSize: room.length > 4 ? 9 : 11,
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
-                // Title + meta
+
+                // Main content column
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Title
                       Text(
                         title,
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                          color: isEsc ? AppColors.textPrimary : AppColors.textPrimary,
+                        style: const TextStyle(
+                          fontSize: 13.5, fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 3),
-                      Row(
-                        children: [
-                          if (timeAgo.isNotEmpty)
-                            Text(
-                              timeAgo,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textSecondary.withValues(alpha: 0.7),
-                              ),
-                            ),
-                          if (isEsc) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 5, vertical: 1.5),
-                              decoration: BoxDecoration(
-                                color: AppColors.error.withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                'SLA Breach',
-                                style: TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.error,
-                                ),
-                              ),
-                            ),
-                          ],
+                      const SizedBox(height: 4),
+
+                      // Meta row 1: guest + dept
+                      Row(children: [
+                        if (guest.isNotEmpty && guest != 'Unknown Guest') ...[
+                          const Icon(Icons.person_outline_rounded,
+                              size: 11, color: AppColors.textSecondary),
+                          const SizedBox(width: 3),
+                          Flexible(
+                            child: Text(guest,
+                                style: const TextStyle(
+                                    fontSize: 11, color: AppColors.textSecondary),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1),
+                          ),
+                          if (deptName.isNotEmpty) const SizedBox(width: 8),
                         ],
-                      ),
+                        if (deptName.isNotEmpty) ...[
+                          const Icon(Icons.business_outlined,
+                              size: 11, color: AppColors.textSecondary),
+                          const SizedBox(width: 3),
+                          Flexible(
+                            child: Text(deptName,
+                                style: const TextStyle(
+                                    fontSize: 11, color: AppColors.textSecondary),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1),
+                          ),
+                        ],
+                      ]),
+
+                      // Meta row 2: handled-by + time-ago
+                      if (handledBy.isNotEmpty || timeAgo.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Row(children: [
+                          if (handledBy.isNotEmpty) ...[
+                            Icon(
+                              status == 'Closed'
+                                  ? Icons.check_circle_outline_rounded
+                                  : Icons.badge_outlined,
+                              size: 11,
+                              color: statusColor,
+                            ),
+                            const SizedBox(width: 3),
+                            Flexible(
+                              child: Text(
+                                handledBy,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: statusColor,
+                                    fontWeight: FontWeight.w500),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            ),
+                            if (timeAgo.isNotEmpty) const SizedBox(width: 8),
+                          ],
+                          if (timeAgo.isNotEmpty)
+                            Text(timeAgo,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary.withValues(alpha: 0.6))),
+                        ]),
+                      ],
                     ],
                   ),
                 ),
+
                 const SizedBox(width: 8),
-                // Status pill
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusBg,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    displayStatus,
-                    style: TextStyle(
-                      color: statusColor,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11,
+                // Status pill + chevron
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusBg,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        status,
+                        style: TextStyle(
+                          color: statusColor, fontWeight: FontWeight.w700, fontSize: 11,
+                        ),
+                      ),
                     ),
-                  ),
+                    if (canTap) ...[
+                      const SizedBox(height: 4),
+                      Icon(Icons.chevron_right_rounded,
+                          size: 14, color: AppColors.textDisabled),
+                    ],
+                  ],
                 ),
-                if (canTap) ...[
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.chevron_right_rounded,
-                    size: 15,
-                    color: AppColors.textDisabled,
-                  ),
-                ],
               ],
             ),
           ),
@@ -2960,32 +2991,7 @@ class TasksPageState extends State<TasksPage> {
       ),
     );
 
-    // Wrap in an escalation-aware container: red border + subtle shadow when escalated.
-    final wrappedContent = isEsc
-        ? Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(
-                color: AppColors.error.withValues(alpha: 0.35),
-                width: 1.5,
-              ),
-              borderRadius: BorderRadius.circular(4),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.error.withValues(alpha: 0.06),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(3),
-              child: rowContent,
-            ),
-          )
-        : rowContent;
-
-    if (!canTap) return wrappedContent;
+    if (!canTap) return rowContent;
 
     return InkWell(
       onTap: () {
@@ -2995,15 +3001,13 @@ class TasksPageState extends State<TasksPage> {
             builder: (_) => TicketDetailPage(
               task: task,
               userRole: _userRole,
-              onClose: () {
-                _onRefresh();
-              },
+              onClose:    () => _onRefresh(),
               onReassign: (_) => _onRefresh(),
             ),
           ),
         );
       },
-      child: wrappedContent,
+      child: rowContent,
     );
   }
 

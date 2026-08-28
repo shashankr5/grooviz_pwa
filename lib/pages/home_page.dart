@@ -101,6 +101,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   StreamSubscription<void>? _newTaskSub;
   StreamSubscription<void>? _newDeliverySub;
+  StreamSubscription<void>? _newFoodOrderSub;
   StreamSubscription<int>?  _escalationSub;
   StreamSubscription<void>? _escalationListSub;
   StreamSubscription<String>? _roleChangeSub;
@@ -197,6 +198,12 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted && isRoomServiceUser) _loadDeliveryCounts();
     });
 
+    // ORDER_DELIVERED fires notifyNewFoodOrder() — delivery command card
+    // must also reload when a food order is delivered on another device.
+    _newFoodOrderSub = OrderAlertService.onNewOrder.listen((_) {
+      if (mounted && isRoomServiceUser) _loadDeliveryCounts();
+    });
+
     _escalationSub = EscalationService.instance.onBadgeUpdate.listen((_) {
       if (mounted) {
         _loadTasks();
@@ -220,6 +227,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _newTaskSub?.cancel();
     _newDeliverySub?.cancel();
+    _newFoodOrderSub?.cancel();
     _escalationSub?.cancel();
     _escalationListSub?.cancel();
     _roleChangeSub?.cancel();
@@ -302,6 +310,18 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (instanceId != null && instanceId.toString().isNotEmpty && instanceId.toString() != '0') return true;
       return false;
     }).toList();
+
+    // Sort: Open (escalated, unaccepted) → In Progress (accepted) → Closed
+    escalatedTasks.sort((a, b) {
+      int _priority(Map<String, dynamic> t) {
+        final s = (t['status'] ?? '').toString().toLowerCase();
+        if (s == 'open' || s == 'pending') return 0;
+        if (s == 'in progress' || s == 'inprogress') return 1;
+        return 2; // closed
+      }
+      return _priority(a).compareTo(_priority(b));
+    });
+
     _escalationBadgeCount = escalatedTasks.length;
   }
 
@@ -412,7 +432,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final openCount = tasks
         .where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t))
         .length;
-    TaskAlertService.resetServiceCount(openCount);
+    // reconcileAlert:true makes this immediate (no 400ms debounce) so it
+    // cannot re-arm the alert after reloadTasks() already stopped it.
+    TaskAlertService.resetServiceCount(openCount, reconcileAlert: true);
   }
 
   // ── Delivery order grouping ──────────────────────────────────────────────
@@ -1365,28 +1387,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 const SizedBox(height: 10),
 
                 Row(children: [
-                  // Show SLA info only for active tasks with a deadline
-                  if (isActive && view.deadline != null && view.deadline!.urgencyLabel.isNotEmpty) ...[
-                    Icon(
-                      view.deadline!.isOverdue
-                          ? Icons.timer_off_rounded
-                          : Icons.timer_outlined,
-                      size: 13,
-                      color: view.deadline!.isOverdue ? AppColors.error : AppColors.warning,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      view.phaseLabel,
-                      style: TextStyle(
-                        fontSize:   12,
-                        fontWeight: FontWeight.w600,
-                        color: view.deadline!.isOverdue ? AppColors.error : AppColors.warning,
-                      ),
-                    ),
-                    const Spacer(),
-                  ] else 
-                    const Spacer(),
-                  
+                  // SLA countdown removed — keep card clean
                   if (assignedTo.isNotEmpty && assignedTo != '-') ...[
                     const Icon(Icons.badge_outlined,
                         size: 13, color: AppColors.textSecondary),
@@ -1437,25 +1438,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        if (view.hasCountdown) ...[
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              view.countdownLabel,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
-        ],
+        // Countdown removed — keep banner clean
       ]),
     );
   }
@@ -1501,7 +1484,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     final guestName = task["raw"]?["guest_name"] ?? task["guest_name"] ?? "";
     final status    = task["status"] as String;
-    final statusClr = isEscalated ? AppColors.error : AppColors.statusColor(status);
+    const Color _escColor   = Color(0xFFB45309); // amber-700
+    const Color _escColorBg = Color(0xFFFEF3C7); // amber-50
+    final statusClr = isEscalated ? _escColor : AppColors.statusColor(status);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1509,7 +1494,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: isEscalated
-            ? Border.all(color: AppColors.error.withOpacity(0.35), width: 1.5)
+            ? Border.all(color: const Color(0xFFF59E0B).withOpacity(0.45), width: 1.5)
             : null,
         boxShadow: [
           BoxShadow(color: Colors.black.withOpacity(0.05),
@@ -1528,11 +1513,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   Container(
                     padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: isEscalated ? AppColors.errorLight : iconBg,
+                      color: isEscalated ? _escColorBg : iconBg,
                       borderRadius: BorderRadius.circular(9),
                     ),
                     child: Icon(isEscalated ? Icons.warning_amber_rounded : categoryIcon,
-                        size: 16, color: isEscalated ? AppColors.error : iconColor),
+                        size: 16, color: isEscalated ? _escColor : iconColor),
                   ),
                   const SizedBox(width: 7),
                   _pill("Room ${task["room"]}", AppColors.warningLight,
@@ -1557,7 +1542,9 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     style: const TextStyle(color: AppColors.textSecondary,
                         fontSize: 12, fontWeight: FontWeight.w500)),
               ),
-            if (task["assignedTo"] != null && task["assignedTo"] != "-" && task["assignedTo"].toString().trim().isNotEmpty)
+            if (task["assignedTo"] != null && task["assignedTo"] != "-" && 
+            
+            task["assignedTo"].toString().trim().isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 3),
                 child: Row(
@@ -1730,19 +1717,30 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _acceptingTaskId = null);
 
     if (result['success'] == true) {
-      // Stop the service alert for this accepted task
-      await TaskAlertService.stopOneServiceAlert();
-      
+      // Optimistic UI update first so the card flips immediately
       setState(() {
         final idx = tasks.indexWhere((t) =>
             (t["raw"]?["service_request_id"] ?? t["task_id"] ?? t["id"]) == taskId);
         if (idx != -1) {
-          tasks[idx]["status"]     = "In Progress";
-          tasks[idx]["isAccepted"] = true;
-          tasks[idx]["statusColor"] = getStatusColor("In Progress");
+          tasks[idx]["status"]       = "In Progress";
+          tasks[idx]["isAccepted"]   = true;
+          tasks[idx]["statusColor"]  = getStatusColor("In Progress");
+          tasks[idx]["is_escalated"] = 0;
+          tasks[idx]["alert_pending"] = 0;
+          if (tasks[idx]["raw"] is Map) {
+            (tasks[idx]["raw"] as Map)["is_escalated"]  = 0;
+            (tasks[idx]["raw"] as Map)["alert_pending"] = 0;
+          }
         }
       });
-       AppSnackBar.show(context, "Task accepted");
+
+      // Reload from server to get accurate pending + escalation counts.
+      // This is the only reliable way to stop the escalation alert on the
+      // accepting device — the optimistic decrement only drops serviceTaskCount
+      // but escalationActive stays true until a real reload confirms count == 0.
+      await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+
+      AppSnackBar.show(context, "Task accepted");
     } else {
        AppSnackBar.show(context,
           result['message'] as String? ?? "Failed to accept task",

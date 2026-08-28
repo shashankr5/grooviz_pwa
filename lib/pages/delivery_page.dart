@@ -83,11 +83,12 @@ class DeliveryPage extends StatefulWidget {
 }
 
 class _DeliveryPageState extends State<DeliveryPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   bool isLoading = true;
   String? errorMessage;
   late String selectedFilter;
   late TabController _tabController;
+  bool _didPause = false;
 
   final List<Map<String, dynamic>> readyOrders = [];
   final List<Map<String, dynamic>> acceptedOrders = [];
@@ -95,6 +96,7 @@ class _DeliveryPageState extends State<DeliveryPage>
   final Set<String> _expandedTimelineOrders = <String>{};
 
   StreamSubscription<void>? _deliverySub;
+  StreamSubscription<void>? _foodOrderSub;
 
   @override
   void initState() {
@@ -117,16 +119,37 @@ class _DeliveryPageState extends State<DeliveryPage>
     });
 
     _loadAllOrders();
+    WidgetsBinding.instance.addObserver(this);
     _deliverySub = TaskAlertService.onNewDelivery.listen((_) {
+      if (mounted) _loadAllOrders();
+    });
+    // ORDER_DELIVERED fires notifyNewFoodOrder() — catch it here so the
+    // Delivered tab updates automatically on all devices.
+    _foodOrderSub = OrderAlertService.onNewOrder.listen((_) {
       if (mounted) _loadAllOrders();
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
     _deliverySub?.cancel();
+    _foodOrderSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _didPause = true;
+      return;
+    }
+    if (state == AppLifecycleState.resumed && mounted) {
+      if (!_didPause) return;
+      _didPause = false;
+      _loadAllOrders();
+    }
   }
 
   int _filterToIndex(String filter) {
@@ -485,7 +508,6 @@ class _DeliveryPageState extends State<DeliveryPage>
 
       // Optimistically move the card to Accepted tab
       setState(() {
-        // Remove from ready
         readyOrders.removeWhere((o) => o['orderNumber'] == orderNo);
         final updatedOrder = Map<String, dynamic>.from(order);
         updatedOrder['uiStatus'] = 'Accepted';
@@ -498,7 +520,6 @@ class _DeliveryPageState extends State<DeliveryPage>
         _tabController.animateTo(1);
       });
 
-      await TaskAlertService.stopOneDeliveryAlert();
       await _loadAllOrders();
     } finally {
       if (mounted) setState(() => _actionLoadingOrderNo = null);
@@ -524,7 +545,7 @@ class _DeliveryPageState extends State<DeliveryPage>
     final serviceRequestId = _nonZeroInt(order['serviceRequestId'])
         ?? _nonZeroInt(raw['service_request_id']);
 
-    if (summaryId == null && serviceRequestId == null) {
+    if (serviceRequestId == null) {
       _showGenericError('Order ID not found. Please refresh and try again.');
       return;
     }
@@ -532,30 +553,17 @@ class _DeliveryPageState extends State<DeliveryPage>
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      if (summaryId == null || serviceRequestId == null) {
-        _showGenericError('Delivery details are incomplete. Please refresh and try again.');
-        return;
-      }
-
-      final foodResult = await FoodOrderService().updateFoodOrderStatus(
-        summaryId: summaryId,
-        status: 'Delivered',
-      );
-      if (foodResult['success'] != true && foodResult['success'] != 1) {
-        _showGenericError(foodResult['message']?.toString());
-        return;
-      }
-
-      var serviceResult = await TaskService().closeService(
+      // Room Service users deliver via the service request close API only.
+      // update_food_order_mobile1 is F&B-only and will reject Room Service users.
+      final serviceResult = await TaskService().closeService(
         serviceRequestId: serviceRequestId,
       );
 
       if (!mounted) return;
 
       if (serviceResult['success'] != true && serviceResult['success'] != 1) {
-        await _loadAllOrders();
-        _showGenericError(serviceResult['message']?.toString() ??
-            'Food order delivered, but its delivery request could not be closed.');
+        // Show the exact server message — helps diagnose authorization failures
+        _showGenericError(serviceResult['message']?.toString() ?? 'Failed to mark order as delivered.');
         return;
       }
 

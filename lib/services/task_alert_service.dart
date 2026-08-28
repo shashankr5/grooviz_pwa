@@ -1,158 +1,56 @@
 // services/task_alert_service.dart
 //
-// Task alert service managing service tasks, deliveries, and escalations
-// Provides unified interface for all task-related alert sounds
+// Thin facade kept for call-site compatibility.
+// All state and audio logic lives in AlertStateManager.
 
-import 'dart:async';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'unified_alert_foreground_task.dart';
-import 'order_alert_service.dart';
+import 'alert_state_manager.dart';
 
 class TaskAlertService {
-  static int _serviceTaskCount = 0;
-  static int _deliveryCount = 0;
-  static bool _escalationActive = false;
+  // ── Streams ──────────────────────────────────────────────────────────────
+  static Stream<void> get onNewTask => AlertStateManager.onNewTask;
+  static Stream<void> get onNewDelivery => AlertStateManager.onNewDelivery;
 
-  static final StreamController<void> _newTaskController = StreamController.broadcast();
-  static final StreamController<void> _newDeliveryController = StreamController.broadcast();
+  static void notifyNewTask() => AlertStateManager.notifyNewTask();
+  static void notifyNewDelivery() => AlertStateManager.notifyNewDelivery();
 
-  static Stream<void> get onNewTask => _newTaskController.stream;
-  static Stream<void> get onNewDelivery => _newDeliveryController.stream;
+  // ── Getters ──────────────────────────────────────────────────────────────
+  static int get serviceTaskCount => AlertStateManager.serviceTaskCount;
+  static int get deliveryCount => AlertStateManager.deliveryCount;
+  static int get totalPending => AlertStateManager.totalPending;
+  static bool get escalationActive => AlertStateManager.escalationActive;
 
-  static void notifyNewTask() => _newTaskController.add(null);
-  static void notifyNewDelivery() => _newDeliveryController.add(null);
-
-  static int get totalPending => _serviceTaskCount + _deliveryCount;
-  static int get serviceTaskCount => _serviceTaskCount;
-  static int get deliveryCount => _deliveryCount;
-  static bool get escalationActive => _escalationActive;
-
-  // ── Public API ──────────────────────────────────────────────────────────
-
-  static Future<bool> ensureServiceRunning() => _ensureRunning(
-        soundName: AlertSoundKey.task,
-        notificationTitle: 'Service Request',
-        notificationText: 'Waiting for assignment...',
-      );
-
-  static Future<bool> ensureDeliveryRunning() => _ensureRunning(
-        soundName: AlertSoundKey.delivery,
-        notificationTitle: 'Delivery Ready',
-        notificationText: 'Order ready for delivery...',
-      );
-
-  static Future<bool> ensureEscalationRunning() => _ensureRunning(
-        soundName: AlertSoundKey.escalation,
-        notificationTitle: 'Escalation Alert',
-        notificationText: 'SLA breach requires attention...',
-      );
-
-  /// Stop one delivery alert optimistically
-  static Future<void> stopOneDeliveryAlert() async {
-    _deliveryCount = (_deliveryCount - 1).clamp(0, 9999);
-    print('TaskAlertService.stopOneDeliveryAlert() | deliveryCount=$_deliveryCount');
-    await _reevaluate();
+  // ── Start (legacy compatibility) ─────────────────────────────────────────
+  
+  /// Legacy - count should be set via setServiceTaskCount first
+  static Future<bool> ensureServiceRunning() async {
+    return AlertStateManager.serviceTaskCount > 0;
   }
 
-  /// Stop one service alert optimistically
-  static Future<void> stopOneServiceAlert() async {
-    _serviceTaskCount = (_serviceTaskCount - 1).clamp(0, 9999);
-    print('TaskAlertService.stopOneServiceAlert() | serviceCount=$_serviceTaskCount');
-    await _reevaluate();
+  /// Legacy - count should be set via setDeliveryCount first
+  static Future<bool> ensureDeliveryRunning() async {
+    return AlertStateManager.deliveryCount > 0;
   }
 
-  /// Stop escalation alerts
-  static Future<void> stopEscalation() async {
-    _escalationActive = false;
-    print('TaskAlertService.stopEscalation() | escalation=false');
-    await _reevaluate();
+  /// Legacy - escalation should be set via setEscalationActive first
+  static Future<bool> ensureEscalationRunning() async {
+    return AlertStateManager.escalationActive;
   }
 
-  /// Stop all task-related alerts
-  static Future<void> stopAll() async {
-    _serviceTaskCount = 0;
-    _deliveryCount = 0;
-    _escalationActive = false;
-    print('TaskAlertService.stopAll() | all counts reset');
-    await _reevaluate();
-  }
+  // ── Stop (optimistic decrements) ─────────────────────────────────────────
+  
+  static Future<void> stopOneServiceAlert() => AlertStateManager.dismissServiceTask();
+  static Future<void> stopOneDeliveryAlert() => AlertStateManager.dismissDelivery();
+  static Future<void> stopEscalation() => AlertStateManager.dismissEscalation();
+  static Future<void> stopAll() => AlertStateManager.dismissAll();
 
-  /// Reset service task count from server data
-  static void resetServiceCount(int count, {bool reconcileAlert = false}) {
-    _serviceTaskCount = count.clamp(0, 9999);
-    print('TaskAlertService.resetServiceCount($count)');
-    if (count <= 0 || reconcileAlert) _reevaluate();
-  }
+  // ── Server reconciliation ────────────────────────────────────────────────
+  
+  static Future<void> resetServiceCount(int count, {bool reconcileAlert = false}) =>
+      AlertStateManager.setServiceTaskCount(count, immediate: reconcileAlert);
 
-  /// Reset delivery count from server data
-  static void resetDeliveryCount(int count, {bool reconcileAlert = false}) {
-    _deliveryCount = count.clamp(0, 9999);
-    print('TaskAlertService.resetDeliveryCount($count)');
-    if (count <= 0 || reconcileAlert) _reevaluate();
-  }
+  static Future<void> resetDeliveryCount(int count, {bool reconcileAlert = false}) =>
+      AlertStateManager.setDeliveryCount(count, immediate: reconcileAlert);
 
-  /// Set escalation status from server data
-  static void setEscalationActive(bool active, {bool reconcileAlert = false}) {
-    _escalationActive = active;
-    print('TaskAlertService.setEscalationActive($active)');
-    if (!active || reconcileAlert) _reevaluate();
-  }
-
-  // ── Internal ─────────────────────────────────────────────────────────────
-
-  static Future<bool> _ensureRunning({
-    required String soundName,
-    required String notificationTitle,
-    required String notificationText,
-  }) async {
-    return AlertServiceRestartGate.run(
-      soundName: soundName,
-      operation: () async {
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(AlertSoundKey.prefKey, soundName);
-          await prefs.setString(AlertSoundKey.loopKey, 'true');
-
-          final isRunning = await FlutterForegroundTask.isRunningService;
-          if (isRunning) {
-            await FlutterForegroundTask.restartService();
-            print('TaskAlertService: foreground service restarted (sound=$soundName)');
-          } else {
-            await FlutterForegroundTask.startService(
-              notificationTitle: notificationTitle,
-              notificationText: notificationText,
-              callback: unifiedAlertStartCallback,
-            );
-            print('TaskAlertService: foreground service started (sound=$soundName)');
-          }
-          return true;
-        } catch (e) {
-          print('TaskAlertService._ensureRunning error: $e');
-          return false;
-        }
-      },
-    );
-  }
-
-  static Future<void> _reevaluate() async {
-    // Stop service only if no pending items remain
-    if (_serviceTaskCount > 0) return;
-    if (_deliveryCount > 0) return;
-    if (_escalationActive) return;
-    if (OrderAlertService.pendingOrderCount > 0) return;
-    
-    await _stopService();
-  }
-
-  static Future<void> _stopService() async {
-    try {
-      if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
-        print('TaskAlertService: foreground service stopped');
-      }
-    } catch (e) {
-      print('TaskAlertService._stopService error: $e');
-    }
-  }
+  static Future<void> setEscalationActive(bool active, {bool reconcileAlert = false}) =>
+      AlertStateManager.setEscalationActive(active, immediate: reconcileAlert);
 }
