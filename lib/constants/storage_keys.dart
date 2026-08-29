@@ -116,6 +116,10 @@ class StorageKeys {
   /// `bool` — whether the user can decline escalated tasks (`is_decline: "Y"` - not used in UI).
   static const isDecline = 'is_decline';
 
+  /// `String` (JSON) — map of dept_id → {isAccept, reassign, isDecline}.
+  /// Keyed by dept_id.toString(). Written at login, read in ticket_details_page.
+  static const deptPermissionsMap = 'dept_permissions_map';
+
   // ─── Foreground Task (UnifiedAlertForegroundTask) ────────────────────────
 
   /// `bool` — flag written before startService() to detect premature exits.

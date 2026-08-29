@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,11 +68,47 @@ class _LoginPageState extends State<LoginPage> {
       if (result['success'] == true) {
         final departments = result['departments'] as List? ?? [];
         if (departments.isNotEmpty) {
-          final jsonData = departments.first['json_data'] as Map? ?? {};
+          bool mergedAccept = false, mergedReassign = false, mergedDecline = false;
+          final Map<String, Map<String, bool>> deptMap = {};
+
+          for (final dept in departments) {
+            final deptId = dept['department_id'];
+            if (deptId == null) continue;
+            final key = deptId.toString();
+
+            // json_data may arrive as a decoded Map or a raw JSON string
+            dynamic raw = dept['json_data'];
+            Map jsonData = {};
+            if (raw is Map) {
+              jsonData = raw;
+            } else if (raw is String && raw.isNotEmpty) {
+              try { jsonData = jsonDecode(raw) as Map? ?? {}; } catch (_) {}
+            }
+
+            final accept   = jsonData['is_accept']  == 'Y';
+            final reassign = jsonData['reassign']    == 'Y';
+            final decline  = jsonData['is_decline']  == 'Y';
+
+            deptMap[key] = {
+              'isAccept':  accept,
+              'reassign':  reassign,
+              'isDecline': decline,
+            };
+
+            // OR-merge for the flat fallback still read by tasks_page
+            if (accept)   mergedAccept   = true;
+            if (reassign) mergedReassign = true;
+            if (decline)  mergedDecline  = true;
+          }
+
+          // Per-dept map — used by ticket_details_page for accurate per-ticket buttons
+          await UserSessionHelper.saveDeptPermissionsMap(deptMap);
+
+          // Flat bools — fallback for tasks_page and any null-dept tickets
           await UserSessionHelper.saveEscalationPermissions(
-            isAccept: jsonData['is_accept'] == 'Y',
-            reassign: jsonData['reassign'] == 'Y',
-            isDecline: jsonData['is_decline'] == 'Y',
+            isAccept:  mergedAccept,
+            reassign:  mergedReassign,
+            isDecline: mergedDecline,
           );
           print('Escalation permissions saved successfully.');
         }

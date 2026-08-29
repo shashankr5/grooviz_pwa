@@ -379,8 +379,12 @@ class TimelineOrderCard extends StatelessWidget {
 
   bool _isEscalated(Map<String, dynamic> order) {
     if (order['isEscalated'] == true) return true;
-    final raw = order['raw'] as Map<String, dynamic>?;
-    if (raw != null && (raw['is_escalated'] == 1 || raw['is_escalated'] == true)) return true;
+    // Use a safe cast — JSON-decoded maps come back as Map<dynamic, dynamic>
+    // which cannot be hard-cast to Map<String, dynamic> and throws a _TypeError.
+    final rawDynamic = order['raw'];
+    if (rawDynamic is Map) {
+      if (rawDynamic['is_escalated'] == 1 || rawDynamic['is_escalated'] == true) return true;
+    }
     return false;
   }
 }

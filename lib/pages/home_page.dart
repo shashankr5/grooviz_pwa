@@ -457,98 +457,161 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return n;
   }
 
-  // ── FIXED: _loadDeliveryCounts using getAllServices as primary source ──
+  // ── SYNCED: _loadDeliveryCounts mirrors delivery_page._loadAllOrders exactly ──
+  // All three counts use the same source, same filters, and same exclusion logic
+  // so the Home command card always matches the DeliveryPage tab counts.
   Future<void> _loadDeliveryCounts() async {
     if (!mounted) return;
-    if (_readyOrderCount == 0 && _acceptedOrderCount == 0 && _deliveredOrderCount == 0) {
-      setState(() => _deliveryCountsLoading = true);
-    }
+    final isFirstLoad = _readyOrderCount == 0 &&
+        _acceptedOrderCount == 0 &&
+        _deliveredOrderCount == 0;
+    // Show skeleton on first load; on subsequent reloads clear counts
+    // immediately so stale "X orders awaiting pick-up" never persists
+    // while the new fetch is in-flight.
+    setState(() {
+      _deliveryCountsLoading = isFirstLoad;
+      if (!isFirstLoad) {
+        _readyOrderCount     = 0;
+        _acceptedOrderCount  = 0;
+        _deliveredOrderCount = 0;
+      }
+    });
 
     try {
-      // ── 1. Fetch SERVICE REQUESTS (primary data source) ──────────────────
-      // ✅ FIX: Changed from FoodOrderService.getFoodOrders() to TaskService.getAllServices()
-      // This ensures Home page counts match Delivery page counts
-      final svcResult = await TaskService().getAllServices();
+      // Same parallel fetch as delivery_page._loadAllOrders
+      final results = await Future.wait([
+        FoodOrderService().getFoodOrders(),
+        TaskService().getAllServices(),
+      ]);
       if (!mounted) return;
-      if (svcResult['success'] != true) {
-        setState(() => _deliveryCountsLoading = false);
-        return;
+
+      final foodResult = results[0];
+      final svcResult  = results[1];
+
+      // ── Step 1: Build SR lookup maps (mirrors delivery_page logic exactly) ──
+      // Two complementary exclusion sets:
+      //   acceptedSummaryIds — matched by food_order_summary_id FK (most reliable)
+      //   acceptedOrderNos   — matched by order number in SR question (fallback when FK is null)
+      // Both are checked so an accepted order is never shown as Ready regardless
+      // of whether the Lambda populated food_order_summary_id on the SR row.
+      final Set<int>    acceptedSummaryIds = {};
+      final Set<String> acceptedOrderNos   = {};
+      int acceptedCount = 0;
+      int deliveredCount = 0;
+
+      if (svcResult['success'] == true) {
+        final services = svcResult['services'] as List? ?? [];
+
+        // Identify food-delivery SRs — same predicate as delivery_page
+        final foodDeliverySRs = services.where((svc) {
+          if (svc is! Map) return false;
+          final question = (svc['question'] ?? '').toString();
+          final isFood = question.toLowerCase().startsWith('food order #') ||
+              (svc['food_order_summary_id'] != null &&
+               svc['food_order_summary_id'].toString() != '0' &&
+               svc['food_order_summary_id'].toString() != 'null');
+          return isFood;
+        }).cast<Map<String, dynamic>>();
+
+        for (final svc in foodDeliverySRs) {
+          final status        = (svc['status'] ?? '').toString().toLowerCase();
+          final foodSummaryId = _nonZeroInt(svc['food_order_summary_id']);
+
+          // Extract order number from question: "Food order #ORD20260829... is ready..."
+          final question  = (svc['question'] ?? '').toString();
+          final orderNoMatch = RegExp(r'food order #(\S+)', caseSensitive: false)
+              .firstMatch(question);
+          final questionOrderNo = orderNoMatch?.group(1)?.trim() ?? '';
+
+          final isAccepted = status == 'in progress' || status == 'inprogress';
+          final isClosed   = status == 'closed' ||
+                             svc['closed'] == 1 ||
+                             svc['closed'] == true;
+
+          if (isAccepted) {
+            acceptedCount++;
+            if (foodSummaryId != null) acceptedSummaryIds.add(foodSummaryId);
+            if (questionOrderNo.isNotEmpty) acceptedOrderNos.add(questionOrderNo);
+          } else if (isClosed) {
+            deliveredCount++;
+            if (foodSummaryId != null) acceptedSummaryIds.add(foodSummaryId);
+            if (questionOrderNo.isNotEmpty) acceptedOrderNos.add(questionOrderNo);
+          }
+          // open/pending: not added — still actionable
+        }
       }
 
-      final services = svcResult['services'] as List? ?? [];
-
-      // ── 2. Filter for food delivery service requests ──────────────────────
-      final foodDeliverySRs = services.where((svc) {
-        if (svc is! Map) return false;
-        final foodSummaryId = svc['food_order_summary_id'];
-        return foodSummaryId != null &&
-            foodSummaryId.toString().trim().isNotEmpty &&
-            foodSummaryId.toString() != '0' &&
-            foodSummaryId.toString() != 'null';
-      }).cast<Map<String, dynamic>>().toList();
-
-      // ── 3. Split by SR status for counts ─────────────────────────────────
-      final readyCount = foodDeliverySRs.where((sr) {
-        final status = (sr['status'] ?? 'Open').toString().toLowerCase();
-        return status == 'open' || status == 'pending';
-      }).length;
-
-      final acceptedCount = foodDeliverySRs.where((sr) {
-        final status = (sr['status'] ?? '').toString().toLowerCase();
-        return status == 'in progress' || status == 'inprogress';
-      }).length;
-
-      // ── 4. Get oldest ready order for preview ────────────────────────────
+      // ── Step 2: Ready count — group item rows first, then filter ────────
+      // foodResult['orders'] is a flat list (one row per item, not per order).
+      // Counting filteredReady.length on flat rows gives e.g. 3 for one order
+      // that has 3 items. We must group first — same as delivery_page does —
+      // so 1 order with 3 items counts as 1.
+      //
+      // If getAllServices failed we cannot determine which Ready orders are
+      // already accepted — show 0 rather than false positives.
+      int readyCount = 0;
       Map<String, dynamic>? oldestPreview;
-      if (foodDeliverySRs.isNotEmpty) {
-        final sorted = List<Map<String, dynamic>>.from(foodDeliverySRs)
-          ..sort((a, b) {
-            final aTime = a['created_at']?.toString() ?? '';
-            final bTime = b['created_at']?.toString() ?? '';
+
+      if (foodResult['success'] == true && svcResult['success'] == true) {
+        final orders = foodResult['orders'] as List? ?? [];
+
+        // 1. Filter to READY item rows
+        final rawReady = orders.where((o) {
+          final status = (o['status'] ?? '').toString().toUpperCase();
+          return status == 'READY';
+        }).toList();
+
+        // 2. Group into one entry per order_number (mirrors delivery_page logic)
+        final groupedReady = groupFoodOrderRows(rawReady);
+
+        // 3. Exclude grouped orders whose SR is already In Progress or Closed.
+        //    Check both the summaryId FK and the order number extracted from the
+        //    SR question — whichever is available catches the exclusion.
+        final filteredReady = groupedReady.where((g) {
+          final summaryId = _nonZeroInt(g['summaryId']);
+          if (summaryId != null && acceptedSummaryIds.contains(summaryId)) {
+            return false;
+          }
+          final orderNo = (g['orderNo'] ?? '').toString();
+          if (orderNo.isNotEmpty && acceptedOrderNos.contains(orderNo)) {
+            return false;
+          }
+          return true;
+        }).toList();
+
+        readyCount = filteredReady.length;
+
+        // Oldest ready order preview for DeliveryCommandCard
+        if (filteredReady.isNotEmpty) {
+          filteredReady.sort((a, b) {
+            final aTime = (a['createdAt'] as DateTime?)?.toIso8601String() ??
+                ((a['raw'] ?? a)?['created_at'] ?? '').toString();
+            final bTime = (b['createdAt'] as DateTime?)?.toIso8601String() ??
+                ((b['raw'] ?? b)?['created_at'] ?? '').toString();
             return aTime.compareTo(bTime);
           });
-
-        final oldest = sorted.firstWhere(
-          (sr) {
-            final status = (sr['status'] ?? 'Open').toString().toLowerCase();
-            return status == 'open' || status == 'pending';
-          },
-          orElse: () => {},
-        );
-
-        if (oldest.isNotEmpty) {
-          final roomNo = (oldest['room_number'] ?? oldest['requested_room'] ?? '—').toString();
-          final guestName = (oldest['guest_name'] ?? oldest['name'] ?? 'Guest').toString();
-          final orderNumber = oldest['order_number']?.toString() ?? 'SR-${oldest['service_request_id']}';
-          final readyTime = oldest['created_at'] ?? oldest['timestamp'];
-
+          final oldest = filteredReady.first;
+          final raw = (oldest['raw'] is Map)
+              ? Map<String, dynamic>.from(oldest['raw'] as Map)
+              : <String, dynamic>{};
+          final items = oldest['items'] as List? ?? [];
           oldestPreview = {
-            'orderNumber': orderNumber,
-            'roomNumber': roomNo,
-            'guestName': guestName,
-            'orderTime': readyTime?.toString(),
-            '_orderTimeDt': readyTime == null ? null : _parseTimestamp(readyTime.toString()),
+            'orderNumber': (oldest['orderNo']   ?? raw['order_number'] ?? '').toString(),
+            'roomNumber':  (oldest['room']       ?? raw['room_number']  ?? '—').toString(),
+            'guestName':   (oldest['guest']      ?? raw['guest_name']   ?? 'Guest').toString(),
+            'orderTime':   (raw['created_at']    ?? raw['order_time'])?.toString(),
+            '_orderTimeDt': oldest['createdAt'] as DateTime? ??
+                _parseTimestamp((raw['created_at'] ?? raw['order_time'])?.toString() ?? ''),
+            'items': items,
           };
         }
       }
 
-      // ── 5. Fetch delivered count from food orders API ────────────────────
-      int deliveredCount = 0;
-      try {
-        final foodResult = await FoodOrderService().getFoodOrders();
-        if (foodResult['success'] == true) {
-          final deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
-          deliveredCount = deliveredRaw.length;
-        }
-      } catch (_) {
-        // Non-fatal: if food orders API fails, delivered count shows 0
-      }
-
       setState(() {
-        _readyOrderCount = readyCount;
-        _acceptedOrderCount = acceptedCount;
+        _readyOrderCount     = readyCount;
+        _acceptedOrderCount  = acceptedCount;
         _deliveredOrderCount = deliveredCount;
-        _oldestReadyOrder = oldestPreview;
+        _oldestReadyOrder    = oldestPreview;
         _deliveryCountsLoading = false;
       });
 

@@ -178,14 +178,19 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     if (mounted) setState(() => _loggedInUserId = id);
   }
 
-  /// Loads escalation permission flags from UserSessionHelper.
+  /// Loads escalation permission flags for the ticket's specific department.
   Future<void> _loadEscalationPermissions() async {
-    final accept = await UserSessionHelper.isAccept();
-    final reassign = await UserSessionHelper.reassign();
+    // Read dept from the task (may be int, String, or null — handled by getDeptPermissionsForDept)
+    final raw = _task['raw'] as Map<String, dynamic>? ?? {};
+    final deptId = _task['department_id'] ?? raw['department_id'];
+
+    // Per-dept lookup; falls back to flat OR-merged bools if dept not in map or null
+    final perms = await UserSessionHelper.getDeptPermissionsForDept(deptId);
+
     if (mounted) {
       setState(() {
-        _canAccept = accept;
-        _canReassign = reassign;
+        _canAccept   = perms['isAccept']  ?? false;
+        _canReassign = perms['reassign']  ?? false;
       });
     }
   }
@@ -437,11 +442,47 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     setState(() => _isLoading = false);
 
     if (result['success'] != true) {
-      AppSnackBar.show(
-        context,
-        result['message'] ?? 'Failed to update status',
-        isError: true,
-      );
+      // Lambda timeout: SP likely already ran server-side.
+      // Refresh from the server to confirm the actual state before showing an error.
+      if (result['timedOut'] == true) {
+        await _refreshFromServer();
+        if (!mounted) return;
+        // If the server now reflects the new status the operation succeeded silently.
+        if (isClose && _isClosed) {
+          widget.onClose?.call();
+          AppSnackBar.show(context, 'Request closed ✅');
+          return;
+        }
+        if (isAccept && (_task['status'] ?? '').toString().toLowerCase() == 'in progress') {
+          AppSnackBar.show(context, 'Task accepted — In Progress ✅');
+          return;
+        }
+        // Server doesn't reflect the change yet — show a neutral message.
+        AppSnackBar.show(
+          context,
+          'The server took a moment to respond. Pull down to refresh.',
+          isError: false,
+        );
+      } else {
+        // "already closed/accepted" SP messages mean the action already
+        // happened (race condition or duplicate tap) — treat as silent success.
+        final msg = (result['message'] ?? '').toString().toLowerCase();
+        final alreadyDone = msg.contains('already closed') ||
+            msg.contains('already accepted') ||
+            msg.contains('already in progress');
+        if (isClose && alreadyDone) {
+          await _refreshFromServer();
+          if (!mounted) return;
+          widget.onClose?.call();
+          AppSnackBar.show(context, 'Request closed ✅');
+        } else {
+          AppSnackBar.show(
+            context,
+            result['message'] ?? 'Failed to update status',
+            isError: true,
+          );
+        }
+      }
       return;
     }
 
@@ -1064,9 +1105,6 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Unified escalation banner + chain — single card
-                  _buildEscalationBannerWithChain(),
-
                   _buildInfoCard(),
 
                   const SizedBox(height: 12),
@@ -1410,9 +1448,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final closed = _parseTaskTimestamp(_task['closed_at'] ?? raw['closed_at'] ?? raw['completed_at']);
 
     // Get person names for display
-    final acceptedByName = (raw['accepted_by_user_name'] ?? '').toString().trim();
-    final assignedByName = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
-    final closedByName = (raw['closed_by_user_name'] ?? '').toString().trim();
+    final acceptedByName  = (raw['accepted_by_user_name'] ?? '').toString().trim();
+    final assignedToName  = (raw['assigned_to_user_name'] ?? raw['recent_reassigned_to_user_name'] ?? '').toString().trim();
+    final assignedByName  = (raw['assigned_by_name'] ?? raw['recent_reassigned_by_user_name'] ?? '').toString().trim();
+    final closedByName    = (raw['closed_by_user_name'] ?? '').toString().trim();
 
     // Parse escalation history from API response
     final escalationHistory = _parseEscalationHistory();
@@ -1438,10 +1477,17 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 : acceptedByName.isNotEmpty ? 'by $acceptedByName' : null,
             color: AppColors.success),
         // Only show reassignment when it actually happened
-        if (assigned != null)
+        if (assigned != null) ...[
           _timelineEntry('Reassigned', assigned, done: true,
-              detail: assignedByName.isNotEmpty ? 'by $assignedByName' : null, 
+              detail: () {
+                final parts = [
+                  if (assignedToName.isNotEmpty) 'to $assignedToName',
+                  if (assignedByName.isNotEmpty) 'by $assignedByName',
+                ];
+                return parts.isEmpty ? null : parts.join(' ');
+              }(),
               color: AppColors.info),
+        ],
         
         // ── Single expandable escalation entry if history exists ──
         if (escalationHistory.isNotEmpty) 

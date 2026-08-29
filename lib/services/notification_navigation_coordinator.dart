@@ -51,8 +51,12 @@ class NotificationNavigationCoordinator {
     try {
       if (payload.entityType == DeepLinkEntityType.serviceTask ||
           payload.entityType == DeepLinkEntityType.escalation) {
-        final taskId = int.tryParse(payload.entityId!);
-        if (taskId == null) return;
+        final taskId = int.tryParse(payload.entityId ?? '');
+        if (taskId == null) {
+          // No valid task ID in the notification — nothing to navigate to
+          print('🧭 [NotificationNavigationCoordinator] No task ID in payload, skipping navigation');
+          return;
+        }
 
         final task = await EntityResolver.instance.resolveServiceTask(taskId);
 
@@ -67,7 +71,11 @@ class NotificationNavigationCoordinator {
             );
           }
         } else {
-          _showAlreadyHandled('This task has already been handled.');
+          // Task not found in current list — it may be closed or from a
+          // different user's assignment. Don't show "already handled" —
+          // just silently skip navigation. The task list will already reflect
+          // the correct state after reloadTasks().
+          print('🧭 [NotificationNavigationCoordinator] Task $taskId not found — skipping navigation');
         }
       } else if (payload.entityType == DeepLinkEntityType.delivery) {
         final navState = navigatorKey.currentState;

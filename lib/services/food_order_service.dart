@@ -176,6 +176,17 @@ class FoodOrderService {
 
       dev.log("📥 Raw Accept Response: ${response.data}");
 
+      // Lambda cold-start / timeout returns {"errorType":"Sandbox.Timedout",...}
+      // as HTTP 200. Treat as soft retryable failure — don't show a crash message.
+      if (response.data is Map && response.data['errorType'] != null) {
+        dev.log("acceptFoodOrder: Lambda timeout — errorType=${response.data['errorType']}");
+        return {
+          "success": false,
+          "timedOut": true,
+          "message": "The server took too long to respond. Please refresh to check the status.",
+        };
+      }
+
       // ScreenSync_accept_food_order_mobile1 returns:
       //   { "RESULT": [{ "status": "S", "message": "...", ... }] }
       // NOT a STATUS key — check RESULT first, then fall back to STATUS.

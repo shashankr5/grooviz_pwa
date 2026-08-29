@@ -134,14 +134,14 @@ class UnifiedAlertTaskHandler extends TaskHandler {
       await _audioSession!.configure(const AudioSessionConfiguration(
         avAudioSessionCategory: AVAudioSessionCategory.playback,
         androidAudioAttributes: AndroidAudioAttributes(
-          contentType: AndroidAudioContentType.sonification,
-          usage: AndroidAudioUsage.alarm,
+          contentType: AndroidAudioContentType.music,
+          usage: AndroidAudioUsage.notificationRingtone,
         ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
         androidWillPauseWhenDucked: false,
       ));
       await _audioSession!.setActive(true);
-      print('UnifiedAlertTaskHandler: AudioSession ready (alarm mode)');
+      print('UnifiedAlertTaskHandler: AudioSession ready (ringtone mode)');
     } catch (e) {
       print('UnifiedAlertTaskHandler: AudioSession error: $e');
     }

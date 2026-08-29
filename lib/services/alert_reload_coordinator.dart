@@ -13,6 +13,8 @@ import 'food_order_service.dart';
 import 'task_service.dart';
 import 'order_alert_service.dart';
 import 'task_alert_service.dart';
+import '../utils/user_session_helper.dart';
+import '../utils/order_grouping.dart';
 
 class AlertReloadCoordinator {
   static final AlertReloadCoordinator _instance = AlertReloadCoordinator._internal();
@@ -32,17 +34,16 @@ class AlertReloadCoordinator {
   Future<void> reloadFood({bool silentReconcile = false}) async {
     try {
       final response = await FoodOrderService().getFoodOrders();
-      // CRITICAL: Only reconcile if API call succeeded. Empty response on
-      // failure should NOT be interpreted as "0 pending" - that would
-      // wrongly stop an active alert.
       if (response['success'] != true) {
         print('AlertReloadCoordinator.reloadFood: API failed, skipping reconcile');
         return;
       }
       final orders = response['orders'] as List<dynamic>? ?? [];
-      // Orders returned by getFoodOrders() have status mapped to labels:
-      // 'Pending', 'Preparing' (Accepted), 'Ready'. Count only 'Pending'.
-      final pendingCount = orders.where((order) =>
+
+      // Group by order_number first — one card per order, not per item row.
+      // A 3-item order is 3 flat rows but counts as 1 pending order.
+      final grouped = groupFoodOrderRows(orders);
+      final pendingCount = grouped.where((order) =>
           order['status']?.toString().toLowerCase() == 'pending').length;
 
       print('AlertReloadCoordinator.reloadFood: server pendingCount=$pendingCount');
@@ -54,6 +55,11 @@ class AlertReloadCoordinator {
 
   Future<void> reloadTasks({bool silentReconcile = false}) async {
     try {
+      // Read current user ID so we only count tasks that belong to THIS device's
+      // user. Without this filter every device in the department would sound
+      // an alert for every new request, even ones assigned to someone else.
+      final int? currentUserId = await UserSessionHelper.getUserId();
+
       final response = await TaskService().getTasks();
       if (response['success'] != true) {
         print('AlertReloadCoordinator.reloadTasks: API failed, skipping reconcile');
@@ -61,36 +67,95 @@ class AlertReloadCoordinator {
       }
       // TaskService.getTasks() returns response['services'] not response['tasks'].
       // Raw rows have fields: status ("Open"|"In Progress"|"Closed"),
-      // closed (0|1), is_escalated (0|1), accepted_by_user_id, etc.
+      // closed (0|1), is_escalated (0|1), accepted_by_user_id,
+      // assigned_to_user_id, etc.
       final services = response['services'] as List<dynamic>? ?? [];
 
-      // Pending = Open and not closed (not yet accepted by anyone)
+      // ── Per-user ID matcher ───────────────────────────────────────────────
+      //
+      // Returns true when at least one of the supplied SP column names holds
+      // a non-zero integer equal to currentUserId.
+      //
+      // Passing an empty list of keys is a caller error — treat as no match.
+      bool _matchesUserId(dynamic s, List<String> keys) {
+        if (currentUserId == null || currentUserId == 0) return true; // no session guard
+        for (final key in keys) {
+          final v = s[key];
+          if (v == null) continue;
+          final id = v is int ? v : int.tryParse(v.toString());
+          if (id != null && id != 0 && id == currentUserId) return true;
+        }
+        return false;
+      }
+
+      // ── isAssignedToMe: service-task ownership ────────────────────────────
+      //
+      // Used for the SERVICE TASK (non-escalation) pending count.
+      // Checks the classic assignment / acceptance fields.
+      bool isAssignedToMe(dynamic s) => _matchesUserId(s, const [
+        'assigned_to_user_id',
+        'assigned_to',
+        'accepted_by_user_id',
+      ]);
+
+      // ── isEscalationTargetMe: escalation ownership ────────────────────────
+      //
+      // Used exclusively for the ESCALATION siren count.
+      //
+      // Priority order:
+      //   1. escalation_target_user_id — the to_user_id of the latest OPEN
+      //      escalation_log row, returned by the SP after the patch in
+      //      patch_get_all_services_escalation_target.sql is applied.
+      //      This is the authoritative field — always prefer it.
+      //
+      //   2. accepted_by_user_id — covers Case 3/4 of check_and_escalate_unified
+      //      (user already accepted and then exceeded their SLA). In that case
+      //      the escalation_log.to_user_id is their supervisor, but
+      //      service_request.accepted_by_user_id is the current holder.
+      //      Both need to hear the alarm.
+      //
+      // assigned_to / assigned_to_user_id are intentionally NOT checked here.
+      // An escalation notification is addressed to a specific supervisor via
+      // escalation_log.to_user_id; a plain reassignment does not create an
+      // escalation_log row.
+      bool isEscalationTargetMe(dynamic s) => _matchesUserId(s, const [
+        'escalation_target_user_id', // SP patch — authoritative
+        'accepted_by_user_id',       // Case 3/4 fallback (acceptor exceeded SLA)
+      ]);
+
+      // Pending = Open, not closed, no acceptor yet, AND assigned to me.
+      // "No acceptor" means the request is still in the alert queue.
+      // The assigned_to_user_id field tells us who should be alarmed.
       final pendingCount = services.where((s) {
-        final status = s['status']?.toString().toUpperCase() ?? '';
-        final closed = s['closed'];
+        final status     = s['status']?.toString().toUpperCase() ?? '';
+        final closed     = s['closed'];
         final acceptedBy = s['accepted_by_user_id'];
-        // Truly pending: status Open, not closed, no acceptor
-        return status == 'OPEN' &&
+        final isTrulyOpen = status == 'OPEN' &&
             (closed == 0 || closed == null) &&
             (acceptedBy == null || acceptedBy == 0);
+        return isTrulyOpen && isAssignedToMe(s);
       }).length;
 
-      // Escalation alert fires ONLY for Open escalated tasks — ones with no
-      // acceptor yet that still need someone to act.
-      // In Progress = already accepted/being handled → no need to keep alarming.
-      // Closed = done → excluded by closed == 0 check.
+      // Escalation siren fires ONLY when the current user is the explicit
+      // escalation target (escalation_target_user_id from SP) or the acceptor
+      // who exceeded their SLA. Using isEscalationTargetMe() instead of
+      // isAssignedToMe() prevents every dept device from sounding when any
+      // task in the dept has is_escalated=1.
       final escalatedCount = services.where((s) {
-        final status    = s['status']?.toString().toUpperCase() ?? '';
-        final closed    = s['closed'];
+        final status      = s['status']?.toString().toUpperCase() ?? '';
+        final closed      = s['closed'];
         final isEscalated = s['is_escalated'];
         final acceptedBy  = s['accepted_by_user_id'];
-        return (closed == 0 || closed == null) &&
+        final isTrulyOpen = (closed == 0 || closed == null) &&
             status == 'OPEN' &&
             (acceptedBy == null || acceptedBy == 0) &&
             (isEscalated == 1 || isEscalated == true);
+        return isTrulyOpen && isEscalationTargetMe(s);
       }).length;
 
-      print('AlertReloadCoordinator.reloadTasks: pendingCount=$pendingCount escalated=$escalatedCount total=${services.length}');
+      print('AlertReloadCoordinator.reloadTasks: pendingCount=$pendingCount '
+            'escalated=$escalatedCount total=${services.length} '
+            'userId=$currentUserId');
       await TaskAlertService.resetServiceCount(pendingCount, reconcileAlert: silentReconcile);
       await TaskAlertService.setEscalationActive(escalatedCount > 0, reconcileAlert: silentReconcile);
     } catch (e) {
@@ -106,7 +171,11 @@ class AlertReloadCoordinator {
         return;
       }
       final orders = response['orders'] as List<dynamic>? ?? [];
-      final readyCount = orders.where((order) =>
+
+      // Group by order_number — same logic as delivery_page and home_page.
+      // A 3-item order is 3 flat rows but counts as 1 ready order.
+      final grouped = groupFoodOrderRows(orders);
+      final readyCount = grouped.where((order) =>
           order['status']?.toString().toLowerCase() == 'ready').length;
 
       print('AlertReloadCoordinator.reloadDelivery: server readyCount=$readyCount');

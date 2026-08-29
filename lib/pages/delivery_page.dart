@@ -8,9 +8,15 @@
 //
 // Accepts optional [initialFilter] for deep-linking into Ready/Accepted/Delivered.
 //
-// FIX: Changed primary data source from FoodOrderService.getFoodOrders() to
-// TaskService.getAllServices() so that Room Service staff see service requests
-// with assigned_to field, enabling proper acceptance workflow.
+// DATA SOURCES (dual-source approach):
+//  • Ready tab   → FoodOrderService.getFoodOrders() (status == "Ready")
+//    This is the authoritative source for orders waiting for delivery acceptance.
+//  • Accepted tab → TaskService.getAllServices() service requests with status "In Progress"
+//    filtered by question starting with "Food order #..."
+//  • Delivered tab → Same service requests with status "Closed"
+//
+// Both APIs are fetched in parallel. This ensures Ready orders always appear
+// regardless of whether food_order_summary_id is present in the service request rows.
 
 import 'dart:async';
 import 'dart:convert';
@@ -248,7 +254,13 @@ class _DeliveryPageState extends State<DeliveryPage>
       });
     }
 
-    final orderNumber = sr['order_number']?.toString() ?? 'SR-$srId';
+    // Resolve order number: prefer food_order_number from the joined summary,
+    // then extract from the question field, then fall back to SR-id.
+    String orderNumber = (sr['food_order_number'] ?? sr['order_number'] ?? '').toString().trim();
+    if (orderNumber.isEmpty) {
+      final match = RegExp(r'Food order #(\S+)', caseSensitive: false).firstMatch(question);
+      orderNumber = match?.group(1)?.replaceAll(RegExp(r'[.,;:!?]+$'), '') ?? 'SR-$srId';
+    }
     final createdAt = sr['created_at'] ?? sr['timestamp'];
 
     // Determine UI status based on SR status
@@ -338,88 +350,218 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     try {
-      // ── 1. Fetch SERVICE REQUESTS (primary data source) ──────────────────
-      // ✅ FIX: Changed from FoodOrderService.getFoodOrders() to TaskService.getAllServices()
-      // This ensures Room Service staff see service requests with assigned_to field
-      final svcResult = await TaskService().getAllServices();
+      // ── 1. Fetch food orders + service requests in parallel ───────────────
+      // Ready orders come from get_food_orders_mobile1 (status == "Ready").
+      // Accepted + Delivered come from get_all_services_mobile1 service requests
+      // whose question contains a food order reference (department_type == "service"
+      // and question starts with "Food order #").
+      final results = await Future.wait([
+        FoodOrderService().getFoodOrders(),
+        TaskService().getAllServices(),
+      ]);
       if (!mounted) return;
-      if (svcResult['success'] != true) {
-        setState(() {
-          errorMessage = svcResult['message'] as String? ?? 'Unable to load delivery orders.';
-        });
-        return;
+
+      final foodResult = results[0];
+      final svcResult  = results[1];
+
+      // ── 2. Ready tab — directly from food orders API ──────────────────────
+      // get_food_orders_mobile1 returns status == "Ready" for orders waiting
+      // for delivery staff to accept. This is the authoritative source.
+      // Orders are grouped by orderNumber (one card per order, all items combined)
+      // using the same groupFoodOrderRows() utility as the food page.
+      //
+      // After grouping, each Ready order is matched to its service request
+      // (created when the order was marked Ready) by extracting the order number
+      // from the SR question field. This gives us the serviceRequestId needed
+      // for accept_service_request_mobile1.
+      List<Map<String, dynamic>> ready = [];
+      if (foodResult['success'] == true) {
+        final orders = foodResult['orders'] as List? ?? [];
+        final rawReady = orders.where((o) {
+          final status = (o['status'] ?? '').toString().toUpperCase();
+          return status == 'READY';
+        }).toList();
+
+        // Group multi-item orders — same logic as FoodOrdersPage
+        final grouped = groupFoodOrderRows(rawReady);
+
+        // Build two lookups from service requests:
+        //  summaryIdToSrId   — summaryId → srId for OPEN SRs (Ready tab: can still be accepted)
+        //  acceptedSummaryIds — summaryIds of SRs already In Progress / Closed
+        //
+        // An order whose summaryId is in acceptedSummaryIds has already been
+        // accepted by a delivery staff member — exclude it from the Ready list
+        // even though get_food_orders_mobile1 still returns it as "Ready"
+        // (accept_service_request never updates order_status_summary).
+        final Map<int, int> summaryIdToSrId = {};
+        final Set<int>    acceptedSummaryIds = {};
+        final Set<String> acceptedOrderNos   = {};
+        if (svcResult['success'] == true) {
+          final services = svcResult['services'] as List? ?? [];
+          for (final svc in services) {
+            if (svc is! Map) continue;
+            final status        = (svc['status'] ?? '').toString().toLowerCase();
+            final foodSummaryId = _nonZeroInt(svc['food_order_summary_id']);
+            final srId          = _nonZeroInt(svc['service_request_id']);
+
+            // Extract order number from question as a fallback key when FK is null
+            final question     = (svc['question'] ?? '').toString();
+            final orderNoMatch = RegExp(r'food order #(\S+)', caseSensitive: false)
+                .firstMatch(question);
+            final questionOrderNo = orderNoMatch?.group(1)?.trim() ?? '';
+
+            if (status == 'open' || status == 'pending') {
+              // Only Open SRs can be accepted from the Ready tab
+              if (foodSummaryId != null && srId != null) {
+                summaryIdToSrId[foodSummaryId] = srId;
+              }
+            } else {
+              // Already accepted (In Progress) or closed — hide from Ready tab
+              if (foodSummaryId != null) acceptedSummaryIds.add(foodSummaryId);
+              if (questionOrderNo.isNotEmpty) acceptedOrderNos.add(questionOrderNo);
+            }
+          }
+        }
+
+        ready = grouped.where((g) {
+          // Exclude orders already accepted (SR is In Progress or Closed).
+          // Check both FK and order number — covers cases where food_order_summary_id
+          // was not populated on the SR row by accept_service_request_mobile1.
+          final summaryId = g['summaryId'] as int?;
+          if (summaryId != null && acceptedSummaryIds.contains(summaryId)) {
+            return false;
+          }
+          final orderNo = (g['orderNo'] ?? '').toString();
+          if (orderNo.isNotEmpty && acceptedOrderNos.contains(orderNo)) {
+            return false;
+          }
+          return true;
+        }).map((g) {
+          final raw        = g['raw'] as Map? ?? {};
+          final createdAt  = g['createdAt'] as DateTime?;
+          final orderNo    = (g['orderNo'] ?? '').toString();
+          final orderTime  = createdAt?.toIso8601String() ??
+              raw['created_at']?.toString() ??
+              raw['order_time']?.toString();
+
+          // Resolve serviceRequestId: try FK first, fall back to question order number
+          final summaryId = g['summaryId'] as int?;
+          int? srId = summaryId != null ? summaryIdToSrId[summaryId] : null;
+          // Fallback: look up by order number extracted from question
+          if (srId == null && orderNo.isNotEmpty) {
+            // Find the Open SR whose question contains this order number
+            if (svcResult['success'] == true) {
+              final services = svcResult['services'] as List? ?? [];
+              for (final svc in services) {
+                if (svc is! Map) continue;
+                final status = (svc['status'] ?? '').toString().toLowerCase();
+                if (status != 'open' && status != 'pending') continue;
+                final q = (svc['question'] ?? '').toString();
+                if (q.toLowerCase().contains(orderNo.toLowerCase())) {
+                  srId = _nonZeroInt(svc['service_request_id']);
+                  break;
+                }
+              }
+            }
+          }
+
+          // items from groupFoodOrderRows use 'name'/'qty'/'instructions'/'isVeg'
+          // delivery card expects 'name'/'qty'/'is_veg' — remap once
+          final items = (g['items'] as List<Map<String, dynamic>>)
+              .map((it) => {
+                    'name':   it['name'],
+                    'qty':    it['qty'],
+                    'price':  0,
+                    'is_veg': it['isVeg'] ?? it['is_veg'],
+                  })
+              .toList();
+
+          return {
+            'summaryId':        summaryId,
+            'serviceRequestId': srId,   // matched via food_order_summary_id FK
+            'orderNumber':      orderNo,
+            'roomNumber':       (g['room'] ?? '—').toString(),
+            'guestName':        (g['guest'] ?? 'Guest').toString(),
+            'guestPhone':       (raw['guest_phone'] ?? raw['customer_number'] ?? '').toString(),
+            'items':            items,
+            'totalAmount':      raw['total_price'] ?? 0,
+            'uiStatus':         'Ready',
+            'status':           'ready',
+            'orderTime':        orderTime,
+            '_orderTimeDt':     createdAt,
+            'raw':              Map<String, dynamic>.from(raw),
+            'etaTapCount':      g['etaTapCount'] ?? 0,
+            'finalEtaTime':     raw['final_eta_time']?.toString(),
+            'finalEtaDuration': 0,
+          };
+        }).toList()
+          ..sort((a, b) {
+            final aT = a['_orderTimeDt'] as DateTime?;
+            final bT = b['_orderTimeDt'] as DateTime?;
+            if (aT == null && bT == null) return 0;
+            if (aT == null) return 1;
+            if (bT == null) return -1;
+            return bT.compareTo(aT);
+          });
       }
 
-      final services = svcResult['services'] as List? ?? [];
-
-      // ── 2. Filter for food delivery service requests ──────────────────────
-      // Service requests that have food_order_summary_id are food deliveries
-      final foodDeliverySRs = services.where((svc) {
-        if (svc is! Map) return false;
-        final foodSummaryId = svc['food_order_summary_id'];
-        return foodSummaryId != null &&
-            foodSummaryId.toString().trim().isNotEmpty &&
-            foodSummaryId.toString() != '0' &&
-            foodSummaryId.toString() != 'null';
-      }).cast<Map<String, dynamic>>().toList();
-
-      // ── 3. Split into Ready and Accepted tabs based on SR status ──────────
-      final readySRs = foodDeliverySRs.where((sr) {
-        final status = (sr['status'] ?? 'Open').toString().toLowerCase();
-        return status == 'open' || status == 'pending';
-      }).toList();
-
-      final acceptedSRs = foodDeliverySRs.where((sr) {
-        final status = (sr['status'] ?? '').toString().toLowerCase();
-        return status == 'in progress' || status == 'inprogress';
-      }).toList();
-
-      // ── 4. Build orders from service requests ────────────────────────────
-      final ready = readySRs
-          .map((sr) => _buildOrderFromServiceRequest(sr))
-          .toList()
-        ..sort((a, b) {
-          final aT = a['_orderTimeDt'] as DateTime?;
-          final bT = b['_orderTimeDt'] as DateTime?;
-          if (aT == null && bT == null) return 0;
-          if (aT == null) return 1;
-          if (bT == null) return -1;
-          return bT.compareTo(aT);
-        });
-
-      final accepted = acceptedSRs
-          .map((sr) => _buildOrderFromServiceRequest(sr))
-          .toList()
-        ..sort((a, b) {
-          final aT = a['_orderTimeDt'] as DateTime?;
-          final bT = b['_orderTimeDt'] as DateTime?;
-          if (aT == null && bT == null) return 0;
-          if (aT == null) return 1;
-          if (bT == null) return -1;
-          return bT.compareTo(aT);
-        });
-
-      // ── 5. Fetch delivered orders from food orders API ──────────────────
-      // Delivered orders are fetched from food orders since they're closed
+      // ── 3. Accepted + Delivered — from service requests ───────────────────
+      // Food delivery SRs are identified by question starting with "Food order #"
+      // or by department_type matching room service food delivery.
+      List<Map<String, dynamic>> accepted = [];
       List<Map<String, dynamic>> delivered = [];
-      try {
-        final foodResult = await FoodOrderService().getFoodOrders();
-        if (foodResult['success'] == true) {
-          final deliveredRaw = (foodResult['deliveredOrders'] as List? ?? []);
-          delivered = deliveredRaw
-              .map((o) => _buildOrderFromFoodOrder(o is Map ? Map<String, dynamic>.from(o) : {}))
-              .toList()
-            ..sort((a, b) {
-              final aT = a['_orderTimeDt'] as DateTime?;
-              final bT = b['_orderTimeDt'] as DateTime?;
-              if (aT == null && bT == null) return 0;
-              if (aT == null) return 1;
-              if (bT == null) return -1;
-              return bT.compareTo(aT);
-            });
-        }
-      } catch (_) {
-        // Non-fatal: if food orders API fails, delivered tab shows empty
+
+      if (svcResult['success'] == true) {
+        final services = svcResult['services'] as List? ?? [];
+
+        final foodDeliverySRs = services.where((svc) {
+          if (svc is! Map) return false;
+          final question = (svc['question'] ?? '').toString();
+          final deptType = (svc['department_type'] ?? '').toString().toLowerCase();
+          // Match SRs created by the food order ready trigger:
+          // question == "Food order #ORD... is ready for delivery to room ..."
+          final isFood = question.toLowerCase().startsWith('food order #') ||
+              (svc['food_order_summary_id'] != null &&
+               svc['food_order_summary_id'].toString() != '0' &&
+               svc['food_order_summary_id'].toString() != 'null');
+          return isFood;
+        }).cast<Map<String, dynamic>>().toList();
+
+        final acceptedSRs = foodDeliverySRs.where((sr) {
+          final status = (sr['status'] ?? '').toString().toLowerCase();
+          return status == 'in progress' || status == 'inprogress';
+        }).toList();
+
+        final closedSRs = foodDeliverySRs.where((sr) {
+          final status = (sr['status'] ?? '').toString().toLowerCase();
+          return status == 'closed' || sr['closed'] == 1 || sr['closed'] == true;
+        }).toList();
+
+        accepted = acceptedSRs
+            .map((sr) => _buildOrderFromServiceRequest(sr))
+            .toList()
+          ..sort((a, b) {
+            final aT = a['_orderTimeDt'] as DateTime?;
+            final bT = b['_orderTimeDt'] as DateTime?;
+            if (aT == null && bT == null) return 0;
+            if (aT == null) return 1;
+            if (bT == null) return -1;
+            return bT.compareTo(aT);
+          });
+
+        delivered = closedSRs.map((sr) {
+          final order = _buildOrderFromServiceRequest(sr);
+          order['uiStatus'] = 'Delivered';
+          return order;
+        }).toList()
+          ..sort((a, b) {
+            final aT = a['_orderTimeDt'] as DateTime?;
+            final bT = b['_orderTimeDt'] as DateTime?;
+            if (aT == null && bT == null) return 0;
+            if (aT == null) return 1;
+            if (bT == null) return -1;
+            return bT.compareTo(aT);
+          });
       }
 
       setState(() {
@@ -466,7 +608,9 @@ class _DeliveryPageState extends State<DeliveryPage>
         context, message ?? 'Something went wrong. Please try again.', isError: true);
   }
 
-  /// ACCEPT ORDER — uses the service request accept API.
+  /// ACCEPT ORDER — always uses accept_service_request_mobile1.
+  /// Ready orders are matched to their SR during _loadAllOrders() via the
+  /// order number in the SR question field.
   Future<void> _acceptOrder(Map<String, dynamic> order) async {
     final orderNo = (order['orderNumber'] ?? '').toString();
     if (_actionLoadingOrderNo != null || orderNo.isEmpty) {
@@ -474,18 +618,16 @@ class _DeliveryPageState extends State<DeliveryPage>
       return;
     }
 
-    // Extract the service request ID from the order data.
     final serviceRequestId = _nonZeroInt(order['serviceRequestId']);
 
     if (serviceRequestId == null) {
-      _showGenericError('Service request ID not found. Please refresh and try again.');
+      _showGenericError('This order has no delivery request yet. The kitchen may not have marked it ready properly. Please contact your supervisor.');
       return;
     }
 
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      // Accept the service request
       final res = await TaskService().acceptServiceRequest(
         serviceRequestId: serviceRequestId,
       );
@@ -493,28 +635,53 @@ class _DeliveryPageState extends State<DeliveryPage>
       if (!mounted) return;
 
       if (res['success'] != true) {
-        final msg = res['message']?.toString() ?? '';
-        final alreadyMine = msg.toLowerCase().contains('already accepted by you');
-        if (!alreadyMine) {
-          _showGenericError(msg.isNotEmpty ? msg : 'Failed to accept order');
+        // Lambda timeout: accept may have gone through — reload to verify
+        if (res['timedOut'] == true) {
+          AppSnackBar.show(context, 'Accepted — verifying status...');
+          await _loadAllOrders();
+          if (!mounted) return;
+          setState(() {
+            selectedFilter = 'Accepted';
+            _tabController.animateTo(1);
+          });
           return;
         }
+        final msg = res['message']?.toString().toLowerCase() ?? '';
+        // SP rejected the request — classify by message rather than
+        // showing a raw server error to the user.
+        final alreadyAccepted = msg.contains('already accepted');
+        final notFound        = msg.contains('not found');
+        final alreadyClosed   = msg.contains('already closed') || msg.contains('closed');
+
+        if (alreadyAccepted) {
+          // Race: someone else accepted it first — reload, switch to Accepted.
+          AppSnackBar.show(context, 'Order was just accepted by another staff member');
+          await _loadAllOrders();
+          if (!mounted) return;
+          setState(() { selectedFilter = 'Accepted'; _tabController.animateTo(1); });
+          return;
+        }
+        if (notFound || alreadyClosed) {
+          // Stale data: SR was closed/deleted since last reload — reload silently.
+          AppSnackBar.show(context, 'Order status changed. Refreshing list...');
+          await _loadAllOrders();
+          return;
+        }
+        // Any other SP error — show verbatim.
+        _showGenericError(res['message']?.toString().isNotEmpty == true
+            ? res['message']!.toString()
+            : 'Failed to accept order');
+        return;
       }
 
       AppSnackBar.show(context, 'Order accepted ✅');
-      
-      // Stop the delivery alert for this accepted order
       await TaskAlertService.stopOneDeliveryAlert();
 
-      // Optimistically move the card to Accepted tab
+      // Optimistically move to Accepted tab then reload
       setState(() {
         readyOrders.removeWhere((o) => o['orderNumber'] == orderNo);
         final updatedOrder = Map<String, dynamic>.from(order);
         updatedOrder['uiStatus'] = 'Accepted';
-        final acceptedAt = res['accepted_at'];
-        if (acceptedAt != null && updatedOrder['raw'] is Map) {
-          (updatedOrder['raw'] as Map)['accepted_at'] = acceptedAt;
-        }
         acceptedOrders.insert(0, updatedOrder);
         selectedFilter = 'Accepted';
         _tabController.animateTo(1);
@@ -538,7 +705,13 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     final raw = order['raw'] as Map? ?? const {};
+
+    // summaryId resolution — check every field name the raw map might use.
+    // Ready orders:    order['summaryId'] set from groupFoodOrderRows summaryId field.
+    // Accepted orders: raw comes from service_request row which carries
+    //                  food_order_summary_id (the FK set when the SR was created).
     final summaryId = _nonZeroInt(order['summaryId'])
+        ?? _nonZeroInt(raw['food_order_summary_id'])
         ?? _nonZeroInt(raw['summary_id'])
         ?? _nonZeroInt(raw['food_summary_id']);
 
@@ -553,21 +726,62 @@ class _DeliveryPageState extends State<DeliveryPage>
     setState(() => _actionLoadingOrderNo = orderNo);
 
     try {
-      // Room Service users deliver via the service request close API only.
-      // update_food_order_mobile1 is F&B-only and will reject Room Service users.
+      // ── Step 1: close_service_request (marks SR as Closed/Delivered) ───────
       final serviceResult = await TaskService().closeService(
         serviceRequestId: serviceRequestId,
       );
 
       if (!mounted) return;
 
-      if (serviceResult['success'] != true && serviceResult['success'] != 1) {
-        // Show the exact server message — helps diagnose authorization failures
-        _showGenericError(serviceResult['message']?.toString() ?? 'Failed to mark order as delivered.');
+      if (serviceResult['success'] != true) {
+        // Lambda cold-start timeout: the close may have succeeded server-side.
+        if (serviceResult['timedOut'] == true) {
+          AppSnackBar.show(context, 'Delivery marked — verifying status...');
+          await _loadAllOrders();
+          if (!mounted) return;
+          setState(() {
+            selectedFilter = 'Delivered';
+            _tabController.animateTo(2);
+          });
+          return;
+        }
+        _showGenericError(
+            serviceResult['message']?.toString() ??
+            'Failed to mark order as delivered.');
         return;
       }
 
+      // ── Step 2: update_food_order (moves order_status_summary to Delivered) ─
+      // This is mandatory — close_service only closes the service_request row
+      // and never touches order_status_summary. Without this call the food order
+      // stays stuck at "Ready" on the kitchen screen.
+      if (summaryId != null) {
+        final foodResult = await FoodOrderService().updateFoodOrderStatus(
+          summaryId: summaryId,
+          status: 'Delivered',
+        );
+        if (!mounted) return;
+        // Log but don't block — service request is already closed server-side.
+        if (foodResult['success'] != true) {
+          // Non-fatal: food order may already be Delivered server-side if a
+          // duplicate tap raced through. Reload will reflect the true state.
+          AppSnackBar.show(
+            context,
+            'Delivery recorded. Food order sync: ${foodResult['message'] ?? 'check again shortly'}',
+          );
+        }
+      } else {
+        // summaryId missing — SR is closed but food order won't auto-update.
+        // Surface a clear warning so the kitchen knows to check manually.
+        AppSnackBar.show(
+          context,
+          'Delivery recorded. Food order status could not be updated — summary ID missing.',
+        );
+      }
+
+      if (!mounted) return;
       AppSnackBar.show(context, 'Order delivered successfully 🎉');
+
       await _loadAllOrders();
 
       if (!mounted) return;
@@ -678,10 +892,14 @@ class _DeliveryPageState extends State<DeliveryPage>
                       ...items.take(3).map<Widget>((item) {
                         final name = (item['name'] ?? '').toString();
                         final qty = item['qty'];
+                        final isVeg = resolveIsVeg(item['is_veg'] ?? item['isVeg'], name);
                         return Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
+                          padding: const EdgeInsets.only(bottom: 6),
                           child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
+                              vegIndicator(isVeg),
+                              const SizedBox(width: 7),
                               Text('$qty×',
                                   style: const TextStyle(
                                       fontSize: 13,
@@ -1196,45 +1414,14 @@ class _DeliveryPageState extends State<DeliveryPage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Header Row: Room badge on left, Status + #ORD + Date on right ──
+              // ── Header Row: Order number + date on left, status chip on right ──
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.indigo.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text(
-                          "Room ",
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: Colors.indigo,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          roomNo,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildStatusChip(uiStatus, statusColor),
-                        const SizedBox(height: 6),
                         Text(
                           '#$orderNo',
                           style: const TextStyle(
@@ -1245,9 +1432,8 @@ class _DeliveryPageState extends State<DeliveryPage>
                           overflow: TextOverflow.ellipsis,
                         ),
                         if (orderTime != null && orderTime.isNotEmpty) ...[
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
                           Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
                             children: [
                               const Icon(Icons.calendar_today_rounded,
                                   size: 11, color: AppColors.textDisabled),
@@ -1264,11 +1450,12 @@ class _DeliveryPageState extends State<DeliveryPage>
                       ],
                     ),
                   ),
+                  _buildStatusChip(uiStatus, statusColor),
                 ],
               ),
               const SizedBox(height: 12),
 
-              // ── Guest name + Timeline toggle ──
+              // ── Guest name + Room + Timeline toggle ──
               Row(
                 children: [
                   Container(
@@ -1282,13 +1469,25 @@ class _DeliveryPageState extends State<DeliveryPage>
                   ),
                   const SizedBox(width: 7),
                   Expanded(
-                    child: Text(
-                      guestName.isNotEmpty ? guestName : "Guest",
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textSecondary),
+                    child: RichText(
                       overflow: TextOverflow.ellipsis,
+                      text: TextSpan(
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textSecondary),
+                        children: [
+                          TextSpan(text: guestName.isNotEmpty ? guestName : 'Guest'),
+                          if (roomNo != '—' && roomNo.isNotEmpty)
+                            TextSpan(
+                              text: '  ·  Room $roomNo',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: AppColors.textDisabled),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                   InkWell(

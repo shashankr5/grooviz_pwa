@@ -478,8 +478,9 @@ class OrderHistoryDetailSheet extends StatelessWidget {
 
   bool _isOrderEscalated(Map<String, dynamic> order) {
     if (order['isEscalated'] == true) return true;
-    final raw = order['raw'] as Map<String, dynamic>?;
-    if (raw != null && (raw['is_escalated'] == 1 || raw['is_escalated'] == true)) return true;
+    final rawDynamic = order['raw'];
+    if (rawDynamic is Map &&
+        (rawDynamic['is_escalated'] == 1 || rawDynamic['is_escalated'] == true)) return true;
     return false;
   }
 
@@ -622,8 +623,9 @@ class OrderHistoryDetailSheet extends StatelessWidget {
       return parsed.cast<Map<String, dynamic>>();
     }
     // Fallback: try raw.escalation_history
-    final raw = order['raw'] as Map<String, dynamic>?;
-    if (raw == null) return [];
+    final rawDynamic = order['raw'];
+    if (rawDynamic is! Map) return [];
+    final raw = Map<String, dynamic>.from(rawDynamic);
     final rawHistory = raw['escalation_history'];
     if (rawHistory == null) return [];
     try {

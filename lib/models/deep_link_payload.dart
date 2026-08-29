@@ -43,11 +43,12 @@ class DeepLinkPayload {
         rawType == 'TASK_REASSIGNED') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.serviceTask;
-      entityId = (data['service_request_id'] ??
+      final rawId = (data['service_request_id'] ??
               data['task_id'] ??
               data['order_id'] ??
               data['instance_id'])
           ?.toString();
+      entityId = (rawId?.isNotEmpty == true) ? rawId : null;
     } else if (rawType == 'FOOD_ORDER_STATUS' ||
       rawType == 'NEW_DELIVERY_TASK' ||
       rawType == 'ORDER_READY' ||
@@ -63,10 +64,12 @@ class DeepLinkPayload {
     } else if (rawType == 'ESCALATION') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.escalation;
-      entityId = (data['service_request_id'] ??
+      final raw = (data['service_request_id'] ??
               data['task_id'] ??
               data['order_id'])
           ?.toString();
+      // Guard: treat empty string same as null so int.tryParse doesn't fail
+      entityId = (raw?.isNotEmpty == true) ? raw : null;
     }
 
     return DeepLinkPayload(

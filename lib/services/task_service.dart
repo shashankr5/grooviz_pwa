@@ -387,6 +387,19 @@ class TaskService {
         },
       );
       final data = response.data as Map? ?? const {};
+
+      // Lambda cold-start / timeout returns {"errorType":"Sandbox.Timedout",...}
+      // as HTTP 200. The operation may have succeeded server-side, so treat this
+      // as a retryable soft-failure rather than a hard error.
+      if (data['errorType'] != null) {
+        dev.log('closeService: Lambda timeout detected — errorType=${data['errorType']}');
+        return {
+          'success': false,
+          'timedOut': true,
+          'message': 'The server took too long to respond. Please refresh to check the status.',
+        };
+      }
+
       final statusRows = data['STATUS'] is List ? data['STATUS'] as List : const <dynamic>[];
       final resultRows = data['RESULT'] is List
           ? data['RESULT'] as List

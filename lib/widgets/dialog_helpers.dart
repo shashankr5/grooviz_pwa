@@ -73,10 +73,12 @@ Future<String?> showAddNotesSheet(BuildContext context) {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _sheetHandle(),
-              _sheetHeader("Add Notes",
-                  subtitle: "Add any relevant details for this request"),
-              const Divider(height: 20, thickness: 1, color: AppColors.borderLight),
+              // NOTE: Header (handle + title + divider) intentionally removed.
+              // Kept here for future reference if needed:
+              // _sheetHandle(),
+              // _sheetHeader("Add Notes", subtitle: "Add any relevant details for this request"),
+              // const Divider(height: 20, thickness: 1, color: AppColors.borderLight),
+              const SizedBox(height: 20),
 
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),

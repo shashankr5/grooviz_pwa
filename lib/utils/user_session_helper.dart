@@ -199,6 +199,49 @@ class UserSessionHelper {
     return prefs.getBool(StorageKeys.isDecline) ?? false;
   }
 
+  // ---------- PER-DEPT ESCALATION PERMISSIONS MAP ----------
+
+  /// Saves per-department escalation permissions as a JSON string.
+  /// Key is dept_id.toString(); value is {isAccept, reassign, isDecline}.
+  static Future<void> saveDeptPermissionsMap(
+      Map<String, Map<String, bool>> map) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(StorageKeys.deptPermissionsMap, jsonEncode(map));
+  }
+
+  /// Returns escalation permissions for a specific department.
+  /// Falls back to the flat bools if the dept isn't in the map or deptId is null.
+  static Future<Map<String, bool>> getDeptPermissionsForDept(
+      dynamic deptId) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Flat bool fallback — already saved as OR-merge across all depts at login
+    final fallback = {
+      'isAccept':  prefs.getBool(StorageKeys.isAccept)  ?? false,
+      'reassign':  prefs.getBool(StorageKeys.reassign)  ?? false,
+      'isDecline': prefs.getBool(StorageKeys.isDecline) ?? false,
+    };
+
+    if (deptId == null) return fallback;
+
+    final raw = prefs.getString(StorageKeys.deptPermissionsMap);
+    if (raw == null || raw.isEmpty) return fallback;
+
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final key = deptId.toString();
+      if (!decoded.containsKey(key)) return fallback;
+      final entry = decoded[key] as Map<String, dynamic>;
+      return {
+        'isAccept':  entry['isAccept']  as bool? ?? false,
+        'reassign':  entry['reassign']  as bool? ?? false,
+        'isDecline': entry['isDecline'] as bool? ?? false,
+      };
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   // ---------- ROLE ID (numeric, from DB roles table) ----------
   // Role ID mapping (must match DB):
   //   1 = Admin
@@ -364,6 +407,7 @@ class UserSessionHelper {
     await prefs.remove(StorageKeys.isAccept);
     await prefs.remove(StorageKeys.reassign);
     await prefs.remove(StorageKeys.isDecline);
+    await prefs.remove(StorageKeys.deptPermissionsMap);
 
     // Restore installation ID and device identifier
     if (installationId != null) {

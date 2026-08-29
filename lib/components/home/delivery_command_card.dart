@@ -196,48 +196,15 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
       ),
       child: Stack(
         children: [
-          // Left accent bar — rendered as an absolutely-positioned strip
-          // inside the card so BorderRadius still applies cleanly.
-          if (_hasReady)
-            Positioned(
-              left: 0,
-              top: 0,
-              bottom: 0,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                width: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.orange,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(20),
-                    bottomLeft: Radius.circular(20),
-                  ),
-                ),
-              ),
-            ),
-          // Card content — left padding accounts for the accent bar
+          // Card content
           Padding(
-            padding: EdgeInsets.fromLTRB(
-              _hasReady ? 20 : 16, 14, 16, 14),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _buildHeaderRow(),
                 const SizedBox(height: 12),
                 _buildMiniTileRow(),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  transitionBuilder: (child, anim) => SizeTransition(
-                    sizeFactor: anim,
-                    axisAlignment: -1,
-                    child: FadeTransition(opacity: anim, child: child),
-                  ),
-                  child: (_hasReady && widget.oldestReadyOrder != null)
-                      ? _buildPreviewRow(key: const ValueKey('preview'))
-                      : const SizedBox.shrink(key: ValueKey('empty')),
-                ),
               ],
             ),
           ),

@@ -72,7 +72,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
 
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  String   selectedFilter = 'All';
+  // Default to Pending so new orders are visible immediately without scrolling.
+  // Staff land on the actionable view — they can tap All to see everything.
+  String   selectedFilter = FoodOrderStatus.pending.label;
   DateTime _currentDay    = DateTime.now();
 
   final FoodOrderService _foodOrderService = FoodOrderService();
@@ -1029,7 +1031,9 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       appBar: _buildAppBar(),
       body: Column(
         children: [
-          _buildRushHourBanner(),
+          // RUSH HOUR BANNER — hidden for now. All logic preserved below.
+          // Re-enable by uncommenting: _buildRushHourBanner(),
+          // _buildRushHourBanner(),
           _buildFilterContainers(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -1131,7 +1135,15 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
   }
 
   // ── RUSH HOUR BANNER ─────────────────────────────────────────
+  // HIDDEN: Rush hour concept is temporarily hidden from the UI.
+  // All state, logic, WebSocket handlers, and service calls are preserved.
+  // To re-enable: uncomment _buildRushHourBanner() in build() and remove the
+  // const SizedBox.shrink() early-return below.
   Widget _buildRushHourBanner() {
+    // TODO: remove this line to restore the banner
+    return const SizedBox.shrink();
+
+    // ignore: dead_code
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
@@ -1780,43 +1792,57 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                               _showError("Order ID missing. Please refresh.");
                               return;
                             }
-                            // Optimistic ETA: use configured rush hour when active.
-                            // Server will correct the real ETA after _loadFoodOrders.
-                            final etaBase = (rushHourActive && _configuredRushHourMinutes > 0)
-                                ? _configuredRushHourMinutes
-                                : 15;
-                            final initialExpires = DateTime.now().add(
-                                Duration(minutes: etaBase));
+
+                            // Optimistic UI: move card to Preparing immediately.
+                            // We do NOT set etaExpiresAt here — the server returns
+                            // the real final_eta_time in the accept response and we
+                            // apply it below. Showing a dummy timer is worse UX
+                            // than showing no timer for the ~1s the API takes.
                             setState(() {
                               _acceptingIndex = index;
-                              order["status"] = FoodOrderStatus.preparing.label;
+                              order["status"]     = FoodOrderStatus.preparing.label;
                               order["acceptedAt"] = DateTime.now();
-                              order["etaExpiresAt"] = initialExpires;
                               order["etaTapCount"] = 0;
-                              order["etaLocked"] = false;
-                              if (rushHourActive && _configuredRushHourMinutes > 0) {
-                                order['etaMinutes'] = _configuredRushHourMinutes;
-                                order['extraEta'] = (_configuredRushHourMinutes - 15).clamp(0, _configuredRushHourMinutes);
-                              }
+                              order["etaLocked"]   = false;
                             });
-                            final result =
-                                await _foodOrderService.acceptFoodOrder(
-                                    summaryId: summaryId);
+
+                            final result = await _foodOrderService.acceptFoodOrder(
+                                summaryId: summaryId);
                             if (!mounted) return;
+
                             if (result["success"] != true) {
+                              // Roll back optimistic move
                               setState(() {
                                 order["status"] = FoodOrderStatus.pending.label;
                                 order.remove("acceptedAt");
-                                order.remove("etaExpiresAt");
                               });
                               _showError(result["message"]);
                             } else {
                               order["raw"]["order_status"] = "ACCEPTED";
-                              // Show success immediately — before the reload
+
+                              // Apply real server ETA so the countdown is accurate
+                              // from the first frame — no dummy timer flash.
+                              final etaTimeStr = result["etaTime"]?.toString() ?? '';
+                              if (etaTimeStr.isNotEmpty) {
+                                final realExpires = parseOrderDate(etaTimeStr);
+                                if (realExpires.isAfter(DateTime.now())) {
+                                  setState(() => order["etaExpiresAt"] = realExpires);
+                                }
+                              }
+
+                              // Toast + stop alert sound
                               AppSnackBar.show(context, "Order accepted");
                               await OrderAlertService.stopOne();
-                              // Reload silently (no skeleton flash) to reconcile
-                              // server state: ETA, accepted timestamp, etc.
+
+                              // Switch to Preparing tab so the accepted card is
+                              // immediately visible without any manual navigation.
+                              setState(() => selectedFilter = FoodOrderStatus.preparing.label);
+
+                              // Notify home page DeliveryCommandCard to refresh
+                              // its counts (Ready ↓, Accepted ↑) proactively.
+                              TaskAlertService.notifyNewDelivery();
+
+                              // Silent reload to reconcile server state.
                               await _loadFoodOrders(silent: true);
                             }
                             setState(() => _acceptingIndex = null);

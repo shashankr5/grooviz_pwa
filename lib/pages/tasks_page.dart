@@ -1387,11 +1387,9 @@ class TasksPageState extends State<TasksPage> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border(
-          left: BorderSide(
-            color: d.highlight ? d.accentColor : d.accentColor.withValues(alpha: 0.5),
-            width: 3,
-          ),
+        border: Border.all(
+          color: AppColors.borderLight,
+          width: 1,
         ),
         boxShadow: [
           BoxShadow(
@@ -2822,9 +2820,6 @@ class TasksPageState extends State<TasksPage> {
     Widget rowContent = Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border(
-          left: BorderSide(color: accentColor, width: 3),
-        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

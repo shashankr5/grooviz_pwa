@@ -266,7 +266,24 @@ Future<void> _handleForegroundMessage(
 
     case 'ESCALATION':
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
-      EscalationService.instance.handleEscalationAlert(data);
+
+      // Guard: only fire the badge/list-refresh streams on the device that is
+      // the actual escalation target. The Lambda already sends this FCM only
+      // to the specific to_user_id token, but a safety check here prevents
+      // badge inflation on shared devices or after token mis-assignment.
+      //
+      // Rules:
+      //   to_user_id missing or '0'  → allow (old Lambda version without field)
+      //   to_user_id == currentUserId → allow (this is the target device)
+      //   to_user_id != currentUserId → skip (wrong device received the push)
+      final _toUid    = (data['to_user_id'] ?? '').toString().trim();
+      final _myUid    = (userId ?? 0).toString();
+      final _isTarget = _toUid.isEmpty || _toUid == '0' || _toUid == _myUid;
+      if (_isTarget) {
+        EscalationService.instance.handleEscalationAlert(data);
+      } else {
+        print('Foreground FCM | ESCALATION skipped — to_user_id=$_toUid != currentUser=$_myUid');
+      }
       AlertStateManager.notifyNewTask();
       break;
 
