@@ -156,46 +156,86 @@ class TaskService {
       );
 
       final data = response.data as Map? ?? const {};
+
+      // Lambda cold-start / timeout detection
+      if (data['errorType'] != null) {
+        dev.log('acceptServiceRequest: Lambda timeout — errorType=${data['errorType']}');
+        return {
+          'success': false,
+          'timedOut': true,
+          'message': 'The server took too long to respond. Please refresh to check the status.',
+        };
+      }
+
+      // ── Response format: RESULT[0] carries both the status sentinel AND
+      //    all service/food-order details in the same row.
+      //    Fallback to STATUS[] for older Lambda versions.
+      // ──────────────────────────────────────────────────────────────────────
+      final rawResult = data['RESULT'];
       final rawStatus = data['STATUS'];
+
+      // Prefer RESULT — new Lambda always populates it
+      final resultList = rawResult is List
+          ? rawResult
+          : (rawResult is Map ? [rawResult] : const <dynamic>[]);
+
       final statusList = rawStatus is List
           ? rawStatus
           : (rawStatus is Map ? [rawStatus] : const <dynamic>[]);
 
-      if (statusList.isNotEmpty && statusList.first is Map) {
-        final statusMap = statusList.first as Map;
-        final flag = statusMap['status']?.toString().toUpperCase();
-        final message = statusMap['message']?.toString() ?? 'Service request accepted successfully';
-        if (flag == 'S') {
-          dev.log('✅ acceptServiceRequest success: $message');
-          // RESULT2 is the assignment/audit result set returned by
-          // accept_service_request_mobile1. Keep it available for the UI.
-          final rawAssignment =
-              data['RESULT2'] ?? data['RESULT_2'] ?? data['ASSIGNMENT'];
-          final assignmentRows = rawAssignment is List
-              ? rawAssignment
-              : (rawAssignment is Map ? [rawAssignment] : const <dynamic>[]);
-          final assignment = assignmentRows.isNotEmpty && assignmentRows.first is Map
-              ? Map<String, dynamic>.from(assignmentRows.first as Map)
-              : <String, dynamic>{};
-          return {
-            'success': true,
-            'message': message,
-            'assignment': assignment,
-            'accepted_at': assignment['accepted_at'],
-            'accepted_by_user_name': assignment['accepted_by_user_name'] ??
-                assignment['accepted_by_name'],
-          };
-        } else {
-          return {
-            'success': false,
-            'message': message,
-          };
-        }
+      // Pick the first non-empty list as the sentinel source
+      final sentinel = resultList.isNotEmpty
+          ? resultList.first
+          : (statusList.isNotEmpty ? statusList.first : null);
+
+      if (sentinel == null || sentinel is! Map) {
+        dev.log('acceptServiceRequest: no recognisable response — raw: $data');
+        return {'success': false, 'message': 'Invalid server response from accept endpoint'};
       }
 
+      final row     = Map<String, dynamic>.from(sentinel);
+      final flag    = row['status']?.toString().toUpperCase();
+      final message = row['message']?.toString() ?? 'Service request accepted successfully';
+
+      dev.log('acceptServiceRequest: flag=$flag message=$message');
+
+      // Deployed Lambda puts the SP status string in 'status' (e.g. "In Progress"),
+      // not the sentinel 'S'/'E'. Accept either 'S' or any non-failure status.
+      final isSuccess = flag == 'S' ||
+          flag == 'IN PROGRESS' ||
+          flag == 'IN_PROGRESS' ||
+          flag == 'INPROGRESS' ||
+          flag == 'SUCCESS' ||
+          (flag != null && flag != 'E' && flag != 'F' && flag != 'ERROR' && flag != 'FAILED');
+
+      if (!isSuccess) {
+        return {'success': false, 'message': message};
+      }
+
+      // RESULT2 / RESULT_2 / ASSIGNMENT — assignment audit row (older Lambdas)
+      final rawAssignment = data['RESULT2'] ?? data['RESULT_2'] ?? data['ASSIGNMENT'];
+      final assignmentRows = rawAssignment is List
+          ? rawAssignment
+          : (rawAssignment is Map ? [rawAssignment] : const <dynamic>[]);
+      final assignment = assignmentRows.isNotEmpty && assignmentRows.first is Map
+          ? Map<String, dynamic>.from(assignmentRows.first as Map)
+          : <String, dynamic>{};
+
+      // Merge main result row + assignment row so callers get all available fields
+      final merged = {...row, ...assignment};
+
+      dev.log('✅ acceptServiceRequest success: $message | sr=${merged['service_request_id']}');
+
       return {
-        'success': false,
-        'message': 'Invalid server response from accept endpoint',
+        'success':               true,
+        'message':               message,
+        'assignment':            merged,
+        'accepted_at':           merged['accepted_at'],
+        'accepted_by_user_name': merged['accepted_by_user_name'] ??
+                                 merged['accepted_by_name'],
+        // Pass through food-order fields the delivery UI may need
+        'food_order_summary_id': merged['food_order_summary_id'],
+        'order_number':          merged['order_number'],
       };
     } catch (e) {
       dev.log('ERROR (acceptServiceRequest): $e');
@@ -366,8 +406,6 @@ class TaskService {
   }
 
   /// Closes a service request through close_service_mobile1.
-  /// The server derives enterprise/department from the request and verifies
-  /// the signed-in user's current department assignment.
   Future<Map<String, dynamic>> closeService({
     required int serviceRequestId,
     String stage = AppConfig.stage,
@@ -388,11 +426,8 @@ class TaskService {
       );
       final data = response.data as Map? ?? const {};
 
-      // Lambda cold-start / timeout returns {"errorType":"Sandbox.Timedout",...}
-      // as HTTP 200. The operation may have succeeded server-side, so treat this
-      // as a retryable soft-failure rather than a hard error.
       if (data['errorType'] != null) {
-        dev.log('closeService: Lambda timeout detected — errorType=${data['errorType']}');
+        dev.log('closeService: Lambda timeout — errorType=${data['errorType']}');
         return {
           'success': false,
           'timedOut': true,
@@ -400,31 +435,66 @@ class TaskService {
         };
       }
 
-      final statusRows = data['STATUS'] is List ? data['STATUS'] as List : const <dynamic>[];
-      final resultRows = data['RESULT'] is List
-          ? data['RESULT'] as List
-          : (data['RESULT2'] is List ? data['RESULT2'] as List : const <dynamic>[]);
-      final status = statusRows.isNotEmpty && statusRows.first is Map
-          ? Map<String, dynamic>.from(statusRows.first as Map)
-          : <String, dynamic>{};
-      final details = resultRows.isNotEmpty && resultRows.first is Map
-          ? Map<String, dynamic>.from(resultRows.first as Map)
-          : <String, dynamic>{};
-      final flag = status['status']?.toString().toUpperCase();
-      if (flag != 'S' && flag != '200') {
-        return {'success': false, 'message': status['message'] ?? 'Failed to close service request'};
+      // The repo close_service_mobile1 returns { STATUS: [...], RESULT: [...] }
+      // STATUS[0].status = flag, STATUS[0].message = message
+      // RESULT[0] = detail row (closed_at, closed_by_user_name, etc.)
+      // The deployed TV-only version uses formatResult → RESULT[0] for everything.
+      // Handle both by checking STATUS first, falling back to RESULT.
+      final rawStatus = data['STATUS'];
+      final rawResult = data['RESULT'];
+
+      final statusList = rawStatus is List
+          ? rawStatus
+          : (rawStatus is Map ? [rawStatus] : const <dynamic>[]);
+      final resultList = rawResult is List
+          ? rawResult
+          : (rawResult is Map ? [rawResult] : const <dynamic>[]);
+
+      // STATUS-based Lambda (repo version): STATUS[0] has flag, RESULT[0] has details
+      // RESULT-based Lambda (deployed TV version): RESULT[0] has both flag + details
+      Map<String, dynamic> flagRow;
+      Map<String, dynamic> detailRow;
+
+      if (statusList.isNotEmpty && statusList.first is Map) {
+        flagRow   = Map<String, dynamic>.from(statusList.first as Map);
+        detailRow = resultList.isNotEmpty && resultList.first is Map
+            ? Map<String, dynamic>.from(resultList.first as Map)
+            : <String, dynamic>{};
+      } else if (resultList.isNotEmpty && resultList.first is Map) {
+        // formatResult version — everything in RESULT[0]
+        flagRow   = Map<String, dynamic>.from(resultList.first as Map);
+        detailRow = flagRow;
+      } else {
+        dev.log('closeService: no recognisable response — raw: $data');
+        return {'success': false, 'message': 'Invalid server response from close endpoint'};
+      }
+
+      final flag    = flagRow['status']?.toString().toUpperCase();
+      final message = flagRow['message']?.toString() ?? 'Service request closed successfully';
+
+      dev.log('closeService: flag=$flag message=$message');
+
+      // The deployed Lambda puts the SP status string in 'status' (e.g. "Closed"),
+      // not the sentinel 'S'/'E'. Accept either 'S' or any non-failure status.
+      final isSuccess = flag == 'S' ||
+          flag == 'CLOSED' ||
+          flag == 'SUCCESS' ||
+          (flag != null && flag != 'E' && flag != 'F' && flag != 'ERROR' && flag != 'FAILED');
+
+      if (!isSuccess) {
+        return {'success': false, 'message': message};
       }
 
       return {
-        'success': true,
-        'message': status['message'] ?? 'Service request closed successfully',
-        'current_status': 'Closed',
-        'closed_at': details['closed_at'],
-        'closed_by_user_name': details['closed_by_user_name'],
-        'data': details,
+        'success':             true,
+        'message':             message,
+        'current_status':      'Closed',
+        'closed_at':           detailRow['closed_at'],
+        'closed_by_user_name': detailRow['closed_by_user_name'],
+        'data':                detailRow,
       };
     } catch (e) {
-      dev.log('Close service mobile1 failed: $e');
+      dev.log('closeService failed: $e');
       return {'success': false, 'message': ErrorHandler.friendlyMessage(e)};
     }
   }

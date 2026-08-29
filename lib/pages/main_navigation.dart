@@ -23,7 +23,7 @@ class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
 
   /// Called externally (e.g. from notification tap) to switch to a named tab.
-  /// Keys: 'home', 'food', 'tasks', 'camera'.
+  /// Keys: 'home', 'food', 'tasks', 'camera', 'profile'.
   static void Function(String tabKey)? tabSwitchCallback;
 
   @override
@@ -40,11 +40,24 @@ class _MainNavigationState extends State<MainNavigation>
   late final RoleChangeWatcher _roleWatcher;
   StreamSubscription<String>? _sessionChangeSub;
 
-  final GlobalKey<HomePageState>       _homeKey     = GlobalKey<HomePageState>();
-  final GlobalKey<FoodOrdersPageState> _foodKey     = GlobalKey<FoodOrdersPageState>();
-  final GlobalKey<TasksPageState>      _tasksKey    = GlobalKey<TasksPageState>();
+  final GlobalKey<HomePageState>       _homeKey  = GlobalKey<HomePageState>();
+  final GlobalKey<FoodOrdersPageState> _foodKey  = GlobalKey<FoodOrdersPageState>();
+  final GlobalKey<TasksPageState>      _tasksKey = GlobalKey<TasksPageState>();
 
   // ── Nav config ────────────────────────────────────────────────────────────
+  //
+  // Tab visibility rules (nav bar only — Home page has its own in-page guards):
+  //
+  //  • Home      — all depts EXCEPT Food & Beverage
+  //  • Food      — Food & Beverage only (+ management)
+  //  • My Tasks  — every dept
+  //  • Camera    — Front Office, Concierge / Guest Relations, management
+  //  • Profile   — Food & Beverage only (they have no Home tab; others use
+  //                the profile avatar in the Home AppBar)
+  //
+  // Delivery Queue and Report/Checkout are NOT nav-bar items.
+  // They appear as cards / AppBar icons inside the Home page, conditionally
+  // shown by home_page.dart based on the user's department.
 
   late final List<_NavEntry> _allNavItems = [
     _NavEntry(
@@ -96,39 +109,38 @@ class _MainNavigationState extends State<MainNavigation>
 
   // ── Department → visible tab keys ─────────────────────────────────────────
   //
-  // Each department is mapped to exactly the tabs its staff need.
-  // Fuzzy matching handles casing/spacing variants from the server.
-  // Management roles (Manager, GM, Admin) bypass dept restrictions
-  // and see every tab so they can supervise the full operation.
+  // Returns the set of nav-bar tab keys this department's staff should see.
+  // Fuzzy matching handles casing / spacing variants from the server.
 
   Set<String> _tabsForDepartment(String dept) {
     final d = dept.trim().toLowerCase();
 
     // ── Food & Beverage ───────────────────────────────────────────────────
-    // F&B staff work on the Food tab; they don't handle service requests
-    // or room deliveries directly. They now also have access to their profile.
+    // F&B staff use the Food tab and My Tasks. They have no Home page so
+    // they get the Profile tab to access their info and log out.
     if (d == 'food & beverage' ||
         d == 'food and beverage' ||
         d == 'f&b' ||
         d == 'fnb' ||
-        d.contains('food') && d.contains('beverage')) {
+        (d.contains('food') && d.contains('beverage'))) {
       return {'food', 'tasks', 'profile'};
     }
 
     // ── Front Office ──────────────────────────────────────────────────────
-    // Front-desk staff handle service requests and can view guest camera
-    // content. They don't handle food orders or room-service deliveries.
+    // Front-desk staff see Home, My Tasks, and Camera. The Checkout/Report
+    // button is shown inside the Home AppBar — not a separate nav tab.
     if (d == 'front office' ||
         d == 'frontoffice' ||
         d == 'front desk' ||
         d == 'frontdesk' ||
-        d.contains('front') && d.contains('office')) {
+        (d.contains('front') && d.contains('office'))) {
       return {'home', 'tasks', 'camera'};
     }
 
     // ── Room Service ──────────────────────────────────────────────────────
-    // Room-service staff deliver food orders and handle service requests.
-    if (d.contains('room') && d.contains('service') ||
+    // Room-service staff handle deliveries. The Delivery Queue is shown as
+    // a command card inside the Home page — not a separate nav tab.
+    if ((d.contains('room') && d.contains('service')) ||
         d == 'roomservice') {
       return {'home', 'tasks'};
     }
@@ -152,7 +164,7 @@ class _MainNavigationState extends State<MainNavigation>
     // ── IT ────────────────────────────────────────────────────────────────
     if (d == 'it' ||
         d == 'information technology' ||
-        d.contains('informat') && d.contains('tech')) {
+        (d.contains('informat') && d.contains('tech'))) {
       return {'home', 'tasks'};
     }
 
@@ -185,22 +197,22 @@ class _MainNavigationState extends State<MainNavigation>
       return {'home', 'tasks', 'camera'};
     }
 
-    // ── Default: any unrecognised department sees the core tabs ───────────
+    // ── Default: any unrecognised department gets the core tabs ───────────
     return {'home', 'tasks'};
   }
 
   List<String> get _visibleKeys {
-    // Management roles (Manager, GM, Admin) are not restricted by department —
-    // they supervise all operations and need every tab.
-    const managementRoles = {
-      'admin', 'general manager', 'manager',
-    };
+    // Management roles bypass dept restrictions — they supervise everything.
+    const managementRoles = {'admin', 'general manager', 'manager'};
     if (managementRoles.contains(_userRole.trim().toLowerCase())) {
-      // Management sees all tabs except the profile tab (they always have Home).
-      return _allNavItems.map((e) => e.key).where((k) => k != 'profile').toList();
+      // Management always has Home, so no Profile tab needed.
+      return _allNavItems
+          .map((e) => e.key)
+          .where((k) => k != 'profile')
+          .toList();
     }
 
-    // No departments stored yet — show minimal set while loading.
+    // No departments stored yet — minimal fallback while still loading.
     if (_departments.isEmpty) return ['home', 'tasks'];
 
     // Union the allowed tabs across all of the user's departments.
@@ -209,9 +221,15 @@ class _MainNavigationState extends State<MainNavigation>
       allowed.addAll(_tabsForDepartment(dept));
     }
 
-    // If the user has no 'home' tab, replace it with 'profile' so they
-    // still have access to their info and logout.
-    if (!allowed.contains('home')) {
+    // Profile tab is only shown when the user has NO home-giving department.
+    // If any department grants 'home', remove 'profile' — the user reaches
+    // their profile via the AppBar avatar on the Home page instead.
+    // This handles multi-dept users (e.g. F&B + Room Service) correctly:
+    // Room Service grants 'home', so 'profile' from F&B is stripped out.
+    if (allowed.contains('home')) {
+      allowed.remove('profile');
+    } else if (!allowed.contains('profile')) {
+      // Pure F&B (or any no-home dept) — ensure profile is reachable.
       allowed.add('profile');
     }
 
@@ -232,19 +250,15 @@ class _MainNavigationState extends State<MainNavigation>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _requestPermissions();
-    _reconnectWebSocket(); // Fix Bug 1: Ensure WebSocket connects unconditionally on MainNavigation mount
+    _reconnectWebSocket();
 
-    // Register tab-switch callback so external callers (notification taps)
-    // can switch the active tab without needing direct widget tree access.
     MainNavigation.tabSwitchCallback = switchToTab;
 
     _roleWatcher = RoleChangeWatcher(onRoleChanged: _onRoleChanged);
     _roleWatcher.startWatching();
 
-    // Seed the role/dept baseline immediately on startup, then load departments.
     _seedBaselineIfNeeded();
 
-    // Listen for role/dept changes so we can react instantly on this navigator
     _sessionChangeSub =
         SessionChangeService.instance.onRoleChange.listen((_) {
       _onRoleChanged();
@@ -285,17 +299,14 @@ class _MainNavigationState extends State<MainNavigation>
 
   void _onTabTapped(int index) {
     if (_currentIndex == index) {
-      // Tapping the already-active tab: do NOT re-fetch data.
-      // Refreshing on same-tab tap causes _loadDeliveryCounts → resetDeliveryCount(0)
-      // → _reevaluate which previously re-triggered the foreground alert service.
-      // Standard bottom-nav UX: active-tab tap is a no-op (or scroll-to-top via page key).
+      // Tapping the already-active tab is a no-op — avoids re-triggering
+      // data loads / alert reconciliation on the same-tab tap.
       return;
     }
     setState(() => _currentIndex = index);
     _refreshCurrentTab(index);
   }
 
-  // Guards didChangeAppLifecycleState against notification-shade pulls.
   bool _didPause = false;
 
   @override
@@ -305,20 +316,13 @@ class _MainNavigationState extends State<MainNavigation>
       return;
     }
     if (state == AppLifecycleState.resumed) {
-      if (!_didPause) return; // shade pull: inactive→resumed, skip
+      if (!_didPause) return; // notification-shade pull: skip
       _didPause = false;
-      // Reload departments on resume in case they changed server-side
       _loadDepartments();
-      // FIX-9 (Bug 9): connect() has a same-credentials + isConnected guard,
-      // so this is a cheap no-op if already connected — but re-establishes
-      // the socket if it dropped while backgrounded.
       _reconnectWebSocket();
     }
   }
 
-  /// Seeds role + departments into SharedPreferences from the server if they
-  /// are not already present, and then loads departments. Sequenced to avoid
-  /// race conditions between initial write and read.
   Future<void> _seedBaselineIfNeeded() async {
     final existingRole  = await UserSessionHelper.getRole();
     final existingDepts = await UserSessionHelper.getDepartments();
@@ -365,15 +369,15 @@ class _MainNavigationState extends State<MainNavigation>
       debugPrint('[MainNavigation] Baseline already seeded: role="$existingRole" depts=$existingDepts');
     }
 
-    await _loadDepartments(); // Read departments only after baseline seed check is complete
+    await _loadDepartments();
   }
 
   Future<void> _reconnectWebSocket() async {
-    final userId = await UserSessionHelper.getUserId();
+    final userId       = await UserSessionHelper.getUserId();
     final enterpriseId = await UserSessionHelper.getEnterpriseId();
     if (userId == null || enterpriseId == null) return;
     WebSocketService().connect(
-      userId: userId.toString(),
+      userId:       userId.toString(),
       enterpriseId: enterpriseId.toString(),
     );
   }
@@ -386,7 +390,6 @@ class _MainNavigationState extends State<MainNavigation>
         _departments    = depts;
         _userRole       = role ?? '';
         _isLoadingDepts = false;
-        // Clamp index to valid range after dept/role change
         final entries = _activeEntries;
         if (_currentIndex >= entries.length) _currentIndex = 0;
       });
@@ -394,7 +397,6 @@ class _MainNavigationState extends State<MainNavigation>
   }
 
   Future<void> _requestPermissions() async {
-    // Wait for the first frame so we have a valid BuildContext for the sheet.
     await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
     await NotificationPermissionManager.requestAllPermissions(context);
@@ -404,9 +406,6 @@ class _MainNavigationState extends State<MainNavigation>
 
   bool _isShowingRoleChangedSheet = false;
 
-  /// Called by RoleChangeWatcher or WebSocket after session invalidation.
-  /// Shows an un-dismissible bottom sheet explaining what changed,
-  /// with a single "Log Out" button.
   void _onRoleChanged() {
     if (!mounted || _isShowingRoleChangedSheet) return;
     _isShowingRoleChangedSheet = true;
@@ -415,8 +414,8 @@ class _MainNavigationState extends State<MainNavigation>
 
     showModalBottomSheet(
       context: context,
-      isDismissible: false,
-      enableDrag:    false,
+      isDismissible:   false,
+      enableDrag:      false,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -518,7 +517,6 @@ class _RoleChangedSheet extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Handle bar
             Container(
               margin: const EdgeInsets.only(top: 12, bottom: 24),
               width:  36,
@@ -528,8 +526,6 @@ class _RoleChangedSheet extends StatelessWidget {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-
-            // Icon
             Container(
               padding: const EdgeInsets.all(18),
               decoration: const BoxDecoration(
@@ -543,31 +539,20 @@ class _RoleChangedSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 18),
-
-            // Title
-            const Text(
-              'Account Updated',
-              style: AppTypography.title,
-            ),
+            const Text('Account Updated', style: AppTypography.title),
             const SizedBox(height: 10),
-
-            // Specific reason
             Text(
               reason,
               textAlign: TextAlign.center,
               style: AppTypography.bodySecondary.copyWith(height: 1.5),
             ),
             const SizedBox(height: 6),
-
-            // Sub-text
             const Text(
               'Please log in again to continue with your updated access.',
               textAlign: TextAlign.center,
               style: AppTypography.bodySecondary,
             ),
             const SizedBox(height: 28),
-
-            // Log Out button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(

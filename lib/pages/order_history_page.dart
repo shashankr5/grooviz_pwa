@@ -310,10 +310,16 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
                         width: 140,
                         child: OperationalMetricTile(
                           label: 'Kitchen SLA',
-                          value: '${analytics!.avgPrepMinutes}m',
+                          // Show '--' when no orders have prep data yet
+                          value: analytics!.avgPrepMinutes > 0
+                              ? '${analytics!.avgPrepMinutes}m'
+                              : '--',
                           icon: Icons.timer_outlined,
                           color: AppColors.success,
-                          subtitle: '${analytics!.kitchenSlaPercent}%',
+                          // subtitle = % of orders meeting ≤15 min target
+                          subtitle: analytics!.avgPrepMinutes > 0
+                              ? '${analytics!.kitchenSlaPercent}% ≤15m'
+                              : 'No data',
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -321,10 +327,15 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
                         width: 140,
                         child: OperationalMetricTile(
                           label: 'Delivery SLA',
-                          value: '${analytics!.avgDeliveryMinutes}m',
+                          // Show '--' when no delivered orders exist in range
+                          value: analytics!.avgDeliveryMinutes > 0
+                              ? '${analytics!.avgDeliveryMinutes}m'
+                              : '--',
                           icon: Icons.local_shipping_outlined,
                           color: Colors.indigo,
-                          subtitle: 'Target <15m',
+                          subtitle: analytics!.avgDeliveryMinutes > 0
+                              ? 'Avg ready→door'
+                              : 'No delivered orders',
                         ),
                       ),
                       const SizedBox(width: 10),

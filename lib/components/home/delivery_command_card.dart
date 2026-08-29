@@ -169,15 +169,10 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
   // ── Live card ─────────────────────────────────────────────────────────────
 
   Widget _buildCard() {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
+    return Container(
       decoration: BoxDecoration(
         color: _cardBg,
         borderRadius: BorderRadius.circular(20),
-        // Uniform border — Flutter cannot combine BorderRadius with
-        // non-uniform border widths (different sides cause silent render failure).
-        // The left accent is implemented as an overlay inside the Stack below.
         border: Border.all(
           color: _hasReady
               ? AppColors.orange.withOpacity(0.25)
@@ -196,7 +191,6 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
       ),
       child: Stack(
         children: [
-          // Card content
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
             child: Column(
@@ -220,9 +214,7 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         // Icon with urgency tint
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
+        Container(
           padding: const EdgeInsets.all(7),
           decoration: BoxDecoration(
             color: _hasReady
@@ -243,8 +235,8 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 300),
+              Text(
+                'Delivery Queue',
                 style: AppTypography.title.copyWith(
                   fontSize: 14,
                   fontWeight: FontWeight.w700,
@@ -252,7 +244,6 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
                       ? AppColors.orange
                       : AppColors.textPrimary,
                 ),
-                child: const Text('Delivery Queue'),
               ),
               const SizedBox(height: 1),
               AnimatedSwitcher(
@@ -380,9 +371,7 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () => widget.onNavigate(tile.filter),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
+        child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           decoration: BoxDecoration(
             color: isActive ? tile.color : Colors.white,
@@ -415,15 +404,14 @@ class _DeliveryCommandCardState extends State<DeliveryCommandCard>
                 color: isActive ? Colors.white : tile.color,
               ),
               const SizedBox(height: 4),
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 200),
+              Text(
+                '${tile.count}',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                   color: isActive ? Colors.white : AppColors.textPrimary,
                   height: 1.1,
                 ),
-                child: Text('${tile.count}'),
               ),
               const SizedBox(height: 2),
               Text(

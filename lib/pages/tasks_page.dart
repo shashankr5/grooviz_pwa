@@ -36,6 +36,7 @@ import '../services/profile_service.dart';
 import '../services/escalation_service.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/report_pdf_helper.dart';
+import '../utils/date_formatter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:printing/printing.dart';
 import 'dart:typed_data';
@@ -3008,18 +3009,7 @@ class TasksPageState extends State<TasksPage> {
 
   String _timeAgo(String ts) {
     if (ts.isEmpty) return '';
-    try {
-      String s = ts.trim();
-      if (s.contains(' ') && !s.contains('T')) {
-        s = s.replaceFirst(' ', 'T');
-      }
-      final diff = DateTime.now().difference(DateTime.parse(s).toLocal());
-      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-      if (diff.inHours   < 24) return '${diff.inHours}h ago';
-      return '${diff.inDays}d ago';
-    } catch (_) {
-      return '';
-    }
+    return DateFormatter.formatDateTimeAmPm(ts);
   }
 
   // ── Motivation Banner ─────────────────────────────────────────────────────

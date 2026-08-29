@@ -77,18 +77,6 @@ class AppSnackBar {
                         ),
                       ),
                     ),
-                    GestureDetector(
-                      onTap: () {
-                        if (ctx.mounted && route != null && route.isActive && route.isCurrent) {
-                          Navigator.of(ctx).pop();
-                        }
-                      },
-                      child: const Padding(
-                        padding: EdgeInsets.only(left: 8),
-                        child: Icon(Icons.close_rounded,
-                            size: 18, color: AppColors.textDisabled),
-                      ),
-                    ),
                   ],
                 ),
               ),

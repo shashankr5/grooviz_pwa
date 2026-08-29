@@ -592,10 +592,14 @@ class FoodOrderService {
           "raw": {
             ...m,
             // Ensure keys the analytics model reads are present
-            "order_time":        orderTimeVal,
-            "created_at":        orderTimeVal,
-            "status_changed_at": m["status_changed_at"],
-            "cancel_reason":     m["cancel_reason"] ?? "",
+            "order_time":              orderTimeVal,
+            "created_at":              orderTimeVal,
+            "status_changed_at":       m["status_changed_at"],
+            "cancel_reason":           m["cancel_reason"] ?? "",
+            // SLA timestamps — preserved for Kitchen & Delivery SLA calculation
+            "summary_preparing_time":  m["summary_preparing_time"],
+            "summary_ready_time":      m["summary_ready_time"],
+            "summary_delivered_time":  m["summary_delivered_time"],
           },
         };
       }).toList();

@@ -40,6 +40,7 @@ import '../services/websocket_service.dart';
 import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/alert_reload_coordinator.dart';
+import '../services/alert_state_manager.dart';
 import '../utils/user_session_helper.dart';
 import '../utils/date_formatter.dart';
 import '../utils/app_snackbar.dart';
@@ -414,16 +415,8 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         icon:    Icons.check_circle_rounded,
       );
       if (confirm != true) return;
-    } else if (isAccept) {
-      final confirm = await _showConfirmSheet(
-        title:   'Accept Task',
-        body:    'Mark this task as In Progress?',
-        confirm: 'Accept',
-        color:   const Color(0xFFEF8C00),
-        icon:    Icons.assignment_turned_in_rounded,
-      );
-      if (confirm != true) return;
     }
+    // Accept: no confirmation — tap once and it goes, same as home page.
 
     setState(() => _isLoading = true);
 
@@ -496,9 +489,11 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     }
 
     // Reload from server to reconcile real pending + escalation counts.
-    // Optimistic decrements alone cannot clear escalationActive if other
-    // escalated tasks still exist — only a server reload knows the true count.
+    // notifyNewTask() fires the stream that HomePage._newTaskSub listens to,
+    // so the KPI counts (Open / In Progress / Closed) update immediately
+    // without waiting for app lifecycle resume.
     await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+    AlertStateManager.notifyNewTask();
 
     // ── Optimistic UI update from SP STATUS[0] response ─────────────────
     final currentStatus    = result['current_status'] as String? ?? (isClose ? 'Closed' : 'In Progress');
@@ -515,7 +510,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     setState(() {
       _task['status'] = currentStatus;
       if (_task['raw'] is Map) {
-        final raw = _task['raw'] as Map;
+        // Force Map<String, dynamic> so key writes always land correctly
+        final raw = Map<String, dynamic>.from(_task['raw'] as Map);
+        _task['raw'] = raw;
         if (isClose) {
           raw['closed']              = 1;
           raw['status']              = 'CLOSED';
@@ -528,11 +525,13 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
         } else {
           raw['status']                 = 'IN_PROGRESS';
           raw['accepted_by_user_name']  = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
-          raw['accepted_at']             = result['accepted_at'] ?? raw['accepted_at'];
-          // Also update assigned_to_name and _task['assignedTo'] so display updates immediately
-          raw['assigned_to_name']        = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
-          _task['assignedTo']            = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
-          _task['accepted_at']             = result['accepted_at'] ?? _task['accepted_at'];
+          raw['accepted_by_user_id']    = result['assignment']?['accepted_by_user_id'] ?? _loggedInUserId;
+          raw['accepted_at']            = result['accepted_at'] ?? raw['accepted_at'];
+          // Mirror into assigned_to fields so _buildInfoCard shows name immediately
+          raw['assigned_to_name']       = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          raw['assigned_to_user_name']  = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          _task['assignedTo']           = result['accepted_by_user_name'] ?? raw['accepted_by_user_name'];
+          _task['accepted_at']          = result['accepted_at'] ?? _task['accepted_at'];
           raw['escalation_status']      = escStatus;
           raw['next_escalation_at']     = nextEscalationAt;
         }
@@ -562,7 +561,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
       if (_isEscalated) {
         _showEscalationResolvedToast('accept');
       } else {
-        AppSnackBar.show(context, 'Task accepted — In Progress ✅');
+        AppSnackBar.show(context, 'Task accepted');
       }
     }
   }
@@ -2347,7 +2346,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
                 style: TextStyle(
                     fontWeight: FontWeight.w700, fontSize: 14)),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFEF8C00),
+              backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(

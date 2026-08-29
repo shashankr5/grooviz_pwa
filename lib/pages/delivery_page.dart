@@ -654,16 +654,14 @@ class _DeliveryPageState extends State<DeliveryPage>
         final alreadyClosed   = msg.contains('already closed') || msg.contains('closed');
 
         if (alreadyAccepted) {
-          // Race: someone else accepted it first — reload, switch to Accepted.
-          AppSnackBar.show(context, 'Order was just accepted by another staff member');
+          // Race: someone else accepted it first — reload silently, switch to Accepted.
           await _loadAllOrders();
           if (!mounted) return;
           setState(() { selectedFilter = 'Accepted'; _tabController.animateTo(1); });
           return;
         }
         if (notFound || alreadyClosed) {
-          // Stale data: SR was closed/deleted since last reload — reload silently.
-          AppSnackBar.show(context, 'Order status changed. Refreshing list...');
+          // Stale data: reload silently.
           await _loadAllOrders();
           return;
         }
@@ -756,27 +754,13 @@ class _DeliveryPageState extends State<DeliveryPage>
       // and never touches order_status_summary. Without this call the food order
       // stays stuck at "Ready" on the kitchen screen.
       if (summaryId != null) {
-        final foodResult = await FoodOrderService().updateFoodOrderStatus(
+        await FoodOrderService().updateFoodOrderStatus(
           summaryId: summaryId,
           status: 'Delivered',
         );
         if (!mounted) return;
-        // Log but don't block — service request is already closed server-side.
-        if (foodResult['success'] != true) {
-          // Non-fatal: food order may already be Delivered server-side if a
-          // duplicate tap raced through. Reload will reflect the true state.
-          AppSnackBar.show(
-            context,
-            'Delivery recorded. Food order sync: ${foodResult['message'] ?? 'check again shortly'}',
-          );
-        }
-      } else {
-        // summaryId missing — SR is closed but food order won't auto-update.
-        // Surface a clear warning so the kitchen knows to check manually.
-        AppSnackBar.show(
-          context,
-          'Delivery recorded. Food order status could not be updated — summary ID missing.',
-        );
+        // Non-fatal if it fails — service request is already closed server-side.
+        // Reload will reflect the true state; no extra toast needed here.
       }
 
       if (!mounted) return;

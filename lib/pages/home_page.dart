@@ -961,7 +961,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       onRefresh: _loadTasks,
       child: SingleChildScrollView(
       controller: _scrollController,
-      padding: const EdgeInsets.only(top: 8, bottom: 24),
+      padding: const EdgeInsets.only(top: 4, bottom: 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -974,7 +974,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
 
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1048,7 +1048,8 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Row(
+                Flexible(
+                  child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     AnimatedContainer(
@@ -1163,6 +1164,7 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ],
                   ],
                 ),
+                ),
               ],
             ),
           ),
@@ -1209,9 +1211,17 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     (tasks[idx]["raw"] as Map)["alert_pending"] = 0;
                                   }
                                 }
+                                // Switch to Closed filter so the resolved card
+                                // is visible immediately — mirrors accept → In Progress.
+                                if (selectedFilter == "In Progress" ||
+                                    selectedFilter == "Open" ||
+                                    selectedFilter == "All") {
+                                  selectedFilter = "Closed";
+                                }
                               });
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task);
+                              _loadTasks(); // sync KPI counts immediately
                             },
                             onReassign: (updatedTask) {
                               setState(() {
@@ -1246,11 +1256,14 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                               setState(() => _recalcEscalation());
                               _resolveEscalationForTask(task, resolutionType: 'reassign');
+                              _loadTasks(); // sync KPI counts immediately
                             },
                           ),
                         ),
                       );
-                      setState(() {});
+                      // Reload task list on return so KPI counts are accurate
+                      // regardless of what happened inside TicketDetailPage.
+                      _loadTasks();
                     },
                     onAccept: () => _acceptTask(task),
                     isAccepting: _acceptingTaskId == (int.tryParse((task["raw"]?["service_request_id"] ?? task["task_id"] ?? task["id"] ?? 0).toString()) ?? 0),
@@ -1780,7 +1793,11 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _acceptingTaskId = null);
 
     if (result['success'] == true) {
-      // Optimistic UI update first so the card flips immediately
+      // Optimistic UI update — flip status and show accepted user immediately.
+      final acceptedByName = (result['accepted_by_user_name'] ??
+          result['assignment']?['accepted_by_user_name'] ??
+          '').toString();
+
       setState(() {
         final idx = tasks.indexWhere((t) =>
             (t["raw"]?["service_request_id"] ?? t["task_id"] ?? t["id"]) == taskId);
@@ -1790,17 +1807,29 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
           tasks[idx]["statusColor"]  = getStatusColor("In Progress");
           tasks[idx]["is_escalated"] = 0;
           tasks[idx]["alert_pending"] = 0;
-          if (tasks[idx]["raw"] is Map) {
-            (tasks[idx]["raw"] as Map)["is_escalated"]  = 0;
-            (tasks[idx]["raw"] as Map)["alert_pending"] = 0;
+          // Show accepted user name immediately — no server reload needed
+          if (acceptedByName.isNotEmpty) {
+            tasks[idx]["assignedTo"] = acceptedByName;
           }
+          if (tasks[idx]["raw"] is Map) {
+            final raw = Map<String, dynamic>.from(tasks[idx]["raw"] as Map);
+            raw["is_escalated"]          = 0;
+            raw["alert_pending"]         = 0;
+            if (acceptedByName.isNotEmpty) {
+              raw["accepted_by_user_name"] = acceptedByName;
+              raw["assigned_to_name"]      = acceptedByName;
+            }
+            tasks[idx]["raw"] = raw;
+          }
+        }
+        // Switch to In Progress filter so the accepted card is immediately
+        // visible without manual navigation — mirrors food orders accept flow.
+        if (selectedFilter == "Open" || selectedFilter == "All") {
+          selectedFilter = "In Progress";
         }
       });
 
       // Reload from server to get accurate pending + escalation counts.
-      // This is the only reliable way to stop the escalation alert on the
-      // accepting device — the optimistic decrement only drops serviceTaskCount
-      // but escalationActive stays true until a real reload confirms count == 0.
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
 
       AppSnackBar.show(context, "Task accepted");

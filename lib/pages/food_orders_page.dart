@@ -737,9 +737,17 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
       });
       _showError(result["message"]);
     } else {
-      // Show success message immediately after API success
-      AppSnackBar.show(context, "Order marked Ready");
       order["raw"]["order_status"] = "READY";
+      AppSnackBar.show(context, "Order marked Ready");
+      setState(() => selectedFilter = FoodOrderStatus.ready.label);
+
+      // Notify the delivery alert system immediately — the order is now
+      // ready for pick-up. Await reloadDelivery so deliveryCount is set
+      // BEFORE _loadFoodOrders resets foodOrderCount, eliminating the race
+      // condition where the debounce fires with deliveryCount still 0.
+      TaskAlertService.notifyNewDelivery();
+      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+
       await _loadFoodOrders(silent: true);
     }
   }
@@ -1903,7 +1911,10 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                                    final prevTaps  = (order['etaTapCount'] as num?)?.toInt() ?? 0;
                                    final newTaps   = prevTaps + 1;
 
-                                   // Optimistic update
+                                   // Optimistic update — move ETA forward immediately
+                                   // so the countdown reflects the tap without waiting
+                                   // for the API response. Server-confirmed time is
+                                   // applied below and overrides this if different.
                                    setState(() {
                                      order['etaTapCount'] = newTaps;
                                      order['etaLocked']   =
@@ -1911,6 +1922,19 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                                          _maxTapCountFromSession > 0;
                                      if (order['etaLocked'] == true) {
                                        _maxDelayReachedOrders.add(orderNo);
+                                     }
+                                     // Extend the local ETA by tapCountMinutes
+                                     // immediately so the timer jumps without a reload.
+                                     if (_tapCountMinutesFromSession > 0) {
+                                       final current =
+                                           order['etaExpiresAt'] as DateTime? ??
+                                           DateTime.now();
+                                       final base = current.isBefore(DateTime.now())
+                                           ? DateTime.now()
+                                           : current;
+                                       order['etaExpiresAt'] = base.add(
+                                           Duration(
+                                               minutes: _tapCountMinutesFromSession));
                                      }
                                    });
 
@@ -2545,7 +2569,7 @@ class FoodOrdersPageState extends State<FoodOrdersPage>
                     return;
                   }
                   order["raw"]["order_status"] = "CANCELLED";
-                  // Show success feedback BEFORE committing count update
+                  // Toast first — count/list update follows, matching delivery page behaviour.
                   AppSnackBar.show(context, "Order cancelled");
                   setState(() {
                     order["raw"]["cancel_reason"] = reason;

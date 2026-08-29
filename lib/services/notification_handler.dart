@@ -132,6 +132,38 @@ Future<void> _showLambdaNotification(RemoteMessage message) async {
   );
 }
 
+/// Shows a local notification for data-only FCM messages that carry no
+/// `notification` block (e.g. TASK_CLOSED, SERVICE_TASK_ACCEPTED).
+/// Only called in foreground — background/killed states need the Lambda
+/// to add a `notification` block to the FCM payload instead.
+Future<void> _showLocalDataNotification({
+  required int    id,
+  required String title,
+  required String body,
+  required Map<String, dynamic> data,
+}) async {
+  await localNotifications.show(
+    id,
+    title,
+    body,
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'screensync_alerts',
+        'ScreenSync Alerts',
+        importance: Importance.high,
+        priority: Priority.high,
+        autoCancel: true,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: false,
+        presentSound: false,
+      ),
+    ),
+    payload: jsonEncode(data),
+  );
+}
+
 int _getNotificationId(String? type) {
   switch (type) {
     case 'NEW_FOOD_ORDER':
@@ -302,6 +334,15 @@ Future<void> _handleForegroundMessage(
     case 'ACCEPTED':
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
+      // Data-only FCM — Lambda sends no notification block.
+      // Show a local notification so the device that accepted hears nothing
+      // but OTHER devices see "Task Accepted" in foreground.
+      _showLocalDataNotification(
+        id:    _getNotificationId('SERVICE_TASK_ACCEPTED'),
+        title: '✅ Task Accepted',
+        body:  'Service request #${data['service_request_id'] ?? ''} has been accepted',
+        data:  data,
+      );
       break;
 
     case 'DELIVERY_ACCEPTED':
@@ -313,6 +354,13 @@ Future<void> _handleForegroundMessage(
     case 'TASK_CLOSED':
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
+      // Data-only FCM — show a local notification in foreground.
+      _showLocalDataNotification(
+        id:    _getNotificationId('TASK_CLOSED'),
+        title: '🔒 Request Closed',
+        body:  'Service request #${data['service_request_id'] ?? ''} has been closed',
+        data:  data,
+      );
       break;
 
     default:
