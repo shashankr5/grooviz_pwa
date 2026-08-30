@@ -40,7 +40,9 @@ class DeepLinkPayload {
       entityId = (data['order_id'] ?? data['order_number'])?.toString();
     } else if (rawType == 'SERVICE_ORDER' ||
         rawType == 'NEW_SERVICE_REQUEST' ||
-        rawType == 'TASK_REASSIGNED') {
+        rawType == 'TASK_REASSIGNED' ||
+        rawType == 'SERVICE_TASK_ACCEPTED' ||
+        rawType == 'TASK_CLOSED') {
       targetTab = 'home';
       entityType = DeepLinkEntityType.serviceTask;
       final rawId = (data['service_request_id'] ??
