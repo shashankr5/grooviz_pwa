@@ -1112,19 +1112,21 @@ class TasksPageState extends State<TasksPage> {
         ],
       ),
       actions: [
-        if (_isSupervisorOrAbove(_userRoleId) && _canSendReports)
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
-              onPressed: _showExportReportDialog,
-              tooltip: 'Export PDF Report',
-            ),
-          ),
+        // REPORT BUTTON — hidden for now. All logic preserved below.
+        // Re-enable by uncommenting the block below and removing this comment.
+        // if (_isSupervisorOrAbove(_userRoleId) && _canSendReports)
+        //   Container(
+        //     margin: const EdgeInsets.only(right: 8),
+        //     decoration: BoxDecoration(
+        //       color: AppColors.primary.withValues(alpha: 0.08),
+        //       borderRadius: BorderRadius.circular(10),
+        //     ),
+        //     child: IconButton(
+        //       icon: const Icon(Icons.analytics_outlined, color: AppColors.primary),
+        //       onPressed: _showExportReportDialog,
+        //       tooltip: 'Export PDF Report',
+        //     ),
+        //   ),
       ],
     );
   }
