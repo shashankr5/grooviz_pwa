@@ -26,6 +26,14 @@ Future<void> setupFirebaseNotifications() async {
 
   final messaging = FirebaseMessaging.instance;
 
+  // Suppress FCM's own foreground notification display — we handle it
+  // ourselves via _showLambdaNotification so it only appears once.
+  await messaging.setForegroundNotificationPresentationOptions(
+    alert: false,
+    badge: false,
+    sound: false,
+  );
+
   try {
     final token = await messaging.getToken();
     print('FCM Token: $token');

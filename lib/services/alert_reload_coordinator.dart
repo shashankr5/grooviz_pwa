@@ -92,11 +92,29 @@ class AlertReloadCoordinator {
       //
       // Used for the SERVICE TASK (non-escalation) pending count.
       // Checks the classic assignment / acceptance fields.
-      bool isAssignedToMe(dynamic s) => _matchesUserId(s, const [
-        'assigned_to_user_id',
-        'assigned_to',
-        'accepted_by_user_id',
-      ]);
+      //
+      // IMPORTANT: A newly created service request has assigned_to = NULL
+      // and accepted_by_user_id = NULL — it is unassigned and should alert
+      // ALL staff in the department. Return true when all ownership fields
+      // are null so every staff member's device alerts for unassigned tasks.
+      bool isAssignedToMe(dynamic s) {
+        final assignedTo   = s['assigned_to_user_id'] ?? s['assigned_to'];
+        final acceptedBy   = s['accepted_by_user_id'];
+
+        // If nobody owns this task yet, every staff member should be alerted.
+        final isUnassigned = (assignedTo == null || assignedTo == 0 ||
+                              assignedTo.toString() == '0') &&
+                             (acceptedBy == null || acceptedBy == 0 ||
+                              acceptedBy.toString() == '0');
+        if (isUnassigned) return true;
+
+        // Task is assigned/accepted — only alert the owner.
+        return _matchesUserId(s, const [
+          'assigned_to_user_id',
+          'assigned_to',
+          'accepted_by_user_id',
+        ]);
+      }
 
       // ── isEscalationTargetMe: escalation ownership ────────────────────────
       //
