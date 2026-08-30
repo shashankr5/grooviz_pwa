@@ -73,7 +73,7 @@ class _ExecutiveHeaderCardState extends State<ExecutiveHeaderCard>
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -100,7 +100,7 @@ class _ExecutiveHeaderCardState extends State<ExecutiveHeaderCard>
             ),
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           Text(
             '${_greetingText()}, ${widget.userName}',
             style: AppTypography.h2.copyWith(
