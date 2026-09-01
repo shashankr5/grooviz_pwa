@@ -724,47 +724,35 @@ export const handler = (
                                         base.enterprise_id,
                                         {
                                             type:
-                                                'FOOD_ORDER_STATUS',
-
-                                            summary_id:
-                                                String(
-                                                    base.food_order_summary_id ||
-                                                    ''
-                                                ),
-
-                                            order_number:
-                                                base.order_number ||
-                                                null,
-
-                                            order_status:
-                                                'accepted',
-
-                                            new_status:
-                                                'accepted',
-
-                                            device_id:
-                                                String(
-                                                    base.device_id || ''
-                                                ),
-
-                                            device_name:
-                                                base.device_name ||
-                                                null,
-
-                                            guest_id:
-                                                String(
-                                                    base.guest_id || ''
-                                                ),
-
-                                            guest_name:
-                                                base.guest_name ||
-                                                null,
+                                                'SERVICE_TASK_ACCEPTED',
 
                                             service_request_id:
                                                 String(
                                                     base.service_request_id ||
                                                     ''
                                                 ),
+
+                                            enterprise_id:
+                                                String(
+                                                    base.enterprise_id ||
+                                                    ''
+                                                ),
+
+                                            department_id:
+                                                String(
+                                                    base.department_id ||
+                                                    ''
+                                                ),
+
+                                            accepted_by_user_id:
+                                                String(
+                                                    base.accepted_by_user_id ||
+                                                    ''
+                                                ),
+
+                                            accepted_by_user_name:
+                                                base.accepted_by_user_name ||
+                                                null,
 
                                             action_performed:
                                                 'ACCEPTED'

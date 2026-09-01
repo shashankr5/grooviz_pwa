@@ -192,13 +192,18 @@ class AlertStateManager {
       return;
     }
 
-    // No per-type status bar notifications — the foreground service
-    // notification already tells staff something is alerting.
-    // _syncNotifications() was removed to avoid notification shade clutter.
-
     if (_currentlyPlaying == target) {
-      print('AlertStateManager._sync: already playing ${target.soundKey} - no change');
-      return;
+      // Verify the service is actually running before trusting this.
+      // If Android's OOM killer or a user swipe killed the service while
+      // _currentlyPlaying still holds the old value, we must restart.
+      final isActuallyRunning = await FlutterForegroundTask.isRunningService;
+      if (isActuallyRunning) {
+        print('AlertStateManager._sync: already playing ${target.soundKey} - no change');
+        return;
+      }
+      // Service died externally — clear stale state and fall through to restart.
+      print('AlertStateManager._sync: service died externally, restarting ${target.soundKey}');
+      _currentlyPlaying = null;
     }
 
     _currentlyPlaying = target;
@@ -309,9 +314,19 @@ class AlertStateManager {
 
   static Future<void> _stopService() async {
     try {
+      // Always reset _currentlyPlaying regardless of whether the service is
+      // running, so _sync() won't skip a legitimate restart after a
+      // background-isolate-initiated stop left stale state behind.
+      _currentlyPlaying = null;
+
       if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
-        print('AlertStateManager._stopService: foreground service stopped');
+        // Reliable in every app state (foreground/background/killed): the task
+        // handler stops the audio and calls stopService() on itself from WITHIN
+        // the service context. We do NOT call stopService() directly here,
+        // because that call is deferred/dropped when invoked from the background
+        // isolate while the app is not in the foreground.
+        FlutterForegroundTask.sendDataToTask(jsonEncode({'stop': true}));
+        print('AlertStateManager._stopService: stop command sent to handler');
       }
     } catch (e) {
       print('AlertStateManager._stopService error: $e');

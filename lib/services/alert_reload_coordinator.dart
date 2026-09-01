@@ -31,11 +31,43 @@ class AlertReloadCoordinator {
     print('AlertReloadCoordinator: explicit-reload mode (no stream listeners)');
   }
 
+  /// Calls a reconcile endpoint and retries on failure.
+  ///
+  /// The service methods (getFoodOrders / getAllServices) never THROW — they
+  /// swallow exceptions and return {'success': false}. So we treat
+  /// success != true as retryable here. Without this, one transient blip
+  /// (wifi drop, expired token, Lambda cold-start) left the siren stuck,
+  /// because the FCM background isolate runs once and then dies with no
+  /// second chance to reconcile.
+  ///
+  /// Bounds are deliberately tight (2 attempts, 700ms gap) so the total time
+  /// stays well within the background-isolate execution budget on Android.
+  Future<Map<String, dynamic>> _fetchWithRetry(
+    Future<Map<String, dynamic>> Function() call, {
+    int maxAttempts = 2,
+    Duration delay = const Duration(milliseconds: 700),
+  }) async {
+    Map<String, dynamic> res = const {'success': false};
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        res = await call();
+      } catch (e) {
+        res = {'success': false, 'message': e.toString()};
+      }
+      if (res['success'] == true) return res;
+      if (attempt < maxAttempts) {
+        print('AlertReloadCoordinator: reconcile attempt $attempt failed, retrying in ${delay.inMilliseconds}ms');
+        await Future.delayed(delay);
+      }
+    }
+    return res;
+  }
+
   Future<void> reloadFood({bool silentReconcile = false}) async {
     try {
-      final response = await FoodOrderService().getFoodOrders();
+      final response = await _fetchWithRetry(() => FoodOrderService().getFoodOrders());
       if (response['success'] != true) {
-        print('AlertReloadCoordinator.reloadFood: API failed, skipping reconcile');
+        print('AlertReloadCoordinator.reloadFood: API failed after retries, skipping reconcile');
         return;
       }
       final orders = response['orders'] as List<dynamic>? ?? [];
@@ -60,9 +92,9 @@ class AlertReloadCoordinator {
       // an alert for every new request, even ones assigned to someone else.
       final int? currentUserId = await UserSessionHelper.getUserId();
 
-      final response = await TaskService().getTasks();
+      final response = await _fetchWithRetry(() => TaskService().getTasks());
       if (response['success'] != true) {
-        print('AlertReloadCoordinator.reloadTasks: API failed, skipping reconcile');
+        print('AlertReloadCoordinator.reloadTasks: API failed after retries, skipping reconcile');
         return;
       }
       // TaskService.getTasks() returns response['services'] not response['tasks'].
@@ -183,21 +215,46 @@ class AlertReloadCoordinator {
 
   Future<void> reloadDelivery({bool silentReconcile = false}) async {
     try {
-      final response = await FoodOrderService().getFoodOrders();
+      // COUNT EXACTLY WHAT THE DELIVERY PAGE'S "READY" TAB SHOWS:
+      // food-delivery service requests that are still OPEN (awaiting a delivery
+      // person to accept). Source = ScreenSync_get_all_services_mobile1, the
+      // same endpoint delivery_page uses.
+      //
+      // Previously this counted raw food-order rows with status == 'ready',
+      // which only clears when an order is DELIVERED — so the siren stayed on
+      // through the whole "Accepted" phase and disagreed with the screen
+      // (causing a start/stop flap on cold launch). An Open delivery request,
+      // by contrast, disappears the moment a colleague accepts, so the siren
+      // now drops on ACCEPT, cross-device, matching what staff see.
+      final response = await _fetchWithRetry(() => TaskService().getAllServices());
       if (response['success'] != true) {
-        print('AlertReloadCoordinator.reloadDelivery: API failed, skipping reconcile');
+        print('AlertReloadCoordinator.reloadDelivery: API failed after retries, skipping reconcile');
         return;
       }
-      final orders = response['orders'] as List<dynamic>? ?? [];
+      final services = response['services'] as List<dynamic>? ?? [];
 
-      // Group by order_number — same logic as delivery_page and home_page.
-      // A 3-item order is 3 flat rows but counts as 1 ready order.
-      final grouped = groupFoodOrderRows(orders);
-      final readyCount = grouped.where((order) =>
-          order['status']?.toString().toLowerCase() == 'ready').length;
+      // A food-delivery SR is identified the same way delivery_page identifies
+      // it: the question starts with "Food order #" OR it carries a non-zero
+      // food_order_summary_id.
+      int nonZeroInt(dynamic v) {
+        if (v == null) return 0;
+        final n = v is int ? v : int.tryParse(v.toString());
+        return n ?? 0;
+      }
 
-      print('AlertReloadCoordinator.reloadDelivery: server readyCount=$readyCount');
-      await TaskAlertService.resetDeliveryCount(readyCount, reconcileAlert: silentReconcile);
+      final openDeliveryCount = services.where((s) {
+        if (s is! Map) return false;
+        final question = (s['question'] ?? '').toString().toLowerCase();
+        final isFoodDelivery =
+            question.startsWith('food order #') || nonZeroInt(s['food_order_summary_id']) != 0;
+        if (!isFoodDelivery) return false;
+        // "Ready" tab == SR status "Open" (awaiting delivery acceptance).
+        final status = (s['status'] ?? '').toString().toLowerCase();
+        return status == 'open';
+      }).length;
+
+      print('AlertReloadCoordinator.reloadDelivery: open food-delivery SRs=$openDeliveryCount');
+      await TaskAlertService.resetDeliveryCount(openDeliveryCount, reconcileAlert: silentReconcile);
     } catch (e) {
       print('AlertReloadCoordinator.reloadDelivery error: $e');
     }

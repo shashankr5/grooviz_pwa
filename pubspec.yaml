@@ -80,6 +80,11 @@ dev_dependencies:
     sdk: flutter
   flutter_launcher_icons: ^0.13.1
 
+  # Generates the native launch/splash screen (launch_background.xml, colors,
+  # styles, all density drawables, and the Android 12+ SplashScreen API assets)
+  # from a single source image. Run: dart run flutter_native_splash:create
+  flutter_native_splash: ^2.4.1
+
   flutter_lints: ^5.0.0
 
 
@@ -87,6 +92,33 @@ flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/icons/screenSync_.png"
+
+# ── Native splash screen (Grooviz Connect) ───────────────────────────────────
+# After placing the logo at the image path below, run:
+#   flutter pub get
+#   dart run flutter_native_splash:create
+# This (re)generates launch_background.xml (+ drawable-v21), colors, styles,
+# the density-specific drawables, and values-v31/styles.xml for Android 12+.
+flutter_native_splash:
+  # Solid background behind the centered logo.
+  color: "#FFFFFF"
+  color_dark: "#0B1F33"          # deep navy from the Grooviz Connect wordmark
+
+  # Full Grooviz Connect logo (bell + wordmark), centered.
+  # Used on Android 11 and below, and on iOS.
+  image: assets/icons/grooviz_connect_splash.png
+
+  # Android 12+ uses the system SplashScreen API: the image is masked into a
+  # circle (~2/3 of 240dp). A logo-only (bell) mark reads best here — a full
+  # wordmark can get clipped. Swap `image` below for a bell-only PNG if needed.
+  android_12:
+    image: assets/icons/grooviz_connect_splash.png
+    color: "#FFFFFF"
+    color_dark: "#0B1F33"
+
+  android: true
+  ios: true
+  web: false
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

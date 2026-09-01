@@ -34,8 +34,13 @@ Future<void> setupFirebaseNotifications() async {
     sound: false,
   );
 
+  // Diagnostic only. Timeboxed so a device that cannot reach FCM servers
+  // (no Play Services connectivity) can never stall setup here — real token
+  // acquisition is handled robustly by FCMService with its own retry loop.
   try {
-    final token = await messaging.getToken();
+    final token = await messaging
+        .getToken()
+        .timeout(const Duration(seconds: 5), onTimeout: () => null);
     print('FCM Token: $token');
   } catch (e) {
     print('FCM token fetch failed: $e');
@@ -319,10 +324,10 @@ Future<void> _handleForegroundMessage(
     case 'ACCEPTED':
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
-      // Lambda now sends notification: { title, body } so _showLambdaNotification
-      // (called in the outer onMessage.listen block) handles foreground display.
-      // Android shows the notification automatically in background/killed state.
-      // No local fallback needed here — that would duplicate the notification.
+      // A food-delivery job is also a service request — recount deliveries so
+      // the delivery siren drops on accept, matching the delivery screen.
+      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+      AlertStateManager.notifyNewDelivery();
       break;
 
     case 'DELIVERY_ACCEPTED':
@@ -334,10 +339,10 @@ Future<void> _handleForegroundMessage(
     case 'TASK_CLOSED':
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
-      // Lambda now sends notification: { title, body } so _showLambdaNotification
-      // (called in the outer onMessage.listen block) handles foreground display.
-      // Android shows the notification automatically in background/killed state.
-      // No local fallback needed here — that would duplicate the notification.
+      // Closing a service request may also close a food-delivery request —
+      // recount deliveries too.
+      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+      AlertStateManager.notifyNewDelivery();
       break;
 
     default:
@@ -404,6 +409,8 @@ Future<void> _reconcileAlertsAfterTap(Map<String, dynamic> data) async {
         AlertStateManager.setEscalationActive(false);
         await AlertReloadCoordinator.instance
             .reloadTasks(silentReconcile: true);
+        await AlertReloadCoordinator.instance
+            .reloadDelivery(silentReconcile: true);
         break;
 
       case 'DELIVERY_ACCEPTED':
@@ -416,6 +423,8 @@ Future<void> _reconcileAlertsAfterTap(Map<String, dynamic> data) async {
         AlertStateManager.setEscalationActive(false);
         await AlertReloadCoordinator.instance
             .reloadTasks(silentReconcile: true);
+        await AlertReloadCoordinator.instance
+            .reloadDelivery(silentReconcile: true);
         break;
 
       default:

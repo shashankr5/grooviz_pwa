@@ -7,6 +7,10 @@
 //   • AlertReloadCoordinator listeners registered in main() do NOT fire here
 //   • We MUST call reloadX() explicitly and await it
 //   • All setX() calls use immediate=true so sync fires before isolate dies
+//   • sendDataToTask() (used inside AlertStateManager) also needs this
+//     isolate's own communication port opened via initCommunicationPort() —
+//     otherwise stop/switch signals to the running foreground task silently
+//     no-op and the alert sound keeps playing until the app is reopened.
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -35,6 +39,14 @@ void _initForegroundTask() {
       eventAction: ForegroundTaskEventAction.nothing(),
     ),
   );
+
+  // REQUIRED: opens the comms port for THIS isolate so sendDataToTask()
+  // (called later inside AlertStateManager._sync / _startOrSwitch /
+  // _stopService) can actually reach the running UnifiedAlertTaskHandler.
+  // Without this, sendDataToTask() silently no-ops when called from the
+  // background FCM isolate, which is why the alert sound previously kept
+  // playing on other devices until the app was manually reopened.
+  FlutterForegroundTask.initCommunicationPort();
 }
 
 @pragma('vm:entry-point')
@@ -101,8 +113,12 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
               '')
           .toString()
           .toUpperCase();
-      if (rawStatus != 'READY') return;
-      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+      if (rawStatus == 'READY') {
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+      }
+      // break — not return — so flushSync() always runs below.
+      // A return would skip flushSync() and leave the foreground service
+      // playing sound even after the status changed to non-READY.
       break;
 
     case 'SERVICE_ORDER':
@@ -133,7 +149,17 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     case 'SERVICE_TASK_ACCEPTED':
     case 'ACCEPTED':
+      // Reconcile from server truth. The task just accepted by another user
+      // is filtered out by reloadTasks (per-user ownership), so this device's
+      // count drops. flushSync() below then stops the siren via the reliable
+      // sendDataToTask({stop:true}) path IF the count is genuinely 0 — while
+      // leaving it playing if this user still has other pending tasks.
+      //
+      // A food-delivery job IS a service request, so this same accept may have
+      // cleared an Open delivery request — recount deliveries too so the
+      // delivery siren drops cross-device on accept, matching the screen.
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
       break;
 
     case 'DELIVERY_ACCEPTED':
@@ -142,7 +168,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       break;
 
     case 'TASK_CLOSED':
+      // Closing a service request may also close a food-delivery request, so
+      // recount both tasks and deliveries.
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
       break;
 
     default:

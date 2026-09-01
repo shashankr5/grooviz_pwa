@@ -65,7 +65,7 @@ class HomeService {
       };
 
       dev.log("Fetching tasks...");
-      final response = await _dio.post(ApiConstants.tasks, data: payload);
+      final response = await _dio.post(ApiConstants.getAllServices, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};
@@ -181,7 +181,7 @@ class HomeService {
       };
 
       dev.log("Fetching tasks for date range: ${payload['start_date']} to ${payload['end_date']}...");
-      final response = await _dio.post(ApiConstants.tasks, data: payload);
+      final response = await _dio.post(ApiConstants.getAllServices, data: payload);
 
       if (response.statusCode != 200) {
         return {"success": false, "message": "Server error"};

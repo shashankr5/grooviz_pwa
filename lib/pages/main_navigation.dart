@@ -18,6 +18,7 @@ import '../services/role_change_watcher.dart';
 import '../services/session_change_service.dart';
 import '../services/websocket_service.dart';
 import '../services/profile_service.dart';
+import '../services/alert_reload_coordinator.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -320,6 +321,18 @@ class _MainNavigationState extends State<MainNavigation>
       _didPause = false;
       _loadDepartments();
       _reconnectWebSocket();
+      // Full server reconciliation on foreground — catches any count drift
+      // that occurred while backgrounded (e.g. background FCM stopped the
+      // service but main isolate _currentlyPlaying was not reset, or a stop
+      // FCM was missed entirely). Runs in parallel, non-blocking.
+      Future.wait([
+        AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true),
+        AlertReloadCoordinator.instance.reloadFood(silentReconcile: true),
+        AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true),
+      ]).catchError((e) {
+        print('MainNavigation foreground reconciliation error: $e');
+        return <void>[];
+      });
     }
   }
 

@@ -8,15 +8,18 @@
 //
 // Accepts optional [initialFilter] for deep-linking into Ready/Accepted/Delivered.
 //
-// DATA SOURCES (dual-source approach):
-//  • Ready tab   → FoodOrderService.getFoodOrders() (status == "Ready")
-//    This is the authoritative source for orders waiting for delivery acceptance.
-//  • Accepted tab → TaskService.getAllServices() service requests with status "In Progress"
-//    filtered by question starting with "Food order #..."
-//  • Delivered tab → Same service requests with status "Closed"
+// DATA SOURCES (single-source approach):
+//  All three tabs are built from get_all_services_mobile1 service requests.
+//  Food delivery SRs are identified by food_order_summary_id > 0
+//  or a question starting with "Food order #".
 //
-// Both APIs are fetched in parallel. This ensures Ready orders always appear
-// regardless of whether food_order_summary_id is present in the service request rows.
+//  • Ready tab     → SR status == "Open"        (awaiting delivery acceptance)
+//  • Accepted tab  → SR status == "In Progress" (delivery staff claimed it)
+//  • Delivered tab → SR status == "Closed"      (order delivered)
+//
+// get_food_orders_mobile1 is NOT used here — that endpoint is for the
+// Food Orders (kitchen) page only. The deliver action still calls
+// update_food_order_mobile1 to sync the kitchen screen after delivery.
 
 import 'dart:async';
 import 'dart:convert';
@@ -27,7 +30,6 @@ import '../services/order_alert_service.dart';
 import '../services/task_alert_service.dart';
 import '../services/alert_reload_coordinator.dart';
 import '../services/notification_constants.dart';
-import '../utils/order_grouping.dart';
 import '../utils/app_snackbar.dart';
 import '../utils/date_formatter.dart';
 import '../theme/app_colors.dart';
@@ -350,196 +352,42 @@ class _DeliveryPageState extends State<DeliveryPage>
     }
 
     try {
-      // ── 1. Fetch food orders + service requests in parallel ───────────────
-      // Ready orders come from get_food_orders_mobile1 (status == "Ready").
-      // Accepted + Delivered come from get_all_services_mobile1 service requests
-      // whose question contains a food order reference (department_type == "service"
-      // and question starts with "Food order #").
-      final results = await Future.wait([
-        FoodOrderService().getFoodOrders(),
-        TaskService().getAllServices(),
-      ]);
+      // ── Single source: get_all_services_mobile1 ───────────────────────────
+      // All three tabs — Ready, Accepted, Delivered — are built from service
+      // requests. Food delivery SRs are identified by food_order_summary_id > 0
+      // or a question starting with "Food order #".
+      //
+      //  Ready     → SR status == "Open"    (awaiting delivery acceptance)
+      //  Accepted  → SR status == "In Progress" (delivery staff claimed it)
+      //  Delivered → SR status == "Closed"  (order delivered)
+      //
+      // get_food_orders_mobile1 is NOT called here — that endpoint is for the
+      // Food Orders (kitchen) page only.
+      final svcResult = await TaskService().getAllServices();
       if (!mounted) return;
 
-      final foodResult = results[0];
-      final svcResult  = results[1];
-
-      // ── 2. Ready tab — directly from food orders API ──────────────────────
-      // get_food_orders_mobile1 returns status == "Ready" for orders waiting
-      // for delivery staff to accept. This is the authoritative source.
-      // Orders are grouped by orderNumber (one card per order, all items combined)
-      // using the same groupFoodOrderRows() utility as the food page.
-      //
-      // After grouping, each Ready order is matched to its service request
-      // (created when the order was marked Ready) by extracting the order number
-      // from the SR question field. This gives us the serviceRequestId needed
-      // for accept_service_request_mobile1.
-      List<Map<String, dynamic>> ready = [];
-      if (foodResult['success'] == true) {
-        final orders = foodResult['orders'] as List? ?? [];
-        final rawReady = orders.where((o) {
-          final status = (o['status'] ?? '').toString().toUpperCase();
-          return status == 'READY';
-        }).toList();
-
-        // Group multi-item orders — same logic as FoodOrdersPage
-        final grouped = groupFoodOrderRows(rawReady);
-
-        // Build two lookups from service requests:
-        //  summaryIdToSrId   — summaryId → srId for OPEN SRs (Ready tab: can still be accepted)
-        //  acceptedSummaryIds — summaryIds of SRs already In Progress / Closed
-        //
-        // An order whose summaryId is in acceptedSummaryIds has already been
-        // accepted by a delivery staff member — exclude it from the Ready list
-        // even though get_food_orders_mobile1 still returns it as "Ready"
-        // (accept_service_request never updates order_status_summary).
-        final Map<int, int> summaryIdToSrId = {};
-        final Set<int>    acceptedSummaryIds = {};
-        final Set<String> acceptedOrderNos   = {};
-        if (svcResult['success'] == true) {
-          final services = svcResult['services'] as List? ?? [];
-          for (final svc in services) {
-            if (svc is! Map) continue;
-            final status        = (svc['status'] ?? '').toString().toLowerCase();
-            final foodSummaryId = _nonZeroInt(svc['food_order_summary_id']);
-            final srId          = _nonZeroInt(svc['service_request_id']);
-
-            // Extract order number from question as a fallback key when FK is null
-            final question     = (svc['question'] ?? '').toString();
-            final orderNoMatch = RegExp(r'food order #(\S+)', caseSensitive: false)
-                .firstMatch(question);
-            final questionOrderNo = orderNoMatch?.group(1)?.trim() ?? '';
-
-            if (status == 'open' || status == 'pending') {
-              // Only Open SRs can be accepted from the Ready tab
-              if (foodSummaryId != null && srId != null) {
-                summaryIdToSrId[foodSummaryId] = srId;
-              }
-            } else {
-              // Already accepted (In Progress) or closed — hide from Ready tab
-              if (foodSummaryId != null) acceptedSummaryIds.add(foodSummaryId);
-              if (questionOrderNo.isNotEmpty) acceptedOrderNos.add(questionOrderNo);
-            }
-          }
-        }
-
-        ready = grouped.where((g) {
-          // Exclude orders already accepted (SR is In Progress or Closed).
-          // Check both FK and order number — covers cases where food_order_summary_id
-          // was not populated on the SR row by accept_service_request_mobile1.
-          final summaryId = g['summaryId'] as int?;
-          if (summaryId != null && acceptedSummaryIds.contains(summaryId)) {
-            return false;
-          }
-          final orderNo = (g['orderNo'] ?? '').toString();
-          if (orderNo.isNotEmpty && acceptedOrderNos.contains(orderNo)) {
-            return false;
-          }
-          return true;
-        }).map((g) {
-          final raw        = g['raw'] as Map? ?? {};
-          final createdAt  = g['createdAt'] as DateTime?;
-          final orderNo    = (g['orderNo'] ?? '').toString();
-          final orderTime  = createdAt?.toIso8601String() ??
-              raw['created_at']?.toString() ??
-              raw['order_time']?.toString();
-
-          // Resolve serviceRequestId: try FK first, fall back to question order number
-          final summaryId = g['summaryId'] as int?;
-          int? srId = summaryId != null ? summaryIdToSrId[summaryId] : null;
-          // Fallback: look up by order number extracted from question
-          if (srId == null && orderNo.isNotEmpty) {
-            // Find the Open SR whose question contains this order number
-            if (svcResult['success'] == true) {
-              final services = svcResult['services'] as List? ?? [];
-              for (final svc in services) {
-                if (svc is! Map) continue;
-                final status = (svc['status'] ?? '').toString().toLowerCase();
-                if (status != 'open' && status != 'pending') continue;
-                final q = (svc['question'] ?? '').toString();
-                if (q.toLowerCase().contains(orderNo.toLowerCase())) {
-                  srId = _nonZeroInt(svc['service_request_id']);
-                  break;
-                }
-              }
-            }
-          }
-
-          // items from groupFoodOrderRows use 'name'/'qty'/'instructions'/'isVeg'
-          // delivery card expects 'name'/'qty'/'is_veg' — remap once
-          final items = (g['items'] as List<Map<String, dynamic>>)
-              .map((it) => {
-                    'name':   it['name'],
-                    'qty':    it['qty'],
-                    'price':  0,
-                    'is_veg': it['isVeg'] ?? it['is_veg'],
-                  })
-              .toList();
-
-          return {
-            'summaryId':        summaryId,
-            'serviceRequestId': srId,   // matched via food_order_summary_id FK
-            'orderNumber':      orderNo,
-            'roomNumber':       (g['room'] ?? '—').toString(),
-            'guestName':        (g['guest'] ?? 'Guest').toString(),
-            'guestPhone':       (raw['guest_phone'] ?? raw['customer_number'] ?? '').toString(),
-            'items':            items,
-            'totalAmount':      raw['total_price'] ?? 0,
-            'uiStatus':         'Ready',
-            'status':           'ready',
-            'orderTime':        orderTime,
-            '_orderTimeDt':     createdAt,
-            'raw':              Map<String, dynamic>.from(raw),
-            'etaTapCount':      g['etaTapCount'] ?? 0,
-            'finalEtaTime':     raw['final_eta_time']?.toString(),
-            'finalEtaDuration': 0,
-          };
-        }).toList()
-          ..sort((a, b) {
-            final aT = a['_orderTimeDt'] as DateTime?;
-            final bT = b['_orderTimeDt'] as DateTime?;
-            if (aT == null && bT == null) return 0;
-            if (aT == null) return 1;
-            if (bT == null) return -1;
-            return bT.compareTo(aT);
-          });
-      }
-
-      // ── 3. Accepted + Delivered — from service requests ───────────────────
-      // Food delivery SRs are identified by question starting with "Food order #"
-      // or by department_type matching room service food delivery.
-      List<Map<String, dynamic>> accepted = [];
+      List<Map<String, dynamic>> ready     = [];
+      List<Map<String, dynamic>> accepted  = [];
       List<Map<String, dynamic>> delivered = [];
 
       if (svcResult['success'] == true) {
         final services = svcResult['services'] as List? ?? [];
 
+        // Filter to food delivery SRs only
         final foodDeliverySRs = services.where((svc) {
           if (svc is! Map) return false;
           final question = (svc['question'] ?? '').toString();
-          final deptType = (svc['department_type'] ?? '').toString().toLowerCase();
-          // Match SRs created by the food order ready trigger:
-          // question == "Food order #ORD... is ready for delivery to room ..."
           final isFood = question.toLowerCase().startsWith('food order #') ||
-              (svc['food_order_summary_id'] != null &&
-               svc['food_order_summary_id'].toString() != '0' &&
-               svc['food_order_summary_id'].toString() != 'null');
+              (_nonZeroInt(svc['food_order_summary_id']) != null);
           return isFood;
         }).cast<Map<String, dynamic>>().toList();
 
-        final acceptedSRs = foodDeliverySRs.where((sr) {
+        // ── Ready tab ─────────────────────────────────────────────────────
+        // Open SRs = awaiting delivery staff acceptance
+        ready = foodDeliverySRs.where((sr) {
           final status = (sr['status'] ?? '').toString().toLowerCase();
-          return status == 'in progress' || status == 'inprogress';
-        }).toList();
-
-        final closedSRs = foodDeliverySRs.where((sr) {
-          final status = (sr['status'] ?? '').toString().toLowerCase();
-          return status == 'closed' || sr['closed'] == 1 || sr['closed'] == true;
-        }).toList();
-
-        accepted = acceptedSRs
-            .map((sr) => _buildOrderFromServiceRequest(sr))
-            .toList()
+          return status == 'open';
+        }).map((sr) => _buildOrderFromServiceRequest(sr)).toList()
           ..sort((a, b) {
             final aT = a['_orderTimeDt'] as DateTime?;
             final bT = b['_orderTimeDt'] as DateTime?;
@@ -549,7 +397,27 @@ class _DeliveryPageState extends State<DeliveryPage>
             return bT.compareTo(aT);
           });
 
-        delivered = closedSRs.map((sr) {
+        // ── Accepted tab ──────────────────────────────────────────────────
+        accepted = foodDeliverySRs.where((sr) {
+          final status = (sr['status'] ?? '').toString().toLowerCase();
+          return status == 'in progress' || status == 'inprogress';
+        }).map((sr) => _buildOrderFromServiceRequest(sr)).toList()
+          ..sort((a, b) {
+            final aT = a['_orderTimeDt'] as DateTime?;
+            final bT = b['_orderTimeDt'] as DateTime?;
+            if (aT == null && bT == null) return 0;
+            if (aT == null) return 1;
+            if (bT == null) return -1;
+            return bT.compareTo(aT);
+          });
+
+        // ── Delivered tab ─────────────────────────────────────────────────
+        delivered = foodDeliverySRs.where((sr) {
+          final status = (sr['status'] ?? '').toString().toLowerCase();
+          return status == 'closed' ||
+              sr['closed'] == 1 ||
+              sr['closed'] == true;
+        }).map((sr) {
           final order = _buildOrderFromServiceRequest(sr);
           order['uiStatus'] = 'Delivered';
           return order;
@@ -576,7 +444,7 @@ class _DeliveryPageState extends State<DeliveryPage>
           ..addAll(delivered);
       });
 
-      // Delivery alert fires only for Ready orders that haven't been accepted yet.
+      // Delivery alert count = number of Open (Ready) food delivery SRs
       TaskAlertService.resetDeliveryCount(ready.length, reconcileAlert: true);
     } finally {
       if (mounted) setState(() => isLoading = false);
@@ -675,11 +543,23 @@ class _DeliveryPageState extends State<DeliveryPage>
       AppSnackBar.show(context, 'Order accepted ✅');
       await TaskAlertService.stopOneDeliveryAlert();
 
+      // Name of the staff who just accepted — used to show "Assigned: <name>"
+      // immediately, before the reload confirms it (mirrors home page).
+      final acceptedName = (res['accepted_by_user_name'] ??
+              (res['assignment'] is Map
+                  ? (res['assignment'] as Map)['accepted_by_user_name']
+                  : null) ??
+              '')
+          .toString();
+
       // Optimistically move to Accepted tab then reload
       setState(() {
         readyOrders.removeWhere((o) => o['orderNumber'] == orderNo);
         final updatedOrder = Map<String, dynamic>.from(order);
         updatedOrder['uiStatus'] = 'Accepted';
+        if (acceptedName.isNotEmpty) {
+          updatedOrder['accepted_by_user_name'] = acceptedName;
+        }
         acceptedOrders.insert(0, updatedOrder);
         selectedFilter = 'Accepted';
         _tabController.animateTo(1);
@@ -1362,6 +1242,16 @@ class _DeliveryPageState extends State<DeliveryPage>
     final orderTime = order['orderTime'] as String?;
     final isTimelineExpanded = _expandedTimelineOrders.contains(orderNo);
 
+    // Accepting/delivery staff name — shown as "Assigned: <name>" once the
+    // delivery request has been accepted (Accepted/Delivered tabs), mirroring
+    // the home page task card (same Icons.badge_outlined + style).
+    final acceptedBy = (order['accepted_by_user_name'] ??
+            (order['raw'] is Map
+                ? (order['raw'] as Map)['accepted_by_user_name']
+                : null) ??
+            '')
+        .toString();
+
     // Color scheme per status
     Color statusColor;
     switch (uiStatus) {
@@ -1525,6 +1415,31 @@ class _DeliveryPageState extends State<DeliveryPage>
                   ),
                 ],
               ),
+
+              // ── Assigned staff (who accepted the delivery) ──
+              // Mirrors the home page: badge icon + "Assigned: <name>".
+              if (acceptedBy.isNotEmpty && acceptedBy != '-') ...[
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.badge_outlined,
+                        size: 14, color: AppColors.textSecondary),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        "Assigned: $acceptedBy",
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
 
               if (isTimelineExpanded) ...[
                 const SizedBox(height: 8),

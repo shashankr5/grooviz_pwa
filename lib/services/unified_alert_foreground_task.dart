@@ -42,11 +42,34 @@ class UnifiedAlertTaskHandler extends TaskHandler {
 
   /// Receives sound commands from AlertStateManager._startOrSwitch()
   /// This is the PRIMARY way sounds are started/switched - no restart needed.
+  /// Also handles { "stop": true } sent by the background isolate to stop
+  /// the audio without needing to call FlutterForegroundTask.stopService().
   @override
   void onReceiveData(dynamic data) {
     print('UnifiedAlertTaskHandler.onReceiveData: $data');
     try {
       final map = _parseTaskData(data as String?);
+
+      // Stop command — sent by AlertStateManager._stopService() when
+      // pendingCount drops to 0. The handler stops audio and then stops
+      // itself — calling stopService() from WITHIN the task handler is
+      // reliable in all app states (background, killed, foreground).
+      if (map['stop'] == true) {
+        print('UnifiedAlertTaskHandler.onReceiveData: stop command received');
+        _looping = false;
+        _currentSound = null;
+        // Await audio stop, then stop the service. Using .then() because
+        // onReceiveData is void and cannot be async.
+        (_player?.stop() ?? Future.value()).then((_) {
+          FlutterForegroundTask.stopService();
+          print('UnifiedAlertTaskHandler: service stopped from handler');
+        }).catchError((e) {
+          print('UnifiedAlertTaskHandler: stop error: $e');
+          FlutterForegroundTask.stopService();
+        });
+        return;
+      }
+
       final sound = map['sound'] as String? ?? AlertSoundKey.food;
       final loop = map['loop'] as bool? ?? true;
       _playSound(sound, loop);

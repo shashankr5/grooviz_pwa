@@ -743,46 +743,29 @@ export const handler = (
                                         base.enterprise_id,
                                         {
                                             type:
-                                                'FOOD_ORDER_STATUS',
-
-                                            summary_id:
-                                                String(
-                                                    base.food_order_summary_id ||
-                                                    ''
-                                                ),
-
-                                            order_number:
-                                                base.food_order_number ||
-                                                base.order_number ||
-                                                null,
-
-                                            order_status:
-                                                'delivered',
-
-                                            new_status:
-                                                'delivered',
-
-                                            device_id:
-                                                String(
-                                                    base.device_id || ''
-                                                ),
-
-                                            device_name:
-                                                base.device_name ||
-                                                null,
-
-                                            guest_id:
-                                                String(
-                                                    base.guest_id || ''
-                                                ),
-
-                                            guest_name:
-                                                base.guest_name ||
-                                                null,
+                                                'TASK_CLOSED',
 
                                             service_request_id:
                                                 String(
                                                     base.service_request_id ||
+                                                    ''
+                                                ),
+
+                                            enterprise_id:
+                                                String(
+                                                    base.enterprise_id ||
+                                                    ''
+                                                ),
+
+                                            department_id:
+                                                String(
+                                                    base.department_id ||
+                                                    ''
+                                                ),
+
+                                            closed_by_user_id:
+                                                String(
+                                                    base.closed_by_user_id ||
                                                     ''
                                                 ),
 

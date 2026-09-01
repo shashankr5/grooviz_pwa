@@ -24,9 +24,7 @@ class ApiConstants {
   // ── Home Page & Service Requests ──────────────────────────────
   // Enterprise service request feed. Replaces the deprecated
   // ScreenSync_get_all_services_mobile route.
-  static const String tasks          = "$baseUrl/ScreenSync_get_all_services_mobile1";
-  static const String getAllServices = "$baseUrl/ScreenSync_get_all_services_mobile1";
-  static const String acceptTask     = "$baseUrl/ScreenSync_accept_service_request_mobile1";
+  static const String getAllServices       = "$baseUrl/ScreenSync_get_all_services_mobile1";
   static const String acceptServiceRequest = "$baseUrl/ScreenSync_accept_service_request_mobile1";
 
 

@@ -238,6 +238,17 @@ class WebSocketService {
           type == 'TASK_REASSIGNED' ||
           type == 'TASK_CLOSED') {
         _reloadAndNotifyTasks();
+        // A food-delivery job IS a service request, so an accept/close/status
+        // change can clear an Open delivery request. Recount deliveries so the
+        // delivery siren drops the moment a colleague accepts — matching the
+        // delivery screen and the new reloadDelivery (Open-SR) definition.
+        if (type == 'SERVICE_TASK_ACCEPTED' ||
+            type == 'ACCEPTED' ||
+            type == 'TASK_CLOSED' ||
+            type == 'SERVICE_STATUS_CHANGED' ||
+            type == 'SERVICE_STATUS_UPDATE') {
+          _reloadAndNotifyDelivery();
+        }
         return;
       }
 

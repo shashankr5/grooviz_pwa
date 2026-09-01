@@ -429,12 +429,18 @@ class HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _isLoading = false;
     });
 
-    final openCount = tasks
-        .where((t) => t["status"] == "Open" && !_isFoodDeliveryRequest(t))
-        .length;
-    // reconcileAlert:true makes this immediate (no 400ms debounce) so it
-    // cannot re-arm the alert after reloadTasks() already stopped it.
-    TaskAlertService.resetServiceCount(openCount, reconcileAlert: true);
+    // DO NOT call TaskAlertService.resetServiceCount() here.
+    //
+    // This local openCount is calculated from the in-memory task list
+    // which may be stale — specifically, when another user accepts a task,
+    // this list still shows status="Open" until the next server fetch.
+    // Calling resetServiceCount with stale local data re-arms the alert
+    // immediately after AlertReloadCoordinator.reloadTasks() correctly
+    // stopped it, causing the alert to keep sounding after acceptance.
+    //
+    // Alert counts are the exclusive responsibility of
+    // AlertReloadCoordinator.reloadTasks() which queries the server
+    // with proper isTrulyOpen + isAssignedToMe filters.
   }
 
   // ── Delivery order grouping ──────────────────────────────────────────────
