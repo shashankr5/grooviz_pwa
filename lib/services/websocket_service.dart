@@ -247,6 +247,10 @@ class WebSocketService {
             type == 'TASK_CLOSED' ||
             type == 'SERVICE_STATUS_CHANGED' ||
             type == 'SERVICE_STATUS_UPDATE') {
+          // For delivery orders: dismiss delivery alert first, then reload to get accurate count
+          if (type == 'SERVICE_TASK_ACCEPTED' || type == 'ACCEPTED') {
+            AlertStateManager.dismissDelivery();
+          }
           _reloadAndNotifyDelivery();
         }
         return;

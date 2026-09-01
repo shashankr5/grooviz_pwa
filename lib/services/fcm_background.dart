@@ -61,6 +61,31 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
+  final data = message.data;
+  final type = (data['type'] ?? '').toString();
+  final stopAlert = (data['stop_alert'] ?? 'false').toString().toLowerCase() == 'true';
+
+  print('Background FCM | type=$type | stop_alert=$stopAlert');
+
+  // ── CRITICAL: If stop_alert is true, stop immediately ──
+  // This handles SERVICE_TASK_ACCEPTED notifications which need cross-device
+  // alert coordination. TASK_CLOSED does NOT send stop_alert since alerts
+  // already stopped when the task was accepted.
+  if (stopAlert) {
+    print('Background FCM | stop_alert=true - stopping alert immediately');
+    
+    // Stop the siren IMMEDIATELY
+    await AlertStateManager.dismissAll();
+    
+    // Then reconcile from server to get accurate counts
+    await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+    await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+    await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+    
+    print('Background FCM | stop_alert handled - siren stopped');
+    // DON'T RETURN - let flushSync() run at the end
+  }
+
   // Load user departments & role to filter out irrelevant notifications
   final depts = await UserSessionHelper.getDepartments();
   final role = await UserSessionHelper.getRole();
@@ -88,95 +113,94 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           d.contains("kitchen"));
   final isRoomServiceOrFnB = isRoomService || isFoodBeverage;
 
-  final data = message.data;
-  final type = (data['type'] ?? '').toString();
-  print('Background FCM | type=$type | role=$role | depts=$normalized');
+  print('Background FCM | type=$type | stop_alert=$stopAlert | role=$role | depts=$normalized');
 
-  switch (type) {
-    // ────────────────────────────────────────────────────────────────────────
-    // NEW ALERTS - reload from server, then flush sync
-    // ────────────────────────────────────────────────────────────────────────
-    case 'NEW_FOOD_ORDER':
-      if (!isRoomServiceOrFnB) {
-        print('Background FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
-        return;
-      }
-      // Reload with reconcileAlert=true → immediate sync, no debounce
-      await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
-      break;
+  // Only process switch cases if stop_alert is false OR if it's SERVICE_TASK_ACCEPTED
+  // SERVICE_TASK_ACCEPTED needs to run its delivery reload even when stopAlert=true
+  if (!stopAlert || type == 'SERVICE_TASK_ACCEPTED' || type == 'ACCEPTED') {
+    switch (type) {
+      // ────────────────────────────────────────────────────────────────────────
+      // NEW ALERTS - reload from server, then flush sync
+      // ────────────────────────────────────────────────────────────────────────
+      case 'NEW_FOOD_ORDER':
+        if (!isRoomServiceOrFnB) {
+          print('Background FCM | Ignoring NEW_FOOD_ORDER for non-F&B user.');
+          return;
+        }
+        // Reload with reconcileAlert=true → immediate sync, no debounce
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        break;
 
-    case 'FOOD_ORDER_STATUS':
-      final rawStatus = (data['new_status'] ??
-              data['food_order_status'] ??
-              data['order_status'] ??
-              data['status'] ??
-              '')
-          .toString()
-          .toUpperCase();
-      if (rawStatus == 'READY') {
+      case 'FOOD_ORDER_STATUS':
+        final rawStatus = (data['new_status'] ??
+                data['food_order_status'] ??
+                data['order_status'] ??
+                data['status'] ??
+                '')
+            .toString()
+            .toUpperCase();
+        if (rawStatus == 'READY') {
+          await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        }
+        // break — not return — so flushSync() always runs below.
+        // A return would skip flushSync() and leave the foreground service
+        // playing sound even after the status changed to non-READY.
+        break;
+
+      case 'SERVICE_ORDER':
+      case 'NEW_SERVICE_REQUEST':
+      case 'TASK_REASSIGNED':
+        print('Background FCM | Processing service request: $type');
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        print('Background FCM | Completed reloadTasks for: $type');
+        break;
+
+      case 'ESCALATION':
+        // Reload will detect escalated=true tasks and set escalation flag
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        break;
+
+      // ────────────────────────────────────────────────────────────────────────
+      // ACTION EVENTS - server is source of truth
+      // Use break (not return) so execution falls through to flushSync() below.
+      // flushSync() calls _sync() which calls _stopService() — without it the
+      // foreground service keeps playing sound even after counts drop to zero.
+      // ────────────────────────────────────────────────────────────────────────
+      case 'ORDER_ACCEPTED':
+      case 'ORDER_CANCELLED':
+        await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+        break;
+
+      case 'ORDER_DELIVERED':
+        await AlertStateManager.dismissAll();
+        break;
+
+      case 'SERVICE_TASK_ACCEPTED':
+      case 'ACCEPTED':
+        // stop_alert already handled at the top
+        // But we still reconcile to be safe
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        // For delivery orders: dismiss delivery alert first, then reload to get accurate count
+        await AlertStateManager.dismissDelivery();
         await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
-      }
-      // break — not return — so flushSync() always runs below.
-      // A return would skip flushSync() and leave the foreground service
-      // playing sound even after the status changed to non-READY.
-      break;
+        break;
 
-    case 'SERVICE_ORDER':
-    case 'NEW_SERVICE_REQUEST':
-    case 'TASK_REASSIGNED':
-      await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
-      break;
+      case 'DELIVERY_ACCEPTED':
+      case 'DELIVERY_DELIVERED':
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        break;
 
-    case 'ESCALATION':
-      // Reload will detect escalated=true tasks and set escalation flag
-      await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
-      break;
+      case 'TASK_CLOSED':
+        // No stop_alert for close - alerts already stopped at accept
+        // Just reconcile to update counts and remove closed tasks
+        await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+        await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+        break;
 
-    // ────────────────────────────────────────────────────────────────────────
-    // ACTION EVENTS - server is source of truth
-    // Use break (not return) so execution falls through to flushSync() below.
-    // flushSync() calls _sync() which calls _stopService() — without it the
-    // foreground service keeps playing sound even after counts drop to zero.
-    // ────────────────────────────────────────────────────────────────────────
-    case 'ORDER_ACCEPTED':
-    case 'ORDER_CANCELLED':
-      await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
-      break;
-
-    case 'ORDER_DELIVERED':
-      await AlertStateManager.dismissAll();
-      break;
-
-    case 'SERVICE_TASK_ACCEPTED':
-    case 'ACCEPTED':
-      // Reconcile from server truth. The task just accepted by another user
-      // is filtered out by reloadTasks (per-user ownership), so this device's
-      // count drops. flushSync() below then stops the siren via the reliable
-      // sendDataToTask({stop:true}) path IF the count is genuinely 0 — while
-      // leaving it playing if this user still has other pending tasks.
-      //
-      // A food-delivery job IS a service request, so this same accept may have
-      // cleared an Open delivery request — recount deliveries too so the
-      // delivery siren drops cross-device on accept, matching the screen.
-      await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
-      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
-      break;
-
-    case 'DELIVERY_ACCEPTED':
-    case 'DELIVERY_DELIVERED':
-      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
-      break;
-
-    case 'TASK_CLOSED':
-      // Closing a service request may also close a food-delivery request, so
-      // recount both tasks and deliveries.
-      await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
-      await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
-      break;
-
-    default:
-      print('Background FCM: discarding unrecognised type=$type');
-      return;
+      default:
+        print('Background FCM: discarding unrecognised type=$type');
+        break;
+    }
   }
 
   // Explicit flush guarantees sync runs before isolate terminates.

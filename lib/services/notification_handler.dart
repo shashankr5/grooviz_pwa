@@ -220,6 +220,25 @@ Future<void> _handleForegroundMessage(
     return;
   }
 
+  final stopAlert = (data['stop_alert'] ?? 'false').toString().toLowerCase() == 'true';
+
+  // If stop_alert is true, stop immediately (foreground)
+  // Only SERVICE_TASK_ACCEPTED sends stop_alert - TASK_CLOSED does not
+  if (stopAlert) {
+    print('Foreground FCM | stop_alert=true - stopping alert immediately');
+    await AlertStateManager.dismissAll();
+    await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
+    await AlertReloadCoordinator.instance.reloadFood(silentReconcile: true);
+    await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
+    
+    // Don't return early if it's SERVICE_TASK_ACCEPTED - we need to run the switch case
+    // for proper delivery reconciliation
+    if (type != 'SERVICE_TASK_ACCEPTED' && type != 'ACCEPTED') {
+      return;
+    }
+    print('Foreground FCM | stop_alert handled, continuing with $type processing');
+  }
+
   // Load user departments & role to filter out irrelevant notifications
   final depts = await UserSessionHelper.getDepartments();
   final role = await UserSessionHelper.getRole();
@@ -322,10 +341,12 @@ Future<void> _handleForegroundMessage(
 
     case 'SERVICE_TASK_ACCEPTED':
     case 'ACCEPTED':
+      // stop_alert already handled at the top
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
-      // A food-delivery job is also a service request — recount deliveries so
-      // the delivery siren drops on accept, matching the delivery screen.
+      // For delivery orders: dismiss delivery alert first, then reload to get accurate count
+      // This prevents the alert from restarting if there are other pending deliveries
+      await AlertStateManager.dismissDelivery();
       await AlertReloadCoordinator.instance.reloadDelivery(silentReconcile: true);
       AlertStateManager.notifyNewDelivery();
       break;
@@ -337,6 +358,8 @@ Future<void> _handleForegroundMessage(
       break;
 
     case 'TASK_CLOSED':
+      // No stop_alert for close - alerts already stopped at accept
+      // Just reconcile to update counts and remove closed tasks
       await AlertReloadCoordinator.instance.reloadTasks(silentReconcile: true);
       AlertStateManager.notifyNewTask();
       // Closing a service request may also close a food-delivery request —
@@ -420,6 +443,7 @@ Future<void> _reconcileAlertsAfterTap(Map<String, dynamic> data) async {
         break;
 
       case 'TASK_CLOSED':
+        // No stop_alert for close - just reconcile and clear escalation
         AlertStateManager.setEscalationActive(false);
         await AlertReloadCoordinator.instance
             .reloadTasks(silentReconcile: true);
