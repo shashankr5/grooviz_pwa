@@ -1,0 +1,153 @@
+name: com.tekchant.screensyncmobileapp
+description: "A new Flutter project."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 2.0.5+15
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  dio: ^5.4.3
+
+  firebase_core: ^2.24.1
+  firebase_messaging: ^14.7.1
+  flutter_local_notifications: ^17.2.1
+
+  # Device Info
+  device_info_plus: ^9.0.0
+  package_info_plus: ^9.0.0
+
+  # Storage & Utilities
+  shared_preferences: ^2.2.2
+  path_provider: ^2.1.1
+  uuid: ^4.2.1
+
+  image_picker: ^1.2.0
+  iconsax: ^0.0.8
+  http: ^1.6.0
+
+  permission_handler: ^11.3.0
+  web_socket_channel: ^2.4.0
+  
+  # camera content
+  image: ^4.1.3
+  numberpicker: ^2.1.2
+
+  # for phone dialer, browser
+  url_launcher: ^6.2.5
+
+  # ESC/POS Bluetooth thermal printer — Bluetooth Classic (SPP), BLE, USB, Network
+  # Published May 2025, actively maintained, 200+ printer profiles.
+  # Replaces the custom Kotlin BluetoothPrinterChannel bridge.
+  unified_esc_pos_printer: any
+
+  # Deep-links to system Bluetooth settings on Android/iOS.
+  # Used instead of openAppSettings() so the user lands on the BT toggle,
+  # not the app permissions page.
+  app_settings: ^5.1.1
+  pdf: ^3.12.0
+  printing: ^5.14.3
+  share_plus: ^12.0.2
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+
+  # Generates the native launch/splash screen (launch_background.xml, colors,
+  # styles, all density drawables, and the Android 12+ SplashScreen API assets)
+  # from a single source image. Run: dart run flutter_native_splash:create
+  flutter_native_splash: ^2.4.1
+
+  flutter_lints: ^5.0.0
+
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/grooviz.png"
+
+# ── Native splash screen (Grooviz Connect) ───────────────────────────────────
+# After placing the logo at the image path below, run:
+#   flutter pub get
+#   dart run flutter_native_splash:create
+# This (re)generates launch_background.xml (+ drawable-v21), colors, styles,
+# the density-specific drawables, and values-v31/styles.xml for Android 12+.
+flutter_native_splash:
+  # Solid background behind the centered logo.
+  color: "#FFFFFF"
+  color_dark: "#0B1F33"          # deep navy from the Grooviz Connect wordmark
+
+  # Full Grooviz Connect logo (bell + wordmark), centered.
+  # Used on Android 11 and below, and on iOS.
+  image: assets/icons/grooviz.png
+
+  # Android 12+ uses the system SplashScreen API: the image is masked into a
+  # circle (~2/3 of 240dp). A logo-only (bell) mark reads best here — a full
+  # wordmark can get clipped. Swap `image` below for a bell-only PNG if needed.
+  android_12:
+    image: assets/icons/grooviz.png
+    color: "#FFFFFF"
+    color_dark: "#0B1F33"
+
+  android: true
+  ios: true
+  web: false
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/icons/
+
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # fonts:
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package

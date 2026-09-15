@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "15090156869",
+    "project_id": "screensyncmobileapp",
+    "storage_bucket": "screensyncmobileapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:15090156869:android:3809326980137036586a2c",
+        "android_client_info": {
+          "package_name": "com.tekchant.screensyncmobileapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-faCSvYHFYVEh1CzSA0KOnQTS_LfxtlY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
